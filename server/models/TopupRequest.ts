@@ -7,6 +7,7 @@ export interface ITopupRequest extends Document {
   firstName?: string;
   amount: number;
   note?: string;
+  photoFileId?: string;
   status: 'pending' | 'approved' | 'rejected';
   processedBy?: string;
   processedAt?: Date;
@@ -21,6 +22,7 @@ const topupRequestSchema = new mongoose.Schema({
   firstName: { type: String },
   amount: { type: Number, required: true },
   note: { type: String, default: '' },
+  photoFileId: { type: String, default: '' },
   status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
   processedBy: { type: String },
   processedAt: { type: Date },

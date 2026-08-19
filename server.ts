@@ -470,35 +470,68 @@ async function syncActiveOrders() {
             if (orderId) order.orderId = orderId;
             await order.save();
 
-            // Notify user on state transitions
+            // Notify only the relevant user who placed this order
             if (telegramBot) {
+              const safeGame = (order.gameName || 'Game').replace(/[*_`\[\]]/g, '');
+              const safeSku = (order.skuName || 'Top-up').replace(/[*_`\[\]]/g, '');
+              const safeOrderNum = (order.orderId || order.referenceId || '').replace(/[*_`\[\]]/g, '');
+              const safePlayer = order.playerName ? order.playerName.replace(/[*_`\[\]]/g, '') : '';
+
               if (newState === 2) {
                 // Completed
-                const msg = `🎉 *Top-Up Order Completed!*\n\n` +
-                  `🎮 *Game:* ${order.gameName || 'Game'}\n` +
-                  `🛍 *Product:* ${order.skuName || 'Top-up'}\n` +
-                  (order.playerName ? `🎯 *Player:* \`${order.playerName}\`\n` : '') +
-                  `🔖 *Ref ID:* \`${order.referenceId}\`\n` +
-                  `✅ Your in-game item has been successfully delivered!`;
+                const lines = [
+                  `🎉 *Top-Up Completed!*`,
+                  `═════════════════════════`,
+                  `├── 🆔 Order ID: \`${safeOrderNum}\``,
+                  `├── 🎮 Game: *${safeGame}*`,
+                  `├── 📦 Package: *${safeSku}*`,
+                ];
+                if (safePlayer) {
+                  lines.push(`├── 👤 Player: \`${safePlayer}\``);
+                }
+                lines.push(`├── ✅ Status: *COMPLETED*`);
+                lines.push(`└── 💬 Message: _Fulfilled successfully on game server_`);
+                lines.push(`═════════════════════════`);
+
+                const msg = lines.join('\n');
                 try {
                   await telegramBot.telegram.sendMessage(order.telegramChatId, msg, { parse_mode: 'Markdown' });
                 } catch (e) {
-                  console.error('Failed to notify user of order completion:', e);
+                  try {
+                    await telegramBot.telegram.sendMessage(order.telegramChatId, msg.replace(/[*_`]/g, ''));
+                  } catch (err2) {
+                    console.error('Failed to notify user of order completion:', err2);
+                  }
                 }
               } else if (newState === 3) {
                 // Failed -> Auto Refund
                 const user = await User.findOne({ telegramChatId: order.telegramChatId });
-                if (user && order.price > 0) {
+                const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
+                if (user && order.price > 0 && !isApiLinked) {
                   user.balance += order.price;
                   await user.save();
                 }
-                const msg = `❌ *Top-Up Order Failed*\n\n` +
-                  `🔖 *Ref ID:* \`${order.referenceId}\`\n` +
-                  `Your wallet balance has been refunded ($${order.price.toFixed(2)} USD).`;
+
+                const lines = [
+                  `❌ *Top-Up Order Failed*`,
+                  `═════════════════════════`,
+                  `├── 🆔 Order ID: \`${safeOrderNum}\``,
+                  `├── 🎮 Game: *${safeGame}*`,
+                  `├── 📦 Package: *${safeSku}*`,
+                  `├── ❌ Status: *FAILED*`,
+                  `└── 💬 Message: _Could not be fulfilled on game server_${!isApiLinked ? ` (Refunded $${order.price.toFixed(2)} USD to wallet)` : ''}`,
+                  `═════════════════════════`
+                ];
+
+                const msg = lines.join('\n');
                 try {
                   await telegramBot.telegram.sendMessage(order.telegramChatId, msg, { parse_mode: 'Markdown' });
                 } catch (e) {
-                  console.error('Failed to notify user of order failure:', e);
+                  try {
+                    await telegramBot.telegram.sendMessage(order.telegramChatId, msg.replace(/[*_`]/g, ''));
+                  } catch (err2) {
+                    console.error('Failed to notify user of order failure:', err2);
+                  }
                 }
               }
             }

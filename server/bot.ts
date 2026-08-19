@@ -68,6 +68,38 @@ export async function safeEditMessageText(ctx: Context, text: string, extra: any
   }
 }
 
+// Safe sendPhoto with fallback to plain caption if Markdown parsing fails
+export async function safeSendPhoto(telegram: any, chatId: number | string, photo: string, extra: any = {}) {
+  try {
+    return await telegram.sendPhoto(chatId, photo, { parse_mode: 'Markdown', ...extra });
+  } catch (err: any) {
+    if (err?.message?.includes('can\'t parse entities') || err?.response?.error_code === 400) {
+      const caption = extra.caption ? extra.caption.replace(/[*_`\[\]]/g, '') : undefined;
+      return await telegram.sendPhoto(chatId, photo, { ...extra, caption, parse_mode: undefined });
+    }
+    console.error(`Error in safeSendPhoto to ${chatId}:`, err?.message || err);
+  }
+}
+
+// Safe editMessageCaption with fallback to plain caption
+export async function safeEditMessageCaption(ctx: Context, caption: string, extra: any = {}) {
+  try {
+    return await ctx.editMessageCaption(caption, { parse_mode: 'Markdown', ...extra });
+  } catch (err: any) {
+    if (err?.message?.includes('message is not modified')) {
+      return;
+    }
+    if (err?.message?.includes('can\'t parse entities') || err?.response?.error_code === 400) {
+      const plainCaption = caption.replace(/[*_`\[\]]/g, '');
+      return await ctx.editMessageCaption(plainCaption, extra);
+    }
+    try {
+      return await safeEditMessageText(ctx, caption, extra);
+    } catch {}
+    console.error('Error in safeEditMessageCaption:', err?.message || err);
+  }
+}
+
 async function getAdminChatId(defaultId: string | undefined): Promise<string | undefined> {
   try {
     const config = await AppConfig.findOne({ key: 'admin_chat_id' });
@@ -91,6 +123,7 @@ interface SessionData {
   extraInfo?: Record<string, string>;
   topupAmount?: number;
   topupNote?: string;
+  topupPhotoFileId?: string;
 }
 
 export interface MyContext extends Context {
@@ -666,10 +699,9 @@ export function setupBot(
   bot.action(/^topup_approve_(TR-[A-Z0-9]+)$/, async (ctx) => {
     const currentAdminId = await getAdminChatId(adminChatId);
     const clickerChatId = String(ctx.chat?.id || ctx.from?.id);
-    const clickerUser = await User.findOne({ telegramChatId: Number(clickerChatId) });
 
-    if (clickerChatId !== currentAdminId && !clickerUser?.receivesNotifications) {
-      return ctx.answerCbQuery('🚫 Unauthorized', { show_alert: true });
+    if (clickerChatId !== currentAdminId) {
+      return ctx.answerCbQuery('🚫 Unauthorized (Owner only)', { show_alert: true });
     }
 
     const requestId = ctx.match[1];
@@ -696,22 +728,27 @@ export function setupBot(
     );
 
     await ctx.answerCbQuery('✅ Top-up approved & balance added!');
-    await safeEditMessageText(
-      ctx,
-      `✅ *Top-Up Request Approved!*\n\n` +
-      `🆔 *Request ID:* \`${requestId}\`\n` +
-      `👤 *User:* \`${topupReq.telegramChatId}\`\n` +
-      `💵 *Amount Added:* \`+$${topupReq.amount.toFixed(2)} USD\`\n` +
-      `💳 *New Balance:* \`$${Number(updatedUser?.balance || 0).toFixed(2)} USD\`\n` +
-      `👤 *Approved by:* \`${clickerChatId}\`\n` +
-      `📅 *Time:* ${new Date().toLocaleString()}`
-    );
+    
+    const approvedMsg = `✅ *Top-Up Request Approved!*\n` +
+      `═════════════════════════\n` +
+      `├── 🆔 Request ID: \`${requestId}\`\n` +
+      `├── 👤 User: \`${topupReq.telegramChatId}\`\n` +
+      `├── 💵 Amount Added: \`+$${topupReq.amount.toFixed(2)} USD\`\n` +
+      `├── 💳 User New Balance: \`$${Number(updatedUser?.balance || 0).toFixed(2)} USD\`\n` +
+      `├── 👤 Approved by: \`Admin / Owner\`\n` +
+      `└── 📅 Time: \`${new Date().toLocaleTimeString()}\`\n` +
+      `═════════════════════════`;
+
+    await safeEditMessageCaption(ctx, approvedMsg);
 
     // Notify user in their Telegram chat
-    const userSuccessMsg = `🎉 *Balance Top-Up Approved!*\n\n` +
-      `💰 *Added Amount:* \`+$${topupReq.amount.toFixed(2)} USD\`\n` +
-      `💳 *New Wallet Balance:* \`$${Number(updatedUser?.balance || 0).toFixed(2)} USD\`\n` +
-      `🆔 *Request ID:* \`${requestId}\`\n\n` +
+    const userSuccessMsg = `🎉 *Balance Top-Up Approved!*\n` +
+      `═════════════════════════\n` +
+      `├── 🆔 Request ID: \`${requestId}\`\n` +
+      `├── 💰 Added Amount: \`+$${topupReq.amount.toFixed(2)} USD\`\n` +
+      `├── 💳 New Wallet Balance: \`$${Number(updatedUser?.balance || 0).toFixed(2)} USD\`\n` +
+      `└── ✅ Status: *APPROVED*\n` +
+      `═════════════════════════\n` +
       `သင့် Wallet ထဲသို့ ငွေဖြည့်သွင်းခြင်း အောင်မြင်ပါပြီ။ အော်ဒါများကို စတင်ဝယ်ယူနိုင်ပါပြီ။`;
 
     await safeSendMessage(bot.telegram, topupReq.telegramChatId, userSuccessMsg, mainMenu);
@@ -721,10 +758,9 @@ export function setupBot(
   bot.action(/^topup_reject_(TR-[A-Z0-9]+)$/, async (ctx) => {
     const currentAdminId = await getAdminChatId(adminChatId);
     const clickerChatId = String(ctx.chat?.id || ctx.from?.id);
-    const clickerUser = await User.findOne({ telegramChatId: Number(clickerChatId) });
 
-    if (clickerChatId !== currentAdminId && !clickerUser?.receivesNotifications) {
-      return ctx.answerCbQuery('🚫 Unauthorized', { show_alert: true });
+    if (clickerChatId !== currentAdminId) {
+      return ctx.answerCbQuery('🚫 Unauthorized (Owner only)', { show_alert: true });
     }
 
     const requestId = ctx.match[1];
@@ -743,22 +779,27 @@ export function setupBot(
     topupReq.processedAt = new Date();
     await topupReq.save();
 
-    await ctx.answerCbQuery('❌ Top-up request rejected.');
-    await safeEditMessageText(
-      ctx,
-      `❌ *Top-Up Request Rejected*\n\n` +
-      `🆔 *Request ID:* \`${requestId}\`\n` +
-      `👤 *User:* \`${topupReq.telegramChatId}\`\n` +
-      `💵 *Amount:* \`$${topupReq.amount.toFixed(2)} USD\`\n` +
-      `👤 *Rejected by:* \`${clickerChatId}\`\n` +
-      `📅 *Time:* ${new Date().toLocaleString()}`
-    );
+    await ctx.answerCbQuery('❌ Top-up request declined.');
+    
+    const rejectedMsg = `❌ *Top-Up Request Declined*\n` +
+      `═════════════════════════\n` +
+      `├── 🆔 Request ID: \`${requestId}\`\n` +
+      `├── 👤 User: \`${topupReq.telegramChatId}\`\n` +
+      `├── 💵 Amount: \`$${topupReq.amount.toFixed(2)} USD\`\n` +
+      `├── 👤 Declined by: \`Admin / Owner\`\n` +
+      `└── 📅 Time: \`${new Date().toLocaleTimeString()}\`\n` +
+      `═════════════════════════`;
+
+    await safeEditMessageCaption(ctx, rejectedMsg);
 
     // Notify user
-    const userRejectMsg = `❌ *Top-Up Request Declined*\n\n` +
-      `💰 *Requested Amount:* \`$${topupReq.amount.toFixed(2)} USD\`\n` +
-      `🆔 *Request ID:* \`${requestId}\`\n\n` +
-      `သင့် ငွေဖြည့်သွင်းမှု တောင်းဆိုချက်ကို Admin မှ ပယ်ဖျက်လိုက်ပါသည်။ အသေးစိတ်သိရှိလိုပါက Admin သို့ ဆက်သွယ်ပါ။`;
+    const userRejectMsg = `❌ *Top-Up Request Declined*\n` +
+      `═════════════════════════\n` +
+      `├── 🆔 Request ID: \`${requestId}\`\n` +
+      `├── 💰 Amount: \`$${topupReq.amount.toFixed(2)} USD\`\n` +
+      `└── ❌ Status: *DECLINED*\n` +
+      `═════════════════════════\n` +
+      `Admin မှ ငွေဖြည့်သွင်းမှုအား ပယ်ဖျက်လိုက်ပါသည်။ အသေးစိတ်သိရှိလိုပါက Admin သို့ ဆက်သွယ်ပါ။`;
 
     await safeSendMessage(bot.telegram, topupReq.telegramChatId, userRejectMsg, mainMenu);
   });
@@ -920,7 +961,7 @@ export function setupBot(
     return await safeReply(ctx, intro, keyboard);
   }
 
-  async function submitTopupRequest(ctx: MyContext, amount: number, note: string = '') {
+  async function submitTopupRequest(ctx: MyContext, amount: number, note: string = '', photoFileId?: string) {
     ctx.session = {};
     const chatId = ctx.chat!.id;
     const user = await User.findOne({ telegramChatId: chatId });
@@ -938,6 +979,7 @@ export function setupBot(
         firstName: fromFirstName,
         amount,
         note: note.trim(),
+        photoFileId: photoFileId || '',
         status: 'pending'
       });
     } catch (e) {
@@ -945,48 +987,50 @@ export function setupBot(
     }
 
     // Confirmation message to User
-    const userConfirmMsg = `✅ *Top-Up Request Submitted!*\n\n` +
-      `🆔 *Request ID:* \`${requestId}\`\n` +
-      `💰 *Requested Amount:* \`$${amount.toFixed(2)} USD\`\n` +
-      (note ? `📝 *Note / Ref:* \`${escapeCode(note)}\`\n` : '') +
-      `💳 *Current Wallet Balance:* \`$${Number(user.balance || 0).toFixed(2)} USD\`\n\n` +
-      `Admin ထံသို့ အကြောင်းကြားစာ ပို့ပြီးပါပြီ။ Admin မှ စစ်ဆေးအတည်ပြုပြီးပါက သင့် Wallet ထဲသို့ Balance တိုက်ရိုက်ထည့်သွင်းပေးပါမည်။`;
+    const userConfirmMsg = `✅ *Top-Up Request Submitted!*\n` +
+      `═════════════════════════\n` +
+      `├── 🆔 Request ID: \`${requestId}\`\n` +
+      `├── 💰 Requested Amount: \`$${amount.toFixed(2)} USD\`\n` +
+      `├── 📸 Payment Slip: \`Attached ✅\`\n` +
+      (note ? `├── 📝 Note / Ref: \`${escapeCode(note)}\`\n` : '') +
+      `├── 💳 Current Balance: \`$${Number(user.balance || 0).toFixed(2)} USD\`\n` +
+      `└── ⏳ Status: *PENDING APPROVAL*\n` +
+      `═════════════════════════\n` +
+      `Admin / Owner ထံသို့ ငွေလွှဲပြေစာနှင့်တကွ တိုက်ရိုက် အကြောင်းကြားစာ ပို့ပြီးပါပြီ။ Owner မှ စစ်ဆေးအတည်ပြုပြီးပါက သင့် Wallet ထဲသို့ Balance တိုက်ရိုက်ထည့်သွင်းပေးပါမည်။`;
 
     await safeReply(ctx, userConfirmMsg, mainMenu);
 
-    // Notify Admin & notification receivers
+    // Notify Owner ONLY
     const currentAdminId = await getAdminChatId(adminChatId);
     const userDisplay = fromUsername ? `@${escapeMd(fromUsername)}` : (fromFirstName ? escapeMd(fromFirstName) : 'User');
     const safeNote = note ? escapeCode(note) : 'None';
 
-    const adminNotificationMsg = `🔔 *New Balance Top-Up Request!*\n\n` +
-      `🆔 *Request ID:* \`${requestId}\`\n` +
-      `👤 *User:* \`${chatId}\` (${userDisplay})\n` +
-      `💵 *Requested Amount:* \`$${amount.toFixed(2)} USD\`\n` +
-      `💳 *Current Balance:* \`$${Number(user.balance || 0).toFixed(2)} USD\`\n` +
-      `📝 *Note / Ref:* \`${safeNote}\`\n` +
-      `📅 *Time:* ${new Date().toLocaleString()}\n\n` +
-      `အောက်ပါ ခလုတ်များကို နှိပ်၍ အတည်ပြုနိုင်ပါသည်:`;
+    const adminNotificationCaption = `🔔 *New Balance Top-Up Request!*\n` +
+      `═════════════════════════\n` +
+      `├── 🆔 Request ID: \`${requestId}\`\n` +
+      `├── 👤 User: \`${chatId}\` (${userDisplay})\n` +
+      `├── 💵 Requested Amount: \`$${amount.toFixed(2)} USD\`\n` +
+      `├── 💳 Current Balance: \`$${Number(user.balance || 0).toFixed(2)} USD\`\n` +
+      `└── 📝 Note / Ref: \`${safeNote}\`\n` +
+      `═════════════════════════\n` +
+      `အောက်ပါ ခလုတ်များကို နှိပ်၍ အတည်ပြု/ပယ်ဖျက်နိုင်ပါသည်:`;
 
     const adminKeyboard = Markup.inlineKeyboard([
       [
-        Markup.button.callback(`✅ Approve & Add $${amount.toFixed(2)}`, `topup_approve_${requestId}`),
-        Markup.button.callback(`❌ Reject`, `topup_reject_${requestId}`)
+        Markup.button.callback(`✅ Approve (+$${amount.toFixed(2)})`, `topup_approve_${requestId}`),
+        Markup.button.callback(`❌ Decline`, `topup_reject_${requestId}`)
       ]
     ]);
 
     if (currentAdminId) {
-      await safeSendMessage(bot.telegram, currentAdminId, adminNotificationMsg, adminKeyboard);
-    }
-
-    try {
-      const notifyUsers = await User.find({ receivesNotifications: true });
-      for (const u of notifyUsers) {
-        if (String(u.telegramChatId) === currentAdminId) continue;
-        await safeSendMessage(bot.telegram, u.telegramChatId, adminNotificationMsg, adminKeyboard);
+      if (photoFileId) {
+        await safeSendPhoto(bot.telegram, currentAdminId, photoFileId, {
+          caption: adminNotificationCaption,
+          reply_markup: adminKeyboard.reply_markup
+        });
+      } else {
+        await safeSendMessage(bot.telegram, currentAdminId, adminNotificationCaption, adminKeyboard);
       }
-    } catch (err) {
-      console.error('Failed to notify admins of topup request:', err);
     }
   }
 
@@ -1023,16 +1067,17 @@ export function setupBot(
     }
 
     ctx.session.topupAmount = amount;
-    ctx.session.step = 'INPUT_TOPUP_NOTE';
+    ctx.session.step = 'INPUT_TOPUP_PHOTO';
 
     await ctx.answerCbQuery(`Selected $${amount.toFixed(2)} USD`);
 
-    const promptMsg = `💰 *Selected Amount:* \`$${amount.toFixed(2)} USD\`\n\n` +
-      `📝 ကျေးဇူးပြု၍ Payment Reference / Transaction No. သို့မဟုတ် Note (ဥပမာ: \`KPay Ref: 123456\` သို့မဟုတ် \`KBZPay\`) ရိုက်ထည့်ပေးပါ:\n\n` +
-      `_Note မထည့်လိုပါက အောက်ပါ Skip ခလုတ်ကို နှိပ်နိုင်ပါသည်။_`;
+    const promptMsg = `💰 *Selected Top-Up Amount:* \`$${amount.toFixed(2)} USD\`\n\n` +
+      `📸 *Payment Slip Screenshot (ငွေလွှဲပြေစာ ပုံ ပို့ပေးပါ)*\n` +
+      `ငွေဖြည့်သွင်းမှု အတည်ပြုရန်အတွက် ငွေလွှဲပြေစာ Screenshot (ဓာတ်ပုံ) ကို ပေးပို့ပေးပါ:\n` +
+      `💡 _(ဓာတ်ပုံနှင့်အတူ Caption ဖြင့် KPay Ref သို့မဟုတ် Note ရေးထည့်နိုင်ပါသည်)_\n\n` +
+      `⚠️ *ငွေလွှဲပြေစာ ဓာတ်ပုံမပါဘဲ ငွေဖြည့်သွင်းခွင့် တင်၍မရပါ။*`;
 
     const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('⏩ Skip Note & Submit (တန်းတင်မည်)', `topup_skip_note_${amount}`)],
       [Markup.button.callback('❌ Cancel', 'cancel_topup')]
     ]);
 
@@ -1048,74 +1093,136 @@ export function setupBot(
     );
   });
 
-  bot.action(/^topup_skip_note_(\d+(\.\d+)?)$/, async (ctx) => {
-    const amount = parseFloat(ctx.match[1]);
-    await ctx.answerCbQuery('Submitting top-up request...');
-    return await submitTopupRequest(ctx, amount, '');
-  });
-
   bot.action('cancel_topup', async (ctx) => {
     ctx.session = {};
     await ctx.answerCbQuery('Cancelled');
     await safeEditMessageText(ctx, '❌ Top-up request cancelled.');
   });
 
-  async function renderOrderHistory(ctx: MyContext, isEdit: boolean = false) {
-    const orders = await Order.find({ telegramChatId: ctx.chat!.id }).sort({ createdAt: -1 }).limit(10);
-    if (orders.length === 0) {
-      if (isEdit) {
-        return await safeEditMessageText(ctx, '📜 No recent top-up orders found.');
-      }
-      return await safeReply(ctx, '📜 No recent top-up orders found.');
-    }
+  function formatOrderTreeNode(o: any, orderNumber: number): string {
+    const safeGame = escapeMd(o.gameName || 'Game');
+    const safeSku = escapeMd(o.skuName || `Product #${o.skuId}`);
+    const priceVal = `$${Number(o.price || 0).toFixed(3)}`;
 
-    const stateMap: Record<number, string> = {
-      1: '⏳ In Processing',
-      2: '✅ Completed (Success)',
-      3: '❌ Failed (Refunded)',
-      4: '⏳ Settling',
-      5: '⚠️ Partial Fulfillment',
-      6: '🚫 Cancelled',
-      7: '🗑 Deleted'
+    const stateMap: Record<number, { statusText: string; icon: string; message: string }> = {
+      0: { statusText: 'PENDING', icon: '⏳', message: 'Order created, awaiting transaction' },
+      1: { statusText: 'PROCESSING', icon: '🔄', message: 'LootBar API delivering top-up' },
+      2: { statusText: 'COMPLETED', icon: '✅', message: 'Order completed successfully' },
+      3: { statusText: 'FAILED', icon: '❌', message: 'Order failed on game server (Refunded)' },
+      4: { statusText: 'SETTLING', icon: '⚡', message: 'Transaction in settlement stage' },
+      5: { statusText: 'PARTIAL', icon: '⚠️', message: 'Order partially fulfilled' },
+      6: { statusText: 'CANCELLED', icon: '🚫', message: 'Order was cancelled' }
     };
 
-    let msg = `📜 *Your Recent Top-Up Orders (${orders.length})*\n\n`;
+    const status = stateMap[o.state] || { statusText: 'PROCESSING', icon: '⏳', message: 'In progress' };
 
-    orders.forEach((o, i) => {
-      const safeGame = escapeMd(o.gameName || 'Game');
-      const safeSku = escapeMd(o.skuName || `Product #${o.skuId}`);
-      const priceText = o.price ? `$${Number(o.price).toFixed(2)} USD` : 'N/A';
-      const statusText = stateMap[o.state] || '⏳ Processing';
-      const dateText = new Date(o.createdAt).toLocaleString();
-      const isApiOrder = o.extraInfo?.paymentSource === 'api_balance';
+    const lines: string[] = [];
+    lines.push(`*Order #${orderNumber}*`);
 
-      let extraDetails = '';
-      if (o.extraInfo && Object.keys(o.extraInfo).length > 0) {
-        for (const [key, val] of Object.entries(o.extraInfo)) {
-          if (key === 'paymentSource') continue;
-          extraDetails += `   ▫️ *${escapeMd(key.toUpperCase())}:* \`${escapeCode(val)}\`\n`;
+    const displayOrderId = o.orderId || o.referenceId || 'Pending';
+    lines.push(`├── 🆔 Order ID: \`${displayOrderId}\``);
+    lines.push(`├── 🎮 Game: *${safeGame}*`);
+    lines.push(`├── 📦 Package: *${safeSku}*`);
+
+    // Parse player details cleanly
+    let playerName = o.playerName || '';
+    let playerId = '';
+    let serverId = '';
+    const otherDetails: { key: string; val: string }[] = [];
+
+    if (o.extraInfo && typeof o.extraInfo === 'object') {
+      for (const [key, val] of Object.entries(o.extraInfo)) {
+        if (key === 'paymentSource') continue;
+        const lk = key.toLowerCase();
+        if (!playerId && (lk === 'uid' || lk === 'userid' || lk === 'user_id' || lk === 'player_id' || lk === 'account_id')) {
+          playerId = String(val);
+        } else if (!serverId && (lk === 'zoneid' || lk === 'zone_id' || lk === 'server' || lk === 'server_id' || lk === 'serverid')) {
+          serverId = String(val);
+        } else if (!playerName && (lk === 'player_name' || lk === 'role_name' || lk === 'nickname' || lk === 'playername')) {
+          playerName = String(val);
+        } else {
+          otherDetails.push({ key: key.toUpperCase(), val: String(val) });
         }
       }
+    }
 
-      msg += `━━━━━━━━━━━━━━━━━━━━\n` +
-        `🧾 *Order #${i + 1}*\n` +
-        `🎮 *Game:* ${safeGame}\n` +
-        `🛍 *Product:* ${safeSku}\n` +
-        (o.playerName ? `🎯 *Player Name (IGN):* \`${escapeCode(o.playerName)}\`\n` : '') +
-        (extraDetails ? `👤 *Account Details:*\n${extraDetails}` : '') +
-        `💵 *သုံးငွေ (Paid):* \`${priceText}\`\n` +
-        `💳 *Payment:* \`${isApiOrder ? '⚡ Direct API Balance Linked' : 'Wallet Balance'}\`\n` +
-        `📊 *Status:* ${statusText}\n` +
-        `🔖 *Ref ID:* \`${o.referenceId}\`\n` +
-        (o.orderId ? `🆔 *LootBar ID:* \`${o.orderId}\`\n` : '') +
-        `📅 *Date:* ${dateText}\n`;
+    if (playerName) {
+      lines.push(`├── 👤 Player: \`${escapeCode(playerName)}\``);
+    }
+    if (playerId) {
+      lines.push(`├── 🎯 Player ID: \`${escapeCode(playerId)}\``);
+    }
+    if (serverId) {
+      lines.push(`├── 🌐 Server ID: \`${escapeCode(serverId)}\``);
+    }
+    for (const item of otherDetails) {
+      lines.push(`├── ▫️ ${escapeMd(item.key)}: \`${escapeCode(item.val)}\``);
+    }
+
+    lines.push(`├── ${status.icon} Status: *${status.statusText}*`);
+    lines.push(`├── 💬 Message: _${escapeMd(status.message)}_`);
+    lines.push(`└── 💰 Price: \`${priceVal}\``);
+
+    return lines.join('\n');
+  }
+
+  async function renderOrderHistory(ctx: MyContext, isEdit: boolean = false, page: number = 1) {
+    const pageSize = 3;
+    const totalOrders = await Order.countDocuments({ telegramChatId: ctx.chat!.id });
+
+    if (totalOrders === 0) {
+      const emptyMsg = `⏳ *Games Status History*\n═════════════════════════\n\n📜 _No top-up orders found yet._\n\nTo place your first order, select a game from *🎮 Game List*!`;
+      if (isEdit) {
+        return await safeEditMessageText(ctx, emptyMsg);
+      }
+      return await safeReply(ctx, emptyMsg);
+    }
+
+    const totalPages = Math.max(1, Math.ceil(totalOrders / pageSize));
+    const currentPage = Math.min(Math.max(1, page), totalPages);
+
+    const orders = await Order.find({ telegramChatId: ctx.chat!.id })
+      .sort({ createdAt: -1 })
+      .skip((currentPage - 1) * pageSize)
+      .limit(pageSize);
+
+    let msg = `⏳ *Games Status History*\n` +
+      `📄 Page ${currentPage} of ${totalPages}\n` +
+      `═════════════════════════\n\n`;
+
+    const startIndex = (currentPage - 1) * pageSize;
+    orders.forEach((o, i) => {
+      const orderNumber = startIndex + i + 1;
+      msg += formatOrderTreeNode(o, orderNumber) + '\n';
+      if (i < orders.length - 1) {
+        msg += `─────────────────────────\n\n`;
+      }
     });
 
-    msg += `━━━━━━━━━━━━━━━━━━━━`;
+    const showingEnd = Math.min(startIndex + pageSize, totalOrders);
+    msg += `═════════════════════════\n` +
+      `📊 Showing ${startIndex + 1}-${showingEnd} of ${totalOrders} total orders`;
 
-    const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('🔄 Refresh Status', 'refresh_order_history')]
+    const buttonRows: any[] = [];
+    const navRow: any[] = [];
+
+    if (currentPage > 1) {
+      navRow.push(Markup.button.callback('◀️ Prev', `order_page_${currentPage - 1}`));
+    }
+    navRow.push(Markup.button.callback(`📄 ${currentPage}/${totalPages}`, 'noop_page_indicator'));
+    if (currentPage < totalPages) {
+      navRow.push(Markup.button.callback('Next ▶️', `order_page_${currentPage + 1}`));
+    }
+
+    if (navRow.length > 0) {
+      buttonRows.push(navRow);
+    }
+
+    buttonRows.push([
+      Markup.button.callback('🔄 Refresh', `order_page_${currentPage}`)
     ]);
+
+    const keyboard = Markup.inlineKeyboard(buttonRows);
 
     if (isEdit) {
       return await safeEditMessageText(ctx, msg, keyboard);
@@ -1123,17 +1230,27 @@ export function setupBot(
     return await safeReply(ctx, msg, keyboard);
   }
 
+  bot.action(/^order_page_(\d+)$/, async (ctx) => {
+    const page = parseInt(ctx.match[1], 10) || 1;
+    await ctx.answerCbQuery();
+    return await renderOrderHistory(ctx, true, page);
+  });
+
+  bot.action('noop_page_indicator', async (ctx) => {
+    await ctx.answerCbQuery();
+  });
+
   bot.hears(['📜 Order History', 'Order History', 'Orders', 'orders', '📜 Orders'], async (ctx) => {
-    return await renderOrderHistory(ctx);
+    return await renderOrderHistory(ctx, false, 1);
   });
 
   bot.command(['orders', 'history', 'orderhistory'], async (ctx) => {
-    return await renderOrderHistory(ctx);
+    return await renderOrderHistory(ctx, false, 1);
   });
 
   bot.action('refresh_order_history', async (ctx) => {
     await ctx.answerCbQuery('Refreshing order history...');
-    return await renderOrderHistory(ctx, true);
+    return await renderOrderHistory(ctx, true, 1);
   });
 
   bot.hears('🎮 Game List', async (ctx) => {
@@ -1308,6 +1425,26 @@ export function setupBot(
     }
   });
 
+  // Photo upload handler for Payment Proof / Slip
+  bot.on('photo', async (ctx, next) => {
+    if (ctx.session?.step === 'INPUT_TOPUP_PHOTO') {
+      const amount = ctx.session.topupAmount || 0;
+      if (amount <= 0) {
+        ctx.session = {};
+        return safeReply(ctx, '❌ Top-up session expired. Please start again from menu.', mainMenu);
+      }
+
+      const photos = ctx.message.photo;
+      const largestPhoto = photos[photos.length - 1];
+      const photoFileId = largestPhoto.file_id;
+      const note = ctx.message.caption || '';
+
+      return await submitTopupRequest(ctx, amount, note, photoFileId);
+    }
+
+    return next();
+  });
+
   bot.on('text', async (ctx, next) => {
     const userInput = ctx.message.text.trim();
 
@@ -1325,28 +1462,31 @@ export function setupBot(
       }
 
       ctx.session.topupAmount = parsedAmount;
-      ctx.session.step = 'INPUT_TOPUP_NOTE';
+      ctx.session.step = 'INPUT_TOPUP_PHOTO';
 
-      const promptMsg = `💰 *Selected Amount:* \`$${parsedAmount.toFixed(2)} USD\`\n\n` +
-        `📝 ကျေးဇူးပြု၍ Payment Reference / Transaction No. သို့မဟုတ် Note (ဥပမာ: \`KPay Ref: 123456\` သို့မဟုတ် \`KBZPay\`) ရိုက်ထည့်ပေးပါ:\n\n` +
-        `_Note မထည့်လိုပါက အောက်ပါ Skip ခလုတ်ကို နှိပ်ပါ:_`;
+      const promptMsg = `💰 *Selected Top-Up Amount:* \`$${parsedAmount.toFixed(2)} USD\`\n\n` +
+        `📸 *Payment Slip Screenshot (ငွေလွှဲပြေစာ ပုံ ပို့ပေးပါ)*\n` +
+        `ငွေဖြည့်သွင်းမှု အတည်ပြုရန်အတွက် ငွေလွှဲပြေစာ Screenshot (ဓာတ်ပုံ) ကို ပေးပို့ပေးပါ:\n` +
+        `💡 _(ဓာတ်ပုံနှင့်အတူ Caption ဖြင့် KPay Ref သို့မဟုတ် Note ရေးထည့်နိုင်ပါသည်)_\n\n` +
+        `⚠️ *ငွေလွှဲပြေစာ ဓာတ်ပုံမပါဘဲ ငွေဖြည့်သွင်းခွင့် တင်၍မရပါ။*`;
 
       const keyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('⏩ Skip Note & Submit (တန်းတင်မည်)', `topup_skip_note_${parsedAmount}`)],
         [Markup.button.callback('❌ Cancel', 'cancel_topup')]
       ]);
 
       return safeReply(ctx, promptMsg, keyboard);
     }
 
-    // Top-up flow: Note input
-    if (ctx.session?.step === 'INPUT_TOPUP_NOTE') {
+    // Top-up flow: User sent text when photo is required
+    if (ctx.session?.step === 'INPUT_TOPUP_PHOTO') {
       const amount = ctx.session.topupAmount || 0;
-      if (amount <= 0) {
-        ctx.session = {};
-        return safeReply(ctx, '❌ Top-up session expired. Please start again from menu.', mainMenu);
-      }
-      return await submitTopupRequest(ctx, amount, userInput);
+      return safeReply(
+        ctx,
+        `⚠️ *ငွေလွှဲပြေစာ Screenshot (ဓာတ်ပုံ) ပေးပို့ရန် လိုအပ်ပါသည်*\n\n` +
+        `ရွေးချယ်ထားသော ပမာဏ: \`$${amount.toFixed(2)} USD\`\n` +
+        `ငွေဖြည့်သွင်းမှု အတည်ပြုနိုင်ရန်အတွက် ငွေလွှဲထားသော ပြေစာပုံ Screenshot ကို Photo အနေဖြင့် ပေးပို့ပေးပါ (Photo Required).\n\n` +
+        `_မပြုလုပ်လိုပါက /cancel ဟု ပို့နိုင်ပါသည်။_`
+      );
     }
 
     // Order flow: Required extra info input
@@ -1406,46 +1546,71 @@ export function setupBot(
       }
     }
 
-    let extraDetails = '';
-    for (const [key, val] of Object.entries(extraInfo)) {
-      extraDetails += `• *${key.toUpperCase()}:* \`${val}\`\n`;
-    }
+    let playerId = '';
+    let serverId = '';
+    const otherDetails: { key: string; val: string }[] = [];
 
-    if (playerName) {
-      extraDetails += `• *PLAYER NAME (IGN):* \`${playerName}\` 🎯\n`;
+    for (const [key, val] of Object.entries(extraInfo)) {
+      const lk = key.toLowerCase();
+      if (!playerId && (lk === 'uid' || lk === 'userid' || lk === 'user_id' || lk === 'player_id' || lk === 'account_id')) {
+        playerId = String(val);
+      } else if (!serverId && (lk === 'zoneid' || lk === 'zone_id' || lk === 'server' || lk === 'server_id' || lk === 'serverid')) {
+        serverId = String(val);
+      } else if (!playerName && (lk === 'player_name' || lk === 'role_name' || lk === 'nickname' || lk === 'playername')) {
+        playerName = String(val);
+      } else {
+        otherDetails.push({ key: key.toUpperCase(), val: String(val) });
+      }
     }
 
     const balanceAfter = userBalance - price;
 
-    let msg = `📋 *Order Review & Confirmation*\n\n` +
-      `🎮 *Game:* ${gameName}\n` +
-      `🛍 *Product:* ${skuName}\n` +
-      `💰 *Price (သုံးငွေ):* \`$${price.toFixed(2)} USD\`\n\n` +
-      `👤 *Top-Up Account Details:*\n${extraDetails}\n`;
+    if (!isApiLinked && userBalance < price) {
+      const needed = (price - userBalance).toFixed(2);
+      const failMsg = `⚠️ *Insufficient Balance!*\n═════════════════════════\n` +
+        `├── 🎮 Game: *${escapeMd(gameName)}*\n` +
+        `├── 📦 Package: *${escapeMd(skuName)}*\n` +
+        `├── 💰 Required: \`$${price.toFixed(3)}\`\n` +
+        `└── 💳 Your Balance: \`$${userBalance.toFixed(3)}\`\n` +
+        `═════════════════════════\n` +
+        `_You need $${needed} USD more to place this order._`;
 
-    if (isApiLinked) {
-      msg += `⚡ *Payment Source:* \`Direct API Balance Linked (VIP Direct)\`\n` +
-        `💳 *Wallet Mode:* \`Live API Funds (Direct Execution)\`\n` +
-        `🚀 *Order Processing:* Live API Dispatch\n\n`;
-    } else {
-      msg += `💳 *Your Wallet Balance:* \`$${userBalance.toFixed(2)} USD\`\n` +
-        `💵 *Order Cost (သုံးငွေ):* \`$${price.toFixed(2)} USD\`\n` +
-        `💰 *Remaining After Order (ကျန်ငွေ):* \`$${balanceAfter.toFixed(2)} USD\`\n\n`;
-
-      if (userBalance < price) {
-        msg += `⚠️ *Insufficient Balance!* You need \`$${(price - userBalance).toFixed(2)} USD\` more to place this order.`;
-        return ctx.reply(msg, {
-          parse_mode: 'Markdown',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('❌ Cancel', 'cancel_order')]
-          ])
-        });
-      }
+      return ctx.reply(failMsg, {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('💰 Top Up Balance', 'topup_flow_start')],
+          [Markup.button.callback('❌ Cancel', 'cancel_order')]
+        ])
+      });
     }
 
-    msg += `Please confirm if you would like to place this top-up order now:`;
+    const lines: string[] = [];
+    lines.push(`🛒 *Confirm Top-Up Order*`);
+    lines.push(`═════════════════════════`);
+    lines.push(`├── 🎮 Game: *${escapeMd(gameName)}*`);
+    lines.push(`├── 📦 Package: *${escapeMd(skuName)}*`);
+    if (playerName) {
+      lines.push(`├── 👤 Player: \`${escapeCode(playerName)}\``);
+    }
+    if (playerId) {
+      lines.push(`├── 🎯 Player ID: \`${escapeCode(playerId)}\``);
+    }
+    if (serverId) {
+      lines.push(`├── 🌐 Server ID: \`${escapeCode(serverId)}\``);
+    }
+    for (const item of otherDetails) {
+      lines.push(`├── ▫️ ${escapeMd(item.key)}: \`${escapeCode(item.val)}\``);
+    }
+    lines.push(`├── 💰 Price: \`$${price.toFixed(3)}\``);
+    if (isApiLinked) {
+      lines.push(`└── 💳 Payment: \`⚡ Direct API Balance Linked\``);
+    } else {
+      lines.push(`├── 💳 Payment: \`Wallet Balance ($${userBalance.toFixed(2)})\``);
+      lines.push(`└── 💵 Remaining After: \`$${balanceAfter.toFixed(2)}\``);
+    }
+    lines.push(`═════════════════════════`);
 
-    return ctx.reply(msg, {
+    return ctx.reply(lines.join('\n'), {
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([
         [Markup.button.callback(`✅ Confirm & Pay ($${price.toFixed(2)})`, 'confirm_place_order')],
@@ -1468,7 +1633,7 @@ export function setupBot(
     const skuId = ctx.session.skuId!;
     const gameName = ctx.session.gameName || 'Game';
     const skuName = ctx.session.skuName || 'Product';
-    const playerName = ctx.session.playerName || undefined;
+    let playerName = ctx.session.playerName || undefined;
     const extraInfo = ctx.session.extraInfo || {};
     
     const userDoc = await User.findOne({ telegramChatId: ctx.chat!.id });
@@ -1518,53 +1683,67 @@ export function setupBot(
 
         const statusKeyboard = Markup.inlineKeyboard([
           [
-            Markup.button.callback('🔄 Check Live API Status', `track_order_${referenceId}`),
+            Markup.button.callback('🔄 Check Live Status', `track_order_${referenceId}`),
             Markup.button.callback('📜 Order History', 'view_orders_action')
           ]
         ]);
 
-        let extraDetailsText = '';
-        if (extraInfo && Object.keys(extraInfo).length > 0) {
+        let playerId = '';
+        let serverId = '';
+        const otherDetails: { key: string; val: string }[] = [];
+
+        if (extraInfo && typeof extraInfo === 'object') {
           for (const [k, v] of Object.entries(extraInfo)) {
-            extraDetailsText += `   ▫️ *${escapeMd(k.toUpperCase())}:* \`${escapeCode(v)}\`\n`;
+            if (k === 'paymentSource') continue;
+            const lk = k.toLowerCase();
+            if (!playerId && (lk === 'uid' || lk === 'userid' || lk === 'user_id' || lk === 'player_id' || lk === 'account_id')) {
+              playerId = String(v);
+            } else if (!serverId && (lk === 'zoneid' || lk === 'zone_id' || lk === 'server' || lk === 'server_id' || lk === 'serverid')) {
+              serverId = String(v);
+            } else if (!playerName && (lk === 'player_name' || lk === 'role_name' || lk === 'nickname' || lk === 'playername')) {
+              playerName = String(v);
+            } else {
+              otherDetails.push({ key: k.toUpperCase(), val: String(v) });
+            }
           }
         }
 
         const safeGame = escapeMd(gameName);
         const safeSku = escapeMd(skuName);
 
-        let apiLiveBalance = '';
-        if (isApiLinked) {
-          try {
-            const asset = await lootbar.queryAsset();
-            apiLiveBalance = asset?.data?.total_amount || asset?.data?.balance || '';
-          } catch {}
+        const lines: string[] = [];
+        lines.push(`✅ *Top-Up Order Submitted!*`);
+        lines.push(`═════════════════════════`);
+        lines.push(`├── 🆔 Order ID: \`${orderId}\``);
+        lines.push(`├── 🎮 Game: *${safeGame}*`);
+        lines.push(`├── 📦 Package: *${safeSku}*`);
+        if (playerName) {
+          lines.push(`├── 👤 Player: \`${escapeCode(playerName)}\``);
         }
+        if (playerId) {
+          lines.push(`├── 🎯 Player ID: \`${escapeCode(playerId)}\``);
+        }
+        if (serverId) {
+          lines.push(`├── 🌐 Server ID: \`${escapeCode(serverId)}\``);
+        }
+        for (const item of otherDetails) {
+          lines.push(`├── ▫️ ${escapeMd(item.key)}: \`${escapeCode(item.val)}\``);
+        }
+        lines.push(`├── 🔄 Status: *PROCESSING*`);
+        lines.push(`├── 💬 Message: _Order accepted by LootBar API_`);
+        lines.push(`├── 💰 Price: \`$${orderCost.toFixed(3)}\``);
+        if (!isApiLinked) {
+          lines.push(`└── 💳 Remaining Balance: \`$${userDoc.balance.toFixed(2)}\``);
+        } else {
+          lines.push(`└── 💳 Payment: \`⚡ Direct API Balance Linked\``);
+        }
+        lines.push(`═════════════════════════`);
 
-        const successMsg = `✅ *Top-Up Order Dispatched to API!*\n\n` +
-          `🎮 *Game:* ${safeGame}\n` +
-          `🛍 *Product:* ${safeSku}\n` +
-          (playerName ? `🎯 *Player Name (IGN):* \`${escapeCode(playerName)}\`\n` : '') +
-          (extraDetailsText ? `👤 *Account Info:*\n${extraDetailsText}` : '') +
-          `\n━━━━━━━━━━━━━━━━━━━━\n` +
-          `💵 *Wallet သုံးငွေ (Amount Paid):* \`$${orderCost.toFixed(2)} USD\`\n` +
-          (isApiLinked 
-            ? (apiLiveBalance ? `💰 *API Wallet ကျန်ငွေ (Remaining):* \`$${apiLiveBalance} USD\`\n` : `💰 *API Wallet:* \`Live Connected\`\n`)
-            : `💰 *Wallet ကျန်ငွေ (Remaining Balance):* \`$${userDoc.balance.toFixed(2)} USD\`\n`
-          ) +
-          `💳 *Payment Source:* \`${isApiLinked ? '⚡ Direct API Balance Linked' : 'Wallet Balance'}\`\n` +
-          `━━━━━━━━━━━━━━━━━━━━\n` +
-          `🔖 *Reference ID:* \`${referenceId}\`\n` +
-          `🆔 *LootBar Order ID:* \`${orderId}\`\n\n` +
-          `📊 *Real-Time API Status:*\n` +
-          `• ⏳ *Stage:* \`Processing (In Transaction)\`\n` +
-          `• 📡 *LootBar Response:* \`State 1 - Order Accepted & Transacting\`\n` +
-          `• ⏱ *Delivery:* Usually delivers in 15 seconds – 2 minutes.\n\n` +
-          `_You can tap below anytime to check live delivery status:_`;
+        const successMsg = lines.join('\n');
 
         await safeReply(ctx, successMsg, statusKeyboard);
         
-        // Notify Admins
+        // Notify Owner ONLY (No broadcast to other users)
         const currentAdminIdForNotify = await getAdminChatId(adminChatId);
         const fromUser = ctx.from?.username 
           ? `@${ctx.from.username}` 
@@ -1575,30 +1754,21 @@ export function setupBot(
               : 'User';
 
         const safeFromUser = escapeMd(fromUser);
-        const safeDetails = escapeCode(JSON.stringify(extraInfo));
 
-        const notificationMsg = `🔔 *New Top-up Order Received!*\n\n` +
-          `👤 *User:* \`${ctx.chat!.id}\` (${safeFromUser})\n` +
-          `🎮 *Game:* ${safeGame}\n` +
-          `🛍 *Product:* ${safeSku} ($${orderCost.toFixed(2)})\n` +
-          `💳 *Payment:* ${isApiLinked ? '⚡ Direct API Balance Linked' : `Wallet Balance ($${orderCost.toFixed(2)})`}\n` +
-          (playerName ? `🎯 *Player Name:* \`${escapeCode(playerName)}\`\n` : '') +
-          `🔖 *Ref ID:* \`${referenceId}\`\n` +
-          `🆔 *LootBar ID:* \`${orderId}\`\n` +
-          `📋 *Details:* \`${safeDetails}\``;
+        const adminOrderNotificationMsg = `🔔 *New Top-Up Order Received!*\n` +
+          `═════════════════════════\n` +
+          `├── 👤 User: \`${ctx.chat!.id}\` (${safeFromUser})\n` +
+          `├── 🎮 Game: *${safeGame}*\n` +
+          `├── 📦 Package: *${safeSku}*\n` +
+          `├── 💰 Price: \`$${orderCost.toFixed(2)} USD\`\n` +
+          (playerName ? `├── 🎯 Player: \`${escapeCode(playerName)}\`\n` : '') +
+          (playerId ? `├── 🎯 Player ID: \`${escapeCode(playerId)}\`\n` : '') +
+          `├── 💳 Payment: \`${isApiLinked ? 'Direct API Linked' : 'Wallet Balance'}\`\n` +
+          `└── 🆔 Order ID: \`${orderId}\`\n` +
+          `═════════════════════════`;
         
         if (currentAdminIdForNotify) {
-          await safeSendMessage(bot.telegram, currentAdminIdForNotify, notificationMsg);
-        }
-
-        try {
-          const notifyUsers = await User.find({ receivesNotifications: true });
-          for (const u of notifyUsers) {
-            if (String(u.telegramChatId) === currentAdminIdForNotify) continue;
-            await safeSendMessage(bot.telegram, u.telegramChatId, notificationMsg);
-          }
-        } catch (dbErr) {
-           console.error('Failed to fetch notification users:', dbErr);
+          await safeSendMessage(bot.telegram, currentAdminIdForNotify, adminOrderNotificationMsg);
         }
 
         // Background poller to check if order completes
@@ -1610,12 +1780,14 @@ export function setupBot(
               await safeSendMessage(
                 bot.telegram, 
                 ctx.chat!.id, 
-                `🎉 *Top-Up Completed!*\n\n` +
-                `🎮 *Game:* ${safeGame}\n` +
-                `🛍 *Product:* ${safeSku}\n` +
-                (playerName ? `🎯 *Player:* \`${escapeCode(playerName)}\`\n` : '') +
-                `🔖 *Ref ID:* \`${referenceId}\`\n\n` +
-                `✅ Your order has been successfully fulfilled by the game server!`
+                `🎉 *Top-Up Completed!*\n═════════════════════════\n` +
+                `├── 🆔 Order ID: \`${orderId}\`\n` +
+                `├── 🎮 Game: *${safeGame}*\n` +
+                `├── 📦 Package: *${safeSku}*\n` +
+                (playerName ? `├── 👤 Player: \`${escapeCode(playerName)}\`\n` : '') +
+                `├── ✅ Status: *COMPLETED*\n` +
+                `└── 💬 Message: _Fulfilled successfully on game server_\n` +
+                `═════════════════════════`
               );
             } else if (queryRes?.data?.state === 3) {
               // Order failed, refund balance
@@ -1630,7 +1802,12 @@ export function setupBot(
               await safeSendMessage(
                 bot.telegram, 
                 ctx.chat!.id, 
-                `❌ *Order Failed*\n\nOrder \`${referenceId}\` could not be completed on game server.${!isApiLinked ? ` Your wallet balance has been refunded ($${orderCost.toFixed(2)} USD).` : ''}`
+                `❌ *Order Failed*\n═════════════════════════\n` +
+                `├── 🆔 Order ID: \`${orderId || referenceId}\`\n` +
+                `├── 🎮 Game: *${safeGame}*\n` +
+                `├── ❌ Status: *FAILED*\n` +
+                `└── 💬 Message: _Could not be fulfilled on game server_${!isApiLinked ? ` (Refunded $${orderCost.toFixed(2)} USD)` : ''}\n` +
+                `═════════════════════════`
               );
             }
           } catch (pollErr) {
@@ -1683,42 +1860,68 @@ export function setupBot(
         }
       }
 
-      const stateMap: Record<number, { text: string; emoji: string; desc: string }> = {
-        0: { text: 'Pending', emoji: '⏳', desc: 'Order initialized, waiting to process' },
-        1: { text: 'Processing (In Transaction)', emoji: '🔄', desc: 'LootBar API is actively delivering top-up to player account' },
-        4: { text: 'Settling (Processing)', emoji: '⚡', desc: 'Transaction in final settlement stage' },
-        2: { text: 'Completed (Success)', emoji: '✅', desc: 'Top-up has been successfully fulfilled and credited to player account!' },
-        3: { text: 'Failed', emoji: '❌', desc: 'Transaction failed on game server. Balance has been refunded.' },
-        5: { text: 'Partial', emoji: '⚠️', desc: 'Order was partially fulfilled' },
-        6: { text: 'Cancelled', emoji: '🚫', desc: 'Order was cancelled' }
+      const stateMap: Record<number, { statusText: string; icon: string; message: string }> = {
+        0: { statusText: 'PENDING', icon: '⏳', message: 'Order created, awaiting transaction' },
+        1: { statusText: 'PROCESSING', icon: '🔄', message: 'LootBar API delivering top-up' },
+        2: { statusText: 'COMPLETED', icon: '✅', message: 'Order completed successfully' },
+        3: { statusText: 'FAILED', icon: '❌', message: 'Order failed on game server (Refunded)' },
+        4: { statusText: 'SETTLING', icon: '⚡', message: 'Transaction in settlement stage' },
+        5: { statusText: 'PARTIAL', icon: '⚠️', message: 'Order partially fulfilled' },
+        6: { statusText: 'CANCELLED', icon: '🚫', message: 'Order was cancelled' }
       };
 
-      const currentStatus = stateMap[state] || { text: 'Processing', emoji: '⏳', desc: 'In Progress' };
+      const status = stateMap[state] || { statusText: 'PROCESSING', icon: '⏳', message: 'In progress' };
       const checkedAt = new Date().toLocaleTimeString();
 
-      let extraDetails = '';
-      if (order?.extraInfo && Object.keys(order.extraInfo).length > 0) {
+      let playerName = order?.playerName || '';
+      let playerId = '';
+      let serverId = '';
+      const otherDetails: { key: string; val: string }[] = [];
+
+      if (order?.extraInfo && typeof order.extraInfo === 'object') {
         for (const [k, v] of Object.entries(order.extraInfo)) {
-          extraDetails += `   ▫️ *${k.toUpperCase()}:* \`${v}\`\n`;
+          if (k === 'paymentSource') continue;
+          const lk = k.toLowerCase();
+          if (!playerId && (lk === 'uid' || lk === 'userid' || lk === 'user_id' || lk === 'player_id' || lk === 'account_id')) {
+            playerId = String(v);
+          } else if (!serverId && (lk === 'zoneid' || lk === 'zone_id' || lk === 'server' || lk === 'server_id' || lk === 'serverid')) {
+            serverId = String(v);
+          } else if (!playerName && (lk === 'player_name' || lk === 'role_name' || lk === 'nickname' || lk === 'playername')) {
+            playerName = String(v);
+          } else {
+            otherDetails.push({ key: k.toUpperCase(), val: String(v) });
+          }
         }
       }
 
       const safeGameName = escapeMd(order?.gameName || 'Game');
-      const safeSkuName = escapeMd(order?.skuName || 'Top-up Package');
+      const safeSkuName = escapeMd(order?.skuName || 'Package');
 
-      const updateMsg = `📡 *Live Order Status Report*\n\n` +
-        `🎮 *Game:* ${safeGameName}\n` +
-        `🛍 *Product:* ${safeSkuName}\n` +
-        (order?.playerName ? `🎯 *Player Name (IGN):* \`${escapeCode(order.playerName)}\`\n` : '') +
-        (extraDetails ? `👤 *Account Info:*\n${extraDetails}` : '') +
-        `💰 *Amount Paid:* \`$${Number(order?.price || 0).toFixed(2)} USD\`\n` +
-        `🔖 *Reference ID:* \`${referenceId}\`\n` +
-        (orderId ? `🆔 *LootBar ID:* \`${orderId}\`\n` : '') +
-        `\n━━━━━━━━━━━━━━━━━━━━\n` +
-        `📊 *Current API Status:* ${currentStatus.emoji} *${currentStatus.text}*\n` +
-        `📝 *Status Note:* ${currentStatus.desc}\n` +
-        `🕒 *Last Checked:* \`${checkedAt}\`\n` +
-        `━━━━━━━━━━━━━━━━━━━━`;
+      const lines: string[] = [];
+      lines.push(`📡 *Live Order Status*`);
+      lines.push(`═════════════════════════`);
+      lines.push(`├── 🆔 Order ID: \`${orderId || referenceId}\``);
+      lines.push(`├── 🎮 Game: *${safeGameName}*`);
+      lines.push(`├── 📦 Package: *${safeSkuName}*`);
+      if (playerName) {
+        lines.push(`├── 👤 Player: \`${escapeCode(playerName)}\``);
+      }
+      if (playerId) {
+        lines.push(`├── 🎯 Player ID: \`${escapeCode(playerId)}\``);
+      }
+      if (serverId) {
+        lines.push(`├── 🌐 Server ID: \`${escapeCode(serverId)}\``);
+      }
+      for (const item of otherDetails) {
+        lines.push(`├── ▫️ ${escapeMd(item.key)}: \`${escapeCode(item.val)}\``);
+      }
+      lines.push(`├── ${status.icon} Status: *${status.statusText}*`);
+      lines.push(`├── 💬 Message: _${escapeMd(status.message)}_`);
+      lines.push(`├── 💰 Price: \`$${Number(order?.price || 0).toFixed(3)}\``);
+      lines.push(`└── 🕒 Checked At: \`${checkedAt}\``);
+      lines.push(`═════════════════════════`);
+
+      const updateMsg = lines.join('\n');
 
       const keyboard = Markup.inlineKeyboard([
         [
