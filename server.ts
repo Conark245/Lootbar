@@ -9,12 +9,13 @@ import { SavedGame } from "./server/models/SavedGame";
 import { Order } from "./server/models/Order";
 import { AppConfig } from "./server/models/AppConfig";
 import { User } from "./server/models/User";
+import { TopupRequest } from "./server/models/TopupRequest";
 import { createServer as createViteServer } from "vite";
 
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(cors());
 app.get('/favicon.ico', (req, res) => res.status(204).end());
@@ -48,10 +49,21 @@ const lootbarClient = new LootBarClient(LOOTBAR_NICKNAME, LOOTBAR_EMAIL, LOOTBAR
 // Initialize Telegram Bot if Token is present
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
+const isServerless = !!process.env.VERCEL || process.env.IS_SERVERLESS === 'true';
+const webhookUrl = process.env.TELEGRAM_WEBHOOK_URL;
 
 let telegramBot: ReturnType<typeof setupBot> | undefined;
 if (BOT_TOKEN && BOT_TOKEN !== 'YOUR_BOT_TOKEN_HERE') {
-  telegramBot = setupBot(BOT_TOKEN, ADMIN_CHAT_ID, lootbarClient);
+  telegramBot = setupBot(BOT_TOKEN, ADMIN_CHAT_ID, lootbarClient, {
+    isServerless,
+    webhookUrl
+  });
+
+  // Mount Telegram webhook handler strictly on its dedicated route
+  if (isServerless || webhookUrl) {
+    app.use('/api/telegram-webhook', telegramBot.webhookCallback('/api/telegram-webhook'));
+    app.use('/telegram-webhook', telegramBot.webhookCallback('/telegram-webhook'));
+  }
 } else {
   console.warn("TELEGRAM_BOT_TOKEN is missing or invalid. Bot will not start.");
 }
@@ -302,6 +314,85 @@ app.post("/api/telegram-users/toggle-notifications", async (req, res) => {
   }
 });
 
+// Top-up Requests Management API
+app.get("/api/topup-requests", async (req, res) => {
+  try {
+    const requests = await TopupRequest.find({}).sort({ createdAt: -1 }).limit(100);
+    res.json({ success: true, data: requests });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/topup-requests/:requestId/approve", async (req, res) => {
+  const { requestId } = req.params;
+  const { processedBy } = req.body;
+  try {
+    const request = await TopupRequest.findOne({ requestId });
+    if (!request) return res.status(404).json({ error: "Top-up request not found" });
+    if (request.status !== 'pending') return res.status(400).json({ error: `Request already ${request.status}` });
+
+    request.status = 'approved';
+    request.processedBy = processedBy || 'Admin Web';
+    request.processedAt = new Date();
+    await request.save();
+
+    const user = await User.findOneAndUpdate(
+      { telegramChatId: request.telegramChatId },
+      { $inc: { balance: request.amount } },
+      { new: true }
+    );
+
+    if (telegramBot) {
+      try {
+        const userSuccessMsg = `🎉 *Balance Top-Up Approved!*\n\n` +
+          `💰 *Added Amount:* \`+$${request.amount.toFixed(2)} USD\`\n` +
+          `💳 *New Wallet Balance:* \`$${Number(user?.balance || 0).toFixed(2)} USD\`\n` +
+          `🆔 *Request ID:* \`${requestId}\`\n\n` +
+          `သင့် Wallet ထဲသို့ ငွေဖြည့်သွင်းခြင်း အောင်မြင်ပါပြီ။`;
+        await telegramBot.telegram.sendMessage(request.telegramChatId, userSuccessMsg, { parse_mode: 'Markdown' });
+      } catch (e) {
+        console.error(`Failed to notify user ${request.telegramChatId}:`, e);
+      }
+    }
+
+    res.json({ success: true, data: request, user });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/topup-requests/:requestId/reject", async (req, res) => {
+  const { requestId } = req.params;
+  const { processedBy } = req.body;
+  try {
+    const request = await TopupRequest.findOne({ requestId });
+    if (!request) return res.status(404).json({ error: "Top-up request not found" });
+    if (request.status !== 'pending') return res.status(400).json({ error: `Request already ${request.status}` });
+
+    request.status = 'rejected';
+    request.processedBy = processedBy || 'Admin Web';
+    request.processedAt = new Date();
+    await request.save();
+
+    if (telegramBot) {
+      try {
+        const userRejectMsg = `❌ *Top-Up Request Declined*\n\n` +
+          `💰 *Requested Amount:* \`$${request.amount.toFixed(2)} USD\`\n` +
+          `🆔 *Request ID:* \`${requestId}\`\n\n` +
+          `သင့် ငွေဖြည့်သွင်းမှု တောင်းဆိုချက်ကို Admin မှ ပယ်ဖျက်လိုက်ပါသည်။`;
+        await telegramBot.telegram.sendMessage(request.telegramChatId, userRejectMsg, { parse_mode: 'Markdown' });
+      } catch (e) {
+        console.error(`Failed to notify user ${request.telegramChatId}:`, e);
+      }
+    }
+
+    res.json({ success: true, data: request });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/games", async (req, res) => {
   try {
     if (!lootbarClient.isConfigured()) {
@@ -427,12 +518,13 @@ setInterval(syncActiveOrders, 8000);
 
 app.get("/api/orders", async (req, res) => {
   try {
-    // Perform a quick sync check on active orders before returning
-    await syncActiveOrders();
     const orders = await Order.find().sort({ createdAt: -1 }).limit(100);
+    res.setHeader('Content-Type', 'application/json');
     res.json({ success: true, data: orders });
+    // Trigger sync in background non-blocking
+    syncActiveOrders().catch(() => {});
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ success: false, data: [], error: err.message });
   }
 });
 
@@ -668,4 +760,9 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
+export { app, startServer };

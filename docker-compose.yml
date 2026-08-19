@@ -1,0 +1,21 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: game_topup_bot
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - MONGODB_URI=${MONGODB_URI}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - ADMIN_CHAT_ID=${ADMIN_CHAT_ID}
+      - LOOTBAR_NICKNAME=${LOOTBAR_NICKNAME}
+      - LOOTBAR_EMAIL=${LOOTBAR_EMAIL}
+      - LOOTBAR_PASSWORD=${LOOTBAR_PASSWORD}
+      - APP_URL=${APP_URL}
+    env_file:
+      - .env

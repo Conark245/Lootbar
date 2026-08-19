@@ -6,6 +6,7 @@ import { User } from './models/User';
 import { Session } from './models/Session';
 import { AppConfig } from './models/AppConfig';
 import { SavedGame } from './models/SavedGame';
+import { TopupRequest } from './models/TopupRequest';
 
 // Helper to escape text for Telegram Markdown v1
 export function escapeMd(str: any): string {
@@ -88,13 +89,20 @@ interface SessionData {
   requiredFields?: any[];
   currentFieldIndex?: number;
   extraInfo?: Record<string, string>;
+  topupAmount?: number;
+  topupNote?: string;
 }
 
 export interface MyContext extends Context {
   session: SessionData;
 }
 
-export function setupBot(botToken: string, adminChatId: string | undefined, lootbar: LootBarClient) {
+export function setupBot(
+  botToken: string, 
+  adminChatId: string | undefined, 
+  lootbar: LootBarClient,
+  options: { isServerless?: boolean; webhookUrl?: string } = {}
+) {
   const bot = new Telegraf<MyContext>(botToken);
   
   // Global bot error handler to prevent crashing or unhandled rejections
@@ -228,7 +236,8 @@ export function setupBot(botToken: string, adminChatId: string | undefined, loot
 
   const mainMenu = Markup.keyboard([
     ['🎮 Game List'],
-    ['👤 My Account', '📜 Order History']
+    ['👤 My Account', '💰 Request Top-Up'],
+    ['📜 Order History']
   ]).resize();
 
   bot.command('start', async (ctx) => {
@@ -475,8 +484,8 @@ export function setupBot(botToken: string, adminChatId: string | undefined, loot
     const inputKey = match[1].toLowerCase();
     const rawArgs = match[2] ? match[2].trim().split(/\s+/) : [];
 
-    // Skip reserved commands like /start, /cancel, /auth, /unauth, /users, /addbalance, /orders, /balance, /games, /account, /profile, /wallet
-    const reservedCommands = ['start', 'cancel', 'auth', 'unauth', 'users', 'addbalance', 'orders', 'balance', 'games', 'help', 'account', 'profile', 'wallet', 'myaccount', 'mywallet', 'mybalance'];
+    // Skip reserved commands like /start, /cancel, /auth, /unauth, /users, /addbalance, /orders, /balance, /games, /account, /profile, /wallet, /topup, /deposit
+    const reservedCommands = ['start', 'cancel', 'auth', 'unauth', 'users', 'addbalance', 'orders', 'balance', 'games', 'help', 'account', 'profile', 'wallet', 'myaccount', 'mywallet', 'mybalance', 'topup', 'deposit', 'requesttopup', 'requestbalance', 'addmoney'];
     if (reservedCommands.includes(inputKey)) {
       return next();
     }
@@ -653,6 +662,107 @@ export function setupBot(botToken: string, adminChatId: string | undefined, loot
     await ctx.editMessageText(`❌ User ${targetId} request rejected.`);
   });
 
+  // Admin Action: Approve Balance Top-Up Request
+  bot.action(/^topup_approve_(TR-[A-Z0-9]+)$/, async (ctx) => {
+    const currentAdminId = await getAdminChatId(adminChatId);
+    const clickerChatId = String(ctx.chat?.id || ctx.from?.id);
+    const clickerUser = await User.findOne({ telegramChatId: Number(clickerChatId) });
+
+    if (clickerChatId !== currentAdminId && !clickerUser?.receivesNotifications) {
+      return ctx.answerCbQuery('🚫 Unauthorized', { show_alert: true });
+    }
+
+    const requestId = ctx.match[1];
+    const topupReq = await TopupRequest.findOne({ requestId });
+
+    if (!topupReq) {
+      return ctx.answerCbQuery('⚠️ Top-up request not found.', { show_alert: true });
+    }
+
+    if (topupReq.status !== 'pending') {
+      return ctx.answerCbQuery(`ℹ️ This request was already ${topupReq.status}.`, { show_alert: true });
+    }
+
+    topupReq.status = 'approved';
+    topupReq.processedBy = clickerChatId;
+    topupReq.processedAt = new Date();
+    await topupReq.save();
+
+    // Increment user's wallet balance
+    const updatedUser = await User.findOneAndUpdate(
+      { telegramChatId: topupReq.telegramChatId },
+      { $inc: { balance: topupReq.amount } },
+      { new: true }
+    );
+
+    await ctx.answerCbQuery('✅ Top-up approved & balance added!');
+    await safeEditMessageText(
+      ctx,
+      `✅ *Top-Up Request Approved!*\n\n` +
+      `🆔 *Request ID:* \`${requestId}\`\n` +
+      `👤 *User:* \`${topupReq.telegramChatId}\`\n` +
+      `💵 *Amount Added:* \`+$${topupReq.amount.toFixed(2)} USD\`\n` +
+      `💳 *New Balance:* \`$${Number(updatedUser?.balance || 0).toFixed(2)} USD\`\n` +
+      `👤 *Approved by:* \`${clickerChatId}\`\n` +
+      `📅 *Time:* ${new Date().toLocaleString()}`
+    );
+
+    // Notify user in their Telegram chat
+    const userSuccessMsg = `🎉 *Balance Top-Up Approved!*\n\n` +
+      `💰 *Added Amount:* \`+$${topupReq.amount.toFixed(2)} USD\`\n` +
+      `💳 *New Wallet Balance:* \`$${Number(updatedUser?.balance || 0).toFixed(2)} USD\`\n` +
+      `🆔 *Request ID:* \`${requestId}\`\n\n` +
+      `သင့် Wallet ထဲသို့ ငွေဖြည့်သွင်းခြင်း အောင်မြင်ပါပြီ။ အော်ဒါများကို စတင်ဝယ်ယူနိုင်ပါပြီ။`;
+
+    await safeSendMessage(bot.telegram, topupReq.telegramChatId, userSuccessMsg, mainMenu);
+  });
+
+  // Admin Action: Reject Balance Top-Up Request
+  bot.action(/^topup_reject_(TR-[A-Z0-9]+)$/, async (ctx) => {
+    const currentAdminId = await getAdminChatId(adminChatId);
+    const clickerChatId = String(ctx.chat?.id || ctx.from?.id);
+    const clickerUser = await User.findOne({ telegramChatId: Number(clickerChatId) });
+
+    if (clickerChatId !== currentAdminId && !clickerUser?.receivesNotifications) {
+      return ctx.answerCbQuery('🚫 Unauthorized', { show_alert: true });
+    }
+
+    const requestId = ctx.match[1];
+    const topupReq = await TopupRequest.findOne({ requestId });
+
+    if (!topupReq) {
+      return ctx.answerCbQuery('⚠️ Top-up request not found.', { show_alert: true });
+    }
+
+    if (topupReq.status !== 'pending') {
+      return ctx.answerCbQuery(`ℹ️ This request was already ${topupReq.status}.`, { show_alert: true });
+    }
+
+    topupReq.status = 'rejected';
+    topupReq.processedBy = clickerChatId;
+    topupReq.processedAt = new Date();
+    await topupReq.save();
+
+    await ctx.answerCbQuery('❌ Top-up request rejected.');
+    await safeEditMessageText(
+      ctx,
+      `❌ *Top-Up Request Rejected*\n\n` +
+      `🆔 *Request ID:* \`${requestId}\`\n` +
+      `👤 *User:* \`${topupReq.telegramChatId}\`\n` +
+      `💵 *Amount:* \`$${topupReq.amount.toFixed(2)} USD\`\n` +
+      `👤 *Rejected by:* \`${clickerChatId}\`\n` +
+      `📅 *Time:* ${new Date().toLocaleString()}`
+    );
+
+    // Notify user
+    const userRejectMsg = `❌ *Top-Up Request Declined*\n\n` +
+      `💰 *Requested Amount:* \`$${topupReq.amount.toFixed(2)} USD\`\n` +
+      `🆔 *Request ID:* \`${requestId}\`\n\n` +
+      `သင့် ငွေဖြည့်သွင်းမှု တောင်းဆိုချက်ကို Admin မှ ပယ်ဖျက်လိုက်ပါသည်။ အသေးစိတ်သိရှိလိုပါက Admin သို့ ဆက်သွယ်ပါ။`;
+
+    await safeSendMessage(bot.telegram, topupReq.telegramChatId, userRejectMsg, mainMenu);
+  });
+
   async function renderAccountProfile(ctx: MyContext) {
     const user = await User.findOne({ telegramChatId: ctx.chat!.id });
     if (!user) return ctx.reply('User not found.');
@@ -701,7 +811,11 @@ export function setupBot(botToken: string, adminChatId: string | undefined, loot
       }
     }
     
-    return await safeReply(ctx, msg);
+    const keyboard = Markup.inlineKeyboard([
+      [Markup.button.callback('💰 Request Balance Top-Up', 'topup_flow_start')]
+    ]);
+
+    return await safeReply(ctx, msg, keyboard);
   }
 
   async function renderBalance(ctx: MyContext) {
@@ -719,9 +833,15 @@ export function setupBot(botToken: string, adminChatId: string | undefined, loot
           `💳 *Wallet Mode:* \`Direct API Balance Sync\`\n` +
           `✨ *Status:* Connected directly to live LootBar API funds.\n` +
           `🚀 You can place top-up orders directly anytime.`;
-        return await safeReply(ctx, msg);
+        const keyboard = Markup.inlineKeyboard([
+          [Markup.button.callback('💰 Request Balance Top-Up', 'topup_flow_start')]
+        ]);
+        return await safeReply(ctx, msg, keyboard);
       } catch (e: any) {
-        return await safeReply(ctx, `⚡ *Account Mode:* \`Direct API Balance Linked\`\n💰 *API Wallet:* \`Active (Live Connected)\`\n✨ Live balance linked directly to LootBar API.`);
+        const keyboard = Markup.inlineKeyboard([
+          [Markup.button.callback('💰 Request Balance Top-Up', 'topup_flow_start')]
+        ]);
+        return await safeReply(ctx, `⚡ *Account Mode:* \`Direct API Balance Linked\`\n💰 *API Wallet:* \`Active (Live Connected)\`\n✨ Live balance linked directly to LootBar API.`, keyboard);
       }
     }
 
@@ -736,7 +856,11 @@ export function setupBot(botToken: string, adminChatId: string | undefined, loot
         msg += `\n👑 *Owner LootBar API Balance:* \`Error (${escapeMd(e.message)})\``;
       }
     }
-    return await safeReply(ctx, msg);
+
+    const keyboard = Markup.inlineKeyboard([
+      [Markup.button.callback('💰 Request Balance Top-Up', 'topup_flow_start')]
+    ]);
+    return await safeReply(ctx, msg, keyboard);
   }
 
   bot.hears(['👤 My Account', 'My Account', 'Account', 'account', '👤 Profile', 'Profile', 'profile', '👤 My Profile'], async (ctx) => {
@@ -753,6 +877,187 @@ export function setupBot(botToken: string, adminChatId: string | undefined, loot
 
   bot.command(['balance', 'wallet', 'mybalance', 'mywallet'], async (ctx) => {
     return await renderBalance(ctx);
+  });
+
+  // Top-up Request Flow Functions
+  async function startTopupRequest(ctx: MyContext) {
+    const user = await User.findOne({ telegramChatId: ctx.chat!.id });
+    if (!user) return ctx.reply('User account not found.');
+
+    ctx.session = {
+      step: 'INPUT_TOPUP_AMOUNT'
+    };
+
+    const isApiLinked = !!(user.useDirectApiBalance || user.balanceMode === 'api');
+    let intro = `💰 *Request Balance Top-Up*\n\n`;
+    if (isApiLinked) {
+      intro += `⚡ *Account Tier:* \`Direct API Linked (VIP)\`\n_Note: Your account is currently linked to live API funds, but you can also request wallet balance if needed._\n\n`;
+    } else {
+      intro += `💳 *Current Wallet Balance:* \`$${Number(user.balance || 0).toFixed(2)} USD\`\n\n`;
+    }
+
+    intro += `ကျေးဇူးပြု၍ ထည့်သွင်းလိုသော USD ပမာဏကို ရွေးချယ်ပါ (သို့မဟုတ် စာရိုက်ထည့်ပါ - ဥပမာ \`15\`, \`30\`, \`100\`):`;
+
+    const keyboard = Markup.inlineKeyboard([
+      [
+        Markup.button.callback('💵 $5', 'topup_preset_5'),
+        Markup.button.callback('💵 $10', 'topup_preset_10'),
+        Markup.button.callback('💵 $20', 'topup_preset_20')
+      ],
+      [
+        Markup.button.callback('💵 $50', 'topup_preset_50'),
+        Markup.button.callback('💵 $100', 'topup_preset_100'),
+        Markup.button.callback('💵 $200', 'topup_preset_200')
+      ],
+      [
+        Markup.button.callback('✏️ Custom Amount (တိုက်ရိုက်ရိုက်ထည့်မည်)', 'topup_custom')
+      ],
+      [
+        Markup.button.callback('❌ Cancel', 'cancel_topup')
+      ]
+    ]);
+
+    return await safeReply(ctx, intro, keyboard);
+  }
+
+  async function submitTopupRequest(ctx: MyContext, amount: number, note: string = '') {
+    ctx.session = {};
+    const chatId = ctx.chat!.id;
+    const user = await User.findOne({ telegramChatId: chatId });
+    if (!user) return ctx.reply('User account not found.');
+
+    const requestId = 'TR-' + uuidv4().replace(/[^a-zA-Z0-9]/g, '').substring(0, 8).toUpperCase();
+    const fromUsername = ctx.from?.username || (ctx.chat as any)?.username || undefined;
+    const fromFirstName = ctx.from?.first_name || (ctx.chat as any)?.first_name || undefined;
+
+    try {
+      await TopupRequest.create({
+        requestId,
+        telegramChatId: chatId,
+        username: fromUsername,
+        firstName: fromFirstName,
+        amount,
+        note: note.trim(),
+        status: 'pending'
+      });
+    } catch (e) {
+      console.error('Failed to create TopupRequest record:', e);
+    }
+
+    // Confirmation message to User
+    const userConfirmMsg = `✅ *Top-Up Request Submitted!*\n\n` +
+      `🆔 *Request ID:* \`${requestId}\`\n` +
+      `💰 *Requested Amount:* \`$${amount.toFixed(2)} USD\`\n` +
+      (note ? `📝 *Note / Ref:* \`${escapeCode(note)}\`\n` : '') +
+      `💳 *Current Wallet Balance:* \`$${Number(user.balance || 0).toFixed(2)} USD\`\n\n` +
+      `Admin ထံသို့ အကြောင်းကြားစာ ပို့ပြီးပါပြီ။ Admin မှ စစ်ဆေးအတည်ပြုပြီးပါက သင့် Wallet ထဲသို့ Balance တိုက်ရိုက်ထည့်သွင်းပေးပါမည်။`;
+
+    await safeReply(ctx, userConfirmMsg, mainMenu);
+
+    // Notify Admin & notification receivers
+    const currentAdminId = await getAdminChatId(adminChatId);
+    const userDisplay = fromUsername ? `@${escapeMd(fromUsername)}` : (fromFirstName ? escapeMd(fromFirstName) : 'User');
+    const safeNote = note ? escapeCode(note) : 'None';
+
+    const adminNotificationMsg = `🔔 *New Balance Top-Up Request!*\n\n` +
+      `🆔 *Request ID:* \`${requestId}\`\n` +
+      `👤 *User:* \`${chatId}\` (${userDisplay})\n` +
+      `💵 *Requested Amount:* \`$${amount.toFixed(2)} USD\`\n` +
+      `💳 *Current Balance:* \`$${Number(user.balance || 0).toFixed(2)} USD\`\n` +
+      `📝 *Note / Ref:* \`${safeNote}\`\n` +
+      `📅 *Time:* ${new Date().toLocaleString()}\n\n` +
+      `အောက်ပါ ခလုတ်များကို နှိပ်၍ အတည်ပြုနိုင်ပါသည်:`;
+
+    const adminKeyboard = Markup.inlineKeyboard([
+      [
+        Markup.button.callback(`✅ Approve & Add $${amount.toFixed(2)}`, `topup_approve_${requestId}`),
+        Markup.button.callback(`❌ Reject`, `topup_reject_${requestId}`)
+      ]
+    ]);
+
+    if (currentAdminId) {
+      await safeSendMessage(bot.telegram, currentAdminId, adminNotificationMsg, adminKeyboard);
+    }
+
+    try {
+      const notifyUsers = await User.find({ receivesNotifications: true });
+      for (const u of notifyUsers) {
+        if (String(u.telegramChatId) === currentAdminId) continue;
+        await safeSendMessage(bot.telegram, u.telegramChatId, adminNotificationMsg, adminKeyboard);
+      }
+    } catch (err) {
+      console.error('Failed to notify admins of topup request:', err);
+    }
+  }
+
+  bot.hears([
+    '💰 Request Top-Up', 
+    'Request Top-Up', 
+    'Request Topup', 
+    'Top-up', 
+    'Topup', 
+    '💰 Request Balance Top-up', 
+    'Request Balance Top-up', 
+    'Request Balance Topup',
+    'Top Up', 
+    '💰 Top-Up', 
+    '💰 Top Up', 
+    'Request Top Up'
+  ], async (ctx) => {
+    return await startTopupRequest(ctx);
+  });
+
+  bot.command(['topup', 'deposit', 'requesttopup', 'requestbalance'], async (ctx) => {
+    return await startTopupRequest(ctx);
+  });
+
+  bot.action('topup_flow_start', async (ctx) => {
+    await ctx.answerCbQuery();
+    return await startTopupRequest(ctx);
+  });
+
+  bot.action(/^topup_preset_(\d+(\.\d+)?)$/, async (ctx) => {
+    const amount = parseFloat(ctx.match[1]);
+    if (isNaN(amount) || amount <= 0) {
+      return ctx.answerCbQuery('Invalid amount');
+    }
+
+    ctx.session.topupAmount = amount;
+    ctx.session.step = 'INPUT_TOPUP_NOTE';
+
+    await ctx.answerCbQuery(`Selected $${amount.toFixed(2)} USD`);
+
+    const promptMsg = `💰 *Selected Amount:* \`$${amount.toFixed(2)} USD\`\n\n` +
+      `📝 ကျေးဇူးပြု၍ Payment Reference / Transaction No. သို့မဟုတ် Note (ဥပမာ: \`KPay Ref: 123456\` သို့မဟုတ် \`KBZPay\`) ရိုက်ထည့်ပေးပါ:\n\n` +
+      `_Note မထည့်လိုပါက အောက်ပါ Skip ခလုတ်ကို နှိပ်နိုင်ပါသည်။_`;
+
+    const keyboard = Markup.inlineKeyboard([
+      [Markup.button.callback('⏩ Skip Note & Submit (တန်းတင်မည်)', `topup_skip_note_${amount}`)],
+      [Markup.button.callback('❌ Cancel', 'cancel_topup')]
+    ]);
+
+    await safeEditMessageText(ctx, promptMsg, keyboard);
+  });
+
+  bot.action('topup_custom', async (ctx) => {
+    ctx.session.step = 'INPUT_TOPUP_AMOUNT';
+    await ctx.answerCbQuery();
+    await safeEditMessageText(
+      ctx,
+      '✏️ ကျေးဇူးပြု၍ ထည့်သွင်းလိုသော USD ပမာဏကို စာရိုက်ထည့်ပေးပါ (ဥပမာ: `15`, `25.50`, `100`):\n\n_မပြုလုပ်လိုပါက /cancel ဟု ပို့နိုင်ပါသည်။_'
+    );
+  });
+
+  bot.action(/^topup_skip_note_(\d+(\.\d+)?)$/, async (ctx) => {
+    const amount = parseFloat(ctx.match[1]);
+    await ctx.answerCbQuery('Submitting top-up request...');
+    return await submitTopupRequest(ctx, amount, '');
+  });
+
+  bot.action('cancel_topup', async (ctx) => {
+    ctx.session = {};
+    await ctx.answerCbQuery('Cancelled');
+    await safeEditMessageText(ctx, '❌ Top-up request cancelled.');
   });
 
   async function renderOrderHistory(ctx: MyContext, isEdit: boolean = false) {
@@ -1003,39 +1308,76 @@ export function setupBot(botToken: string, adminChatId: string | undefined, loot
     }
   });
 
-  bot.on('text', async (ctx) => {
-    if (ctx.session.step !== 'INPUT_EXTRA_INFO') return;
-    
+  bot.on('text', async (ctx, next) => {
     const userInput = ctx.message.text.trim();
 
     if (userInput.toLowerCase() === 'cancel' || userInput === '/cancel') {
       ctx.session = {};
-      return ctx.reply('❌ Order cancelled. Main Menu:', mainMenu);
+      return safeReply(ctx, '❌ Cancelled. Main Menu:', mainMenu);
     }
 
-    const requiredFields = ctx.session.requiredFields || [];
-    const currentIndex = ctx.session.currentFieldIndex || 0;
-    
-    if (requiredFields.length === 0) return;
+    // Top-up flow: Custom amount input
+    if (ctx.session?.step === 'INPUT_TOPUP_AMOUNT') {
+      const sanitized = userInput.replace(/[$USD,\s]/gi, '');
+      const parsedAmount = parseFloat(sanitized);
+      if (isNaN(parsedAmount) || parsedAmount <= 0) {
+        return safeReply(ctx, '⚠️ ကျေးဇူးပြု၍ မှန်ကန်သော USD ပမာဏကို ဂဏန်းဖြင့်သာ ရိုက်ထည့်ပေးပါ (ဥပမာ: `10`, `25.50`, `100`):\n\n_သို့မဟုတ် /cancel ဖြင့် ဖျက်သိမ်းနိုင်ပါသည်။_');
+      }
 
-    const currentField = requiredFields[currentIndex];
-    
-    // Ignore text if we are expecting a select
-    if (currentField.type === 'select') {
-      return ctx.reply(`Please use the buttons above to select your ${currentField.title || currentField.name}.`);
+      ctx.session.topupAmount = parsedAmount;
+      ctx.session.step = 'INPUT_TOPUP_NOTE';
+
+      const promptMsg = `💰 *Selected Amount:* \`$${parsedAmount.toFixed(2)} USD\`\n\n` +
+        `📝 ကျေးဇူးပြု၍ Payment Reference / Transaction No. သို့မဟုတ် Note (ဥပမာ: \`KPay Ref: 123456\` သို့မဟုတ် \`KBZPay\`) ရိုက်ထည့်ပေးပါ:\n\n` +
+        `_Note မထည့်လိုပါက အောက်ပါ Skip ခလုတ်ကို နှိပ်ပါ:_`;
+
+      const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('⏩ Skip Note & Submit (တန်းတင်မည်)', `topup_skip_note_${parsedAmount}`)],
+        [Markup.button.callback('❌ Cancel', 'cancel_topup')]
+      ]);
+
+      return safeReply(ctx, promptMsg, keyboard);
     }
 
-    if (!ctx.session.extraInfo) ctx.session.extraInfo = {};
-    ctx.session.extraInfo[currentField.name] = userInput;
-    
-    const nextIndex = currentIndex + 1;
-    
-    if (nextIndex < requiredFields.length) {
-      ctx.session.currentFieldIndex = nextIndex;
-      await askNextRequiredField(ctx);
-    } else {
-      await showOrderConfirmation(ctx);
+    // Top-up flow: Note input
+    if (ctx.session?.step === 'INPUT_TOPUP_NOTE') {
+      const amount = ctx.session.topupAmount || 0;
+      if (amount <= 0) {
+        ctx.session = {};
+        return safeReply(ctx, '❌ Top-up session expired. Please start again from menu.', mainMenu);
+      }
+      return await submitTopupRequest(ctx, amount, userInput);
     }
+
+    // Order flow: Required extra info input
+    if (ctx.session?.step === 'INPUT_EXTRA_INFO') {
+      const requiredFields = ctx.session.requiredFields || [];
+      const currentIndex = ctx.session.currentFieldIndex || 0;
+      
+      if (requiredFields.length === 0) return next();
+
+      const currentField = requiredFields[currentIndex];
+      
+      // Ignore text if we are expecting a select
+      if (currentField.type === 'select') {
+        return ctx.reply(`Please use the buttons above to select your ${currentField.title || currentField.name}.`);
+      }
+
+      if (!ctx.session.extraInfo) ctx.session.extraInfo = {};
+      ctx.session.extraInfo[currentField.name] = userInput;
+      
+      const nextIndex = currentIndex + 1;
+      
+      if (nextIndex < requiredFields.length) {
+        ctx.session.currentFieldIndex = nextIndex;
+        await askNextRequiredField(ctx);
+      } else {
+        await showOrderConfirmation(ctx);
+      }
+      return;
+    }
+
+    return next();
   });
 
   async function showOrderConfirmation(ctx: MyContext) {
@@ -1397,11 +1739,22 @@ export function setupBot(botToken: string, adminChatId: string | undefined, loot
     return await renderOrderHistory(ctx, false);
   });
 
-  // Start polling in background with dropPendingUpdates: true
-  bot.launch({ dropPendingUpdates: true }).catch(err => {
-    console.error("Failed to launch bot. Is the TELEGRAM_BOT_TOKEN valid?", err?.message || err);
-  });
-  console.log("Telegram bot initialized.");
+  // If not serverless, start polling mode in background
+  if (!options.isServerless) {
+    bot.launch({ dropPendingUpdates: true }).catch(err => {
+      console.error("Failed to launch bot. Is the TELEGRAM_BOT_TOKEN valid?", err?.message || err);
+    });
+    console.log("Telegram bot initialized in Long-Polling mode (VPS / Continuous Server).");
+  } else {
+    console.log("Telegram bot initialized in Webhook / Serverless mode.");
+    if (options.webhookUrl) {
+      bot.telegram.setWebhook(options.webhookUrl).then(() => {
+        console.log(`Telegram webhook set to: ${options.webhookUrl}`);
+      }).catch(err => {
+        console.error("Failed to set Telegram webhook:", err?.message || err);
+      });
+    }
+  }
   
   return bot;
 }

@@ -5,6 +5,19 @@
 
 import React, { useEffect, useState } from 'react';
 
+async function safeFetchJson<T = any>(url: string, options?: RequestInit): Promise<T | null> {
+  try {
+    const res = await fetch(url, options);
+    const contentType = res.headers.get('content-type') || '';
+    if (!res.ok || !contentType.includes('application/json')) {
+      return null;
+    }
+    return await res.json();
+  } catch (e) {
+    return null;
+  }
+}
+
 export default function App() {
   const [isConfigured, setIsConfigured] = useState<boolean | null>(null);
   
@@ -51,36 +64,28 @@ export default function App() {
   // Force dashboard re-fetch
   const [refreshKey, setRefreshKey] = useState(0);
 
-  const fetchLootbarBalance = () => {
-    fetch('/api/lootbar/balance')
-      .then(res => res.json())
-      .then(data => {
-        if(data.success && data.data) {
-          setLootbarBalance(data.data);
-        }
-      })
-      .catch(err => console.error("Error fetching balance:", err));
+  const fetchLootbarBalance = async () => {
+    const data = await safeFetchJson('/api/lootbar/balance');
+    if (data?.success && data?.data) {
+      setLootbarBalance(data.data);
+    }
   };
 
-  const fetchOrders = (silent = false) => {
+  const fetchOrders = async (silent = false) => {
     if (!silent) setLoadingOrders(true);
-    fetch('/api/orders')
-      .then(res => res.json())
-      .then(data => {
-        if (data.success) {
-          setOrders(data.data || []);
-          setLastSyncTime(new Date());
-          // Update selected tracking order if currently open
-          if (selectedTrackingOrder) {
-            const updated = (data.data || []).find((o: any) => o.referenceId === selectedTrackingOrder.referenceId);
-            if (updated) setSelectedTrackingOrder(updated);
-          }
+    try {
+      const data = await safeFetchJson('/api/orders');
+      if (data?.success) {
+        setOrders(data.data || []);
+        setLastSyncTime(new Date());
+        if (selectedTrackingOrder) {
+          const updated = (data.data || []).find((o: any) => o.referenceId === selectedTrackingOrder.referenceId);
+          if (updated) setSelectedTrackingOrder(updated);
         }
-      })
-      .catch(err => console.error("Error fetching orders:", err))
-      .finally(() => {
-        if (!silent) setLoadingOrders(false);
-      });
+      }
+    } finally {
+      if (!silent) setLoadingOrders(false);
+    }
   };
 
   // Real-time automatic polling every 4 seconds
@@ -95,9 +100,8 @@ export default function App() {
   const handleSyncOrder = async (referenceId: string) => {
     setSyncingRefId(referenceId);
     try {
-      const res = await fetch(`/api/orders/${referenceId}/sync`, { method: 'POST' });
-      const data = await res.json();
-      if (data.success && data.data) {
+      const data = await safeFetchJson(`/api/orders/${referenceId}/sync`, { method: 'POST' });
+      if (data?.success && data?.data) {
         setOrders(prev => prev.map(o => o.referenceId === referenceId ? data.data : o));
         if (selectedTrackingOrder?.referenceId === referenceId) {
           setSelectedTrackingOrder(data.data);
@@ -240,17 +244,16 @@ export default function App() {
     }
   }, [isConfigured, refreshKey]);
 
-  const fetchTelegramUsers = () => {
+  const fetchTelegramUsers = async () => {
     setLoadingUsers(true);
-    fetch('/api/telegram-users')
-      .then(res => res.json())
-      .then(data => {
-        if (data.success) {
-          setTelegramUsers(data.data);
-        }
-      })
-      .catch(err => console.error(err))
-      .finally(() => setLoadingUsers(false));
+    try {
+      const data = await safeFetchJson('/api/telegram-users');
+      if (data?.success) {
+        setTelegramUsers(data.data || []);
+      }
+    } finally {
+      setLoadingUsers(false);
+    }
   };
 
   
