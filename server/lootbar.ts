@@ -58,24 +58,32 @@ export class LootBarClient {
     return this.authPromise;
   }
 
+  public async testLogin(): Promise<void> {
+    await this.login();
+  }
+
   private async login(): Promise<void> {
     if (!this.nickname || !this.email || !this.password) {
       throw new Error("LootBar nickname, email, and password are required.");
     }
 
     try {
-      const response = await this.client.post('/API/reseller/login', {
+      const response = await this.client.post('/api/reseller/login', {
         nickname: this.nickname,
         email: this.email,
         password: this.password
       });
+      
+      if (response.data?.status && response.data.status !== 'ok' && response.data.status !== 'Success') {
+        throw new Error(response.data.msg || "Failed to login to LootBar API");
+      }
       
       if (response.data && response.data.data) {
         this.token = response.data.data.token;
         this.callbackKey = response.data.data.callback_key;
         this.expireAt = response.data.data.expire_at;
       } else {
-        throw new Error(response.data?.msg || "Failed to login to LootBar API");
+        throw new Error(response.data?.msg || "Invalid response format from LootBar API");
       }
     } catch (error: any) {
       if (error.response?.data?.msg) {
@@ -97,9 +105,14 @@ export class LootBarClient {
         url: endpoint,
         data,
         headers: {
-          'Authorization': `PS ${this.token}`
+          'authorization': `PS ${this.token}`
         }
       });
+      
+      if (response.data?.status && response.data.status !== 'ok' && response.data.status !== 'Success') {
+        throw new Error(response.data.msg || `LootBar API Error on ${endpoint}`);
+      }
+      
       return response.data;
     } catch (error: any) {
       if (error.response?.data?.msg) {
@@ -112,16 +125,16 @@ export class LootBarClient {
     }
   }
 
-  async getGames(): Promise<any> {
-    return this.request('GET', '/API/reseller/games');
+  async getGames(pageNum: number = 1, pageSize: number = 100): Promise<any> {
+    return this.request('GET', `/api/reseller/games?page_num=${pageNum}&page_size=${pageSize}`);
   }
 
   async getSkus(gameId: string): Promise<any> {
-    return this.request('GET', `/API/reseller/skus?game_id=${gameId}`);
+    return this.request('GET', `/api/reseller/skus?game_id=${gameId}`);
   }
 
   async createOrder(referenceId: string, gameId: string, skuId: string, quantity: number, extraInfo: Record<string, string>): Promise<any> {
-    return this.request('POST', '/API/reseller/create_order', {
+    return this.request('POST', '/api/reseller/create_order', {
       reference_id: referenceId,
       game_id: gameId,
       product: [{ sku_id: skuId, num: quantity }],
@@ -131,11 +144,37 @@ export class LootBarClient {
   }
 
   async queryOrder(referenceId: string): Promise<any> {
-    return this.request('POST', '/API/reseller/query_order', { reference_id: referenceId });
+    return this.request('POST', '/api/reseller/query_order', { reference_id: referenceId });
   }
 
   async queryAsset(): Promise<any> {
-    return this.request('GET', '/API/reseller/query_asset');
+    return this.request('GET', '/api/reseller/query_asset');
+  }
+
+  async checkRole(gameId: string, extraInfo: Record<string, string>): Promise<{ success: boolean; playerName?: string; error?: string }> {
+    try {
+      const res = await this.request('POST', '/api/reseller/check_role', {
+        game_id: gameId,
+        extra_info: extraInfo
+      });
+      const name = res?.data?.role_name || res?.data?.nickname || res?.data?.player_name || res?.data?.name;
+      if (name) {
+        return { success: true, playerName: String(name) };
+      }
+      return { success: false, error: res?.msg || 'Player not found for this ID' };
+    } catch (err: any) {
+      try {
+        const query = new URLSearchParams({ game_id: gameId, ...extraInfo }).toString();
+        const res = await this.request('GET', `/api/reseller/check_role?${query}`);
+        const name = res?.data?.role_name || res?.data?.nickname || res?.data?.player_name || res?.data?.name;
+        if (name) {
+          return { success: true, playerName: String(name) };
+        }
+      } catch (getErr: any) {
+        return { success: false, error: err?.message || getErr?.message || 'Player ID verification failed' };
+      }
+      return { success: false, error: err?.message || 'Player not found for this ID' };
+    }
   }
 
   verifyWebhookSignature(method: string, pathQuery: string, body: string, signature: string): boolean {

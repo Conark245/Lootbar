@@ -70,7 +70,7 @@ app.post("/api/settings/lootbar", async (req, res) => {
   try {
     // 1. Temporarily test credentials
     const testClient = new LootBarClient(nickname, email, password);
-    await testClient.getGames(); // This will trigger login
+    await testClient.testLogin(); // This will test the login directly
 
     // 2. If successful, update global client
     lootbarClient.updateCredentials(nickname, email, password);
@@ -211,6 +211,82 @@ app.post("/api/telegram-users/unauth", async (req, res) => {
   }
 });
 
+app.post("/api/telegram-users/toggle-api-balance", async (req, res) => {
+  const { chatId, useDirectApiBalance } = req.body;
+  if (!chatId) return res.status(400).json({ error: "Chat ID is required" });
+  try {
+    const isApiBalance = !!useDirectApiBalance;
+    const user = await User.findOneAndUpdate(
+      { telegramChatId: Number(chatId) },
+      { 
+        useDirectApiBalance: isApiBalance,
+        balanceMode: isApiBalance ? 'api' : 'wallet'
+      },
+      { upsert: true, new: true }
+    );
+    
+    // Notify the user via Telegram Bot
+    if (telegramBot) {
+      try {
+        if (isApiBalance) {
+          const msg = `⚡ *Account Upgrade: Live API Balance Linked*\n\n` +
+            `Admin has linked your Telegram account directly to the *LootBar API Live Balance*!\n\n` +
+            `• 🚀 *Status:* \`Direct API Reseller / VIP\`\n` +
+            `• 💳 *Balance Source:* Direct Live API\n` +
+            `• ✨ You can now place top-up orders directly backed by live API balance.\n\n` +
+            `Check your status anytime using /balance or 💳 My Balance.`;
+          try {
+            await telegramBot.telegram.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+          } catch {
+            await telegramBot.telegram.sendMessage(chatId, msg.replace(/[*_`]/g, ''));
+          }
+        } else {
+          const msg = `💳 *Account Notice: Switched to Wallet Mode*\n\n` +
+            `Your account balance mode has been changed to standard *Wallet Balance* mode.\n` +
+            `Current Wallet Balance: $${Number(user.balance || 0).toFixed(2)} USD`;
+          try {
+            await telegramBot.telegram.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+          } catch {
+            await telegramBot.telegram.sendMessage(chatId, msg.replace(/[*_`]/g, ''));
+          }
+        }
+      } catch (e) {
+        console.error(`Failed to notify user ${chatId} of API balance mode change:`, e);
+      }
+    }
+    
+    res.json({ success: true, data: user });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/telegram-users/update-notes", async (req, res) => {
+  const { chatId, notes } = req.body;
+  if (!chatId) return res.status(400).json({ error: "Chat ID is required" });
+  try {
+    const user = await User.findOneAndUpdate(
+      { telegramChatId: Number(chatId) },
+      { notes: String(notes || '') },
+      { upsert: true, new: true }
+    );
+    res.json({ success: true, data: user });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/telegram-users/:chatId", async (req, res) => {
+  const { chatId } = req.params;
+  if (!chatId) return res.status(400).json({ error: "Chat ID is required" });
+  try {
+    await User.findOneAndDelete({ telegramChatId: Number(chatId) });
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/telegram-users/toggle-notifications", async (req, res) => {
   const { chatId, receivesNotifications } = req.body;
   if (!chatId) return res.status(400).json({ error: "Chat ID is required" });
@@ -279,6 +355,125 @@ app.get("/api/asset", async (req, res) => {
 });
 
 // ---------------------------------------------------------
+// Real-Time Order Sync Engine
+// ---------------------------------------------------------
+async function syncActiveOrders() {
+  if (!lootbarClient.isConfigured()) return;
+  try {
+    // Find active orders that are in Pending (0), In Transaction (1), or Settling (4)
+    const activeOrders = await Order.find({
+      state: { $in: [0, 1, 4] }
+    }).sort({ createdAt: -1 }).limit(20);
+
+    for (const order of activeOrders) {
+      try {
+        const queryRes = await lootbarClient.queryOrder(order.referenceId);
+        if (queryRes && queryRes.status === 'ok' && queryRes.data) {
+          const newState = queryRes.data.state;
+          const orderId = queryRes.data.order_id || order.orderId;
+          
+          if (newState !== undefined && newState !== order.state) {
+            console.log(`[Order Sync] Order ${order.referenceId} transitioned from state ${order.state} -> ${newState}`);
+            
+            order.state = newState;
+            if (orderId) order.orderId = orderId;
+            await order.save();
+
+            // Notify user on state transitions
+            if (telegramBot) {
+              if (newState === 2) {
+                // Completed
+                const msg = `🎉 *Top-Up Order Completed!*\n\n` +
+                  `🎮 *Game:* ${order.gameName || 'Game'}\n` +
+                  `🛍 *Product:* ${order.skuName || 'Top-up'}\n` +
+                  (order.playerName ? `🎯 *Player:* \`${order.playerName}\`\n` : '') +
+                  `🔖 *Ref ID:* \`${order.referenceId}\`\n` +
+                  `✅ Your in-game item has been successfully delivered!`;
+                try {
+                  await telegramBot.telegram.sendMessage(order.telegramChatId, msg, { parse_mode: 'Markdown' });
+                } catch (e) {
+                  console.error('Failed to notify user of order completion:', e);
+                }
+              } else if (newState === 3) {
+                // Failed -> Auto Refund
+                const user = await User.findOne({ telegramChatId: order.telegramChatId });
+                if (user && order.price > 0) {
+                  user.balance += order.price;
+                  await user.save();
+                }
+                const msg = `❌ *Top-Up Order Failed*\n\n` +
+                  `🔖 *Ref ID:* \`${order.referenceId}\`\n` +
+                  `Your wallet balance has been refunded ($${order.price.toFixed(2)} USD).`;
+                try {
+                  await telegramBot.telegram.sendMessage(order.telegramChatId, msg, { parse_mode: 'Markdown' });
+                } catch (e) {
+                  console.error('Failed to notify user of order failure:', e);
+                }
+              }
+            }
+          }
+        }
+      } catch (err: any) {
+        // Individual order query failed (e.g. rate limit), continue next
+      }
+    }
+  } catch (err) {
+    console.error('Active order sync cycle error:', err);
+  }
+}
+
+// Run active order sync every 8 seconds
+setInterval(syncActiveOrders, 8000);
+
+app.get("/api/orders", async (req, res) => {
+  try {
+    // Perform a quick sync check on active orders before returning
+    await syncActiveOrders();
+    const orders = await Order.find().sort({ createdAt: -1 }).limit(100);
+    res.json({ success: true, data: orders });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Force sync a specific order in real time
+app.post("/api/orders/:referenceId/sync", async (req, res) => {
+  try {
+    const { referenceId } = req.params;
+    const order = await Order.findOne({ referenceId });
+    if (!order) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+
+    if (!lootbarClient.isConfigured()) {
+      return res.status(400).json({ error: "LootBar API not configured" });
+    }
+
+    const queryRes = await lootbarClient.queryOrder(referenceId);
+    if (queryRes && queryRes.status === 'ok' && queryRes.data) {
+      const newState = queryRes.data.state;
+      const orderId = queryRes.data.order_id || order.orderId;
+      
+      if (newState !== undefined) {
+        order.state = newState;
+        if (orderId) order.orderId = orderId;
+        await order.save();
+      }
+
+      return res.json({
+        success: true,
+        data: order,
+        apiData: queryRes.data
+      });
+    }
+
+    res.json({ success: true, data: order, message: "No change from API" });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------
 // MongoDB Endpoints (Saved Games)
 // ---------------------------------------------------------
 
@@ -294,21 +489,70 @@ app.get("/api/saved-games", async (req, res) => {
   }
 });
 
+function getDefaultShortKey(name: string, gameId: string): string {
+  const n = (name || '').toLowerCase();
+  if (n.includes('pubg')) return 'p';
+  if (n.includes('mobile legends') || n.includes('mlbb')) return 'ml';
+  if (n.includes('free fire')) return 'ff';
+  if (n.includes('genshin')) return 'gi';
+  if (n.includes('honkai') || n.includes('star rail')) return 'hsr';
+  if (n.includes('roblox')) return 'rbx';
+  if (n.includes('arena of valor') || n.includes('aov')) return 'aov';
+  if (n.includes('call of duty') || n.includes('codm')) return 'codm';
+  if (n.includes('clash of clans') || n.includes('coc')) return 'coc';
+  if (n.includes('brawl stars')) return 'bs';
+  
+  // Extract acronym or clean first word
+  const words = n.replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
+  if (words.length > 1) {
+    return words.map(w => w[0]).join('').slice(0, 4);
+  }
+  return words[0]?.slice(0, 4) || `g${gameId}`;
+}
+
 app.post("/api/saved-games", async (req, res) => {
   try {
     if (!process.env.MONGODB_URI) {
       return res.status(400).json({ error: "Database not configured" });
     }
-    const { gameId, name } = req.body;
+    const { gameId, name, shortKey } = req.body;
     if (!gameId || !name) {
       return res.status(400).json({ error: "gameId and name are required" });
     }
+
+    const cleanShortKey = (shortKey || getDefaultShortKey(name, gameId))
+      .toLowerCase()
+      .replace(/^[./]+/, '')
+      .trim();
     
-    // Upsert the game
+    // Upsert the game with shortKey
     const saved = await SavedGame.findOneAndUpdate(
       { gameId },
-      { name },
+      { name, shortKey: cleanShortKey },
       { upsert: true, new: true }
+    );
+    res.json({ data: saved });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch("/api/saved-games/:gameId", async (req, res) => {
+  try {
+    if (!process.env.MONGODB_URI) {
+      return res.status(400).json({ error: "Database not configured" });
+    }
+    const { shortKey, name } = req.body;
+    const updateData: any = {};
+    if (shortKey !== undefined) {
+      updateData.shortKey = String(shortKey).toLowerCase().replace(/^[./]+/, '').trim();
+    }
+    if (name) updateData.name = name;
+
+    const saved = await SavedGame.findOneAndUpdate(
+      { gameId: req.params.gameId },
+      updateData,
+      { new: true }
     );
     res.json({ data: saved });
   } catch (err: any) {
