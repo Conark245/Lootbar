@@ -254,15 +254,18 @@ app.post("/api/telegram-users/unauth", async (req, res) => {
 });
 
 app.post("/api/telegram-users/toggle-api-balance", async (req, res) => {
-  const { chatId, useDirectApiBalance } = req.body;
+  const { chatId, useDirectApiBalance, apiProvider = 'both' } = req.body;
   if (!chatId) return res.status(400).json({ error: "Chat ID is required" });
   try {
     const isApiBalance = !!useDirectApiBalance;
+    const selectedProvider = ['lootbar', 'topupnation', 'both'].includes(apiProvider) ? apiProvider : 'both';
+
     const user = await User.findOneAndUpdate(
       { telegramChatId: Number(chatId) },
       { 
         useDirectApiBalance: isApiBalance,
-        balanceMode: isApiBalance ? 'api' : 'wallet'
+        balanceMode: isApiBalance ? 'api' : 'wallet',
+        apiProvider: selectedProvider
       },
       { upsert: true, new: true }
     );
@@ -271,12 +274,19 @@ app.post("/api/telegram-users/toggle-api-balance", async (req, res) => {
     if (telegramBot) {
       try {
         if (isApiBalance) {
+          const providerLabel = selectedProvider === 'both' 
+            ? 'LootBar & TopupNation APIs' 
+            : selectedProvider === 'topupnation' 
+              ? 'TopupNation API' 
+              : 'LootBar API';
+
           const msg = `⚡ *Account Upgrade: Live API Balance Linked*\n\n` +
-            `Admin has linked your Telegram account directly to the *LootBar API Live Balance*!\n\n` +
+            `Admin has linked your Telegram account directly to the *${providerLabel}*!\n\n` +
             `• 🚀 *Status:* \`Direct API Reseller / VIP\`\n` +
-            `• 💳 *Balance Source:* Direct Live API\n` +
+            `• 🌐 *Active Provider(s):* \`${selectedProvider.toUpperCase()}\`\n` +
+            `• 💳 *Balance Source:* Direct Live API Funds\n` +
             `• ✨ You can now place top-up orders directly backed by live API balance.\n\n` +
-            `Check your status anytime using /balance or 💳 My Balance.`;
+            `Check your status anytime using /balance, /apibalance or 💳 Check Balance.`;
           try {
             await telegramBot.telegram.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
           } catch {

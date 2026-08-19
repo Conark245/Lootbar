@@ -48,6 +48,13 @@ export class TopupNationService {
     return await product.save();
   }
 
+  public async getWalletBalance(): Promise<any> {
+    if (!this.client.isConfigured()) {
+      throw new Error('TopupNation credentials are not configured.');
+    }
+    return this.client.getWalletBalance();
+  }
+
   public async syncProducts(): Promise<{ total: number; synced: number; errors?: string[] }> {
     return this.syncCatalog();
   }

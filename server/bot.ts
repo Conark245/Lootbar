@@ -273,8 +273,8 @@ export function setupBot(
 
   const mainMenu = Markup.keyboard([
     ['🎮 LootBar Games', '🌐 TopupNation Games'],
-    ['👤 My Account', '💰 Request Top-Up'],
-    ['📜 Order History']
+    ['👤 My Account', '💳 Check Balance'],
+    ['💰 Request Top-Up', '📜 Order History']
   ]).resize();
 
   bot.command('start', async (ctx) => {
@@ -1142,13 +1142,154 @@ export function setupBot(
     await safeSendMessage(bot.telegram, topupReq.telegramChatId, userRejectMsg, mainMenu);
   });
 
-  async function renderAccountProfile(ctx: MyContext) {
+  // Live API Balance Fetching Helpers
+  async function getLootBarLiveBalance(): Promise<{ success: boolean; balance: string; error?: string }> {
+    try {
+      if (!lootbar || !lootbar.isConfigured()) {
+        return { success: false, balance: '0.00', error: 'Credentials not configured' };
+      }
+      const asset = await lootbar.queryAsset();
+      const bal = asset?.data?.total_amount || asset?.data?.balance || '0.00';
+      return { success: true, balance: Number(bal).toFixed(2) };
+    } catch (e: any) {
+      return { success: false, balance: '0.00', error: e.message || 'Connection error' };
+    }
+  }
+
+  async function getTopupNationLiveBalance(): Promise<{ success: boolean; balance: string; available: string; currency: string; error?: string }> {
+    try {
+      if (!topupNation || !topupNation.getClient()?.isConfigured()) {
+        return { success: false, balance: '0.00', available: '0.00', currency: 'USD', error: 'Credentials not configured' };
+      }
+      const data = await topupNation.getWalletBalance();
+      const bal = typeof data?.balance === 'number' ? data.balance : parseFloat(data?.balance || '0');
+      const avail = typeof data?.availableBalance === 'number' ? data.availableBalance : (data?.availableBalance ? parseFloat(data.availableBalance) : bal);
+      return {
+        success: true,
+        balance: bal.toFixed(2),
+        available: avail.toFixed(2),
+        currency: data?.currency || 'USD'
+      };
+    } catch (e: any) {
+      return { success: false, balance: '0.00', available: '0.00', currency: 'USD', error: e.message || 'Connection error' };
+    }
+  }
+
+  async function renderDualApiBalance(ctx: MyContext, viewMode: 'both' | 'lootbar' | 'topupnation' = 'both', isEdit: boolean = false) {
+    if (viewMode === 'lootbar') {
+      const lbRes = await getLootBarLiveBalance();
+      const msg = `🎮 *LootBar API Live Asset Balance*\n` +
+        `═════════════════════════\n` +
+        `├── 🌐 Provider: \`LootBar API\`\n` +
+        `├── 💰 Live Asset Balance: \`$${lbRes.balance} USD\`\n` +
+        `├── 📊 Connection Status: \`${lbRes.success ? '✅ Live Connected' : '⚠️ Offline'}\`\n` +
+        (!lbRes.success && lbRes.error ? `├── ⚠️ Note: \`${escapeMd(lbRes.error)}\`\n` : '') +
+        `└── 🕒 Synced At: \`${new Date().toLocaleTimeString()}\`\n` +
+        `═════════════════════════\n` +
+        `✨ _LootBar API Wallet မှ လက်ကျန်ငွေ အခြေအနေ ဖြစ်ပါသည်။_`;
+
+      const keyboard = Markup.inlineKeyboard([
+        [
+          Markup.button.callback('🔄 Refresh LootBar', 'api_bal_lootbar'),
+          Markup.button.callback('🌐 Switch to TopupNation', 'api_bal_topupnation')
+        ],
+        [
+          Markup.button.callback('📊 View Both APIs', 'api_bal_both'),
+          Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')
+        ],
+        [
+          Markup.button.callback('👤 My Account Profile', 'view_my_profile')
+        ]
+      ]);
+
+      if (isEdit) {
+        return await safeEditMessageText(ctx, msg, keyboard);
+      } else {
+        return await safeReply(ctx, msg, keyboard);
+      }
+    }
+
+    if (viewMode === 'topupnation') {
+      const tpnRes = await getTopupNationLiveBalance();
+      const msg = `🌐 *TopupNation API Live Wallet Balance*\n` +
+        `═════════════════════════\n` +
+        `├── 🌐 Provider: \`TopupNation Reseller API\`\n` +
+        `├── 💰 Total Balance: \`$${tpnRes.balance} ${tpnRes.currency}\`\n` +
+        `├── 💵 Available Balance: \`$${tpnRes.available} ${tpnRes.currency}\`\n` +
+        `├── 📊 Connection Status: \`${tpnRes.success ? '✅ Live Connected' : '⚠️ Offline'}\`\n` +
+        (!tpnRes.success && tpnRes.error ? `├── ⚠️ Note: \`${escapeMd(tpnRes.error)}\`\n` : '') +
+        `└── 🕒 Synced At: \`${new Date().toLocaleTimeString()}\`\n` +
+        `═════════════════════════\n` +
+        `✨ _TopupNation Reseller API Wallet မှ လက်ကျန်ငွေ ဖြစ်ပါသည်။_`;
+
+      const keyboard = Markup.inlineKeyboard([
+        [
+          Markup.button.callback('🔄 Refresh TopupNation', 'api_bal_topupnation'),
+          Markup.button.callback('🎮 Switch to LootBar', 'api_bal_lootbar')
+        ],
+        [
+          Markup.button.callback('📊 View Both APIs', 'api_bal_both'),
+          Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')
+        ],
+        [
+          Markup.button.callback('👤 My Account Profile', 'view_my_profile')
+        ]
+      ]);
+
+      if (isEdit) {
+        return await safeEditMessageText(ctx, msg, keyboard);
+      } else {
+        return await safeReply(ctx, msg, keyboard);
+      }
+    }
+
+    // Default: Both APIs
+    const [lbRes, tpnRes] = await Promise.all([
+      getLootBarLiveBalance(),
+      getTopupNationLiveBalance()
+    ]);
+
+    const msg = `⚡ *API Live Balance Overview (API နှစ်ခုလုံး လက်ကျန်ငွေ)*\n` +
+      `═════════════════════════\n` +
+      `🎮 *1. LootBar API:*\n` +
+      `├── 💰 Total Asset: \`$${lbRes.balance} USD\`\n` +
+      `└── 📊 Status: \`${lbRes.success ? '✅ Live Connected' : `⚠️ Offline (${escapeMd(lbRes.error)})`}\`\n\n` +
+      `🌐 *2. TopupNation API:*\n` +
+      `├── 💰 Total Balance: \`$${tpnRes.balance} ${tpnRes.currency}\`\n` +
+      `├── 💵 Available: \`$${tpnRes.available} ${tpnRes.currency}\`\n` +
+      `└── 📊 Status: \`${tpnRes.success ? '✅ Live Connected' : `⚠️ Offline (${escapeMd(tpnRes.error)})`}\`\n` +
+      `═════════════════════════\n` +
+      `💡 _အောက်ပါ ခလုတ်များဖြင့် API တစ်ခုချင်းစီ သီးသန့် ရွေးချယ်စစ်ဆေးနိုင်ပါသည်:_`;
+
+    const keyboard = Markup.inlineKeyboard([
+      [
+        Markup.button.callback('🎮 LootBar Balance', 'api_bal_lootbar'),
+        Markup.button.callback('🌐 TopupNation Balance', 'api_bal_topupnation')
+      ],
+      [
+        Markup.button.callback('🔄 Refresh Both APIs', 'api_bal_both'),
+        Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')
+      ],
+      [
+        Markup.button.callback('👤 My Account Profile', 'view_my_profile')
+      ]
+    ]);
+
+    if (isEdit) {
+      return await safeEditMessageText(ctx, msg, keyboard);
+    } else {
+      return await safeReply(ctx, msg, keyboard);
+    }
+  }
+
+  async function renderAccountProfile(ctx: MyContext, isEdit: boolean = false) {
     const user = await User.findOne({ telegramChatId: ctx.chat!.id });
     if (!user) return ctx.reply('User not found.');
     
     const currentAdminId = await getAdminChatId(adminChatId);
     const isOwner = String(ctx.chat!.id) === currentAdminId;
     const isApiLinked = !!(user.useDirectApiBalance || user.balanceMode === 'api');
+    const apiProvider = (user.apiProvider || 'both').toUpperCase();
 
     const usernameDisplay = user.username 
       ? `@${escapeMd(user.username)}` 
@@ -1156,93 +1297,127 @@ export function setupBot(
         ? escapeMd(user.firstName) 
         : 'Not set';
 
-    let msg = `👤 *My Account Profile*\n\n` +
+    const [lbRes, tpnRes] = await Promise.all([
+      getLootBarLiveBalance(),
+      getTopupNationLiveBalance()
+    ]);
+
+    let msg = `👤 *My Account Profile*\n` +
+      `═════════════════════════\n` +
       `🆔 *Chat ID:* \`${ctx.chat!.id}\`\n` +
       `👤 *Username:* ${usernameDisplay}\n` +
       `📊 *Status:* ✅ \`Authorized\`\n`;
 
     if (isApiLinked) {
       msg += `⚡ *Account Tier:* \`Direct API Linked (VIP / Reseller)\`\n` +
-        `💳 *Wallet Mode:* \`Direct API Live Balance (Auto-Sync)\`\n`;
-      try {
-        const asset = await lootbar.queryAsset();
-        const apiBalance = asset?.data?.total_amount || asset?.data?.balance || '0.00';
-        msg += `💰 *Live API Wallet Balance:* \`$${apiBalance} USD\`\n` +
-          `🚀 *Ordering Mode:* \`Direct API Fulfillment\`\n\n` +
-          `_✨ Your account is directly connected to the LootBar API wallet balance. Top-up orders are processed directly against live API funds._`;
-      } catch (e: any) {
-        msg += `💰 *Live API Wallet Balance:* \`Active (Live Connected)\`\n\n` +
-          `_✨ Your account is directly connected to the live API balance._`;
-      }
+        `🌐 *Linked Provider:* \`${apiProvider}\`\n` +
+        `💳 *Wallet Mode:* \`Direct API Live Balance (Auto-Sync)\`\n\n` +
+        `🎮 *LootBar API Live:* \`$${lbRes.balance} USD\`\n` +
+        `🌐 *TopupNation API Live:* \`$${tpnRes.balance} USD\`\n\n` +
+        `_✨ Your account is directly connected to live API funds for instant top-up fulfillment._`;
     } else {
       msg += `⚡ *Account Tier:* \`Standard Member\`\n` +
         `💰 *Wallet Balance:* \`$${Number(user.balance || 0).toFixed(2)} USD\`\n` +
-        `📦 *Ordering Mode:* \`Pre-funded Wallet Balance\``;
+        `📦 *Ordering Mode:* \`Pre-funded Wallet Balance\`\n\n` +
+        `🎮 *LootBar API Live:* \`$${lbRes.balance} USD\`\n` +
+        `🌐 *TopupNation API Live:* \`$${tpnRes.balance} USD\``;
     }
     
-    if (isOwner && !isApiLinked) {
-      try {
-        const asset = await lootbar.queryAsset();
-        const apiBalance = asset?.data?.total_amount || asset?.data?.balance || '0.00';
-        msg += `\n\n👑 *Owner LootBar API Balance:* \`$${apiBalance} USD\``;
-      } catch (e: any) {
-        msg += `\n\n👑 *Owner LootBar API Balance:* \`Error (${escapeMd(e.message)})\``;
-      }
+    if (isOwner) {
+      msg += `\n\n👑 *Owner Access:* \`Full API Admin\``;
     }
+    msg += `\n═════════════════════════`;
     
     const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('💰 Request Balance Top-Up', 'topup_flow_start')]
+      [
+        Markup.button.callback('🎮 LootBar Balance', 'api_bal_lootbar'),
+        Markup.button.callback('🌐 TopupNation Balance', 'api_bal_topupnation')
+      ],
+      [
+        Markup.button.callback('📊 Both API Balances', 'api_bal_both'),
+        Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')
+      ]
     ]);
 
-    return await safeReply(ctx, msg, keyboard);
+    if (isEdit) {
+      return await safeEditMessageText(ctx, msg, keyboard);
+    } else {
+      return await safeReply(ctx, msg, keyboard);
+    }
   }
 
-  async function renderBalance(ctx: MyContext) {
+  async function renderBalance(ctx: MyContext, isEdit: boolean = false) {
     const currentAdminId = await getAdminChatId(adminChatId);
     const user = await User.findOne({ telegramChatId: ctx.chat!.id });
     const isOwner = String(ctx.chat!.id) === currentAdminId;
     const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
+    const apiProvider = (user?.apiProvider || 'both').toUpperCase();
 
-    if (isApiLinked) {
-      try {
-        const asset = await lootbar.queryAsset();
-        const apiBalance = asset?.data?.total_amount || asset?.data?.balance || '0.00';
-        const msg = `⚡ *Direct API Balance Linked (VIP / Reseller)*\n\n` +
-          `💰 *Live API Wallet Balance:* \`$${apiBalance} USD\`\n` +
-          `💳 *Wallet Mode:* \`Direct API Balance Sync\`\n` +
-          `✨ *Status:* Connected directly to live LootBar API funds.\n` +
-          `🚀 You can place top-up orders directly anytime.`;
-        const keyboard = Markup.inlineKeyboard([
-          [Markup.button.callback('💰 Request Balance Top-Up', 'topup_flow_start')]
-        ]);
-        return await safeReply(ctx, msg, keyboard);
-      } catch (e: any) {
-        const keyboard = Markup.inlineKeyboard([
-          [Markup.button.callback('💰 Request Balance Top-Up', 'topup_flow_start')]
-        ]);
-        return await safeReply(ctx, `⚡ *Account Mode:* \`Direct API Balance Linked\`\n💰 *API Wallet:* \`Active (Live Connected)\`\n✨ Live balance linked directly to LootBar API.`, keyboard);
-      }
-    }
+    const [lbRes, tpnRes] = await Promise.all([
+      getLootBarLiveBalance(),
+      getTopupNationLiveBalance()
+    ]);
 
-    let msg = `💰 *Your Wallet Balance:* \`$${Number(user?.balance || 0).toFixed(2)} USD\``;
-    
-    if (isOwner) {
-      try {
-        const asset = await lootbar.queryAsset();
-        const apiBalance = asset?.data?.total_amount || asset?.data?.balance || '0.00';
-        msg += `\n👑 *Owner LootBar API Balance:* \`$${apiBalance} USD\``;
-      } catch (e: any) {
-        msg += `\n👑 *Owner LootBar API Balance:* \`Error (${escapeMd(e.message)})\``;
-      }
-    }
+    let msg = `💳 *Account & API Balance Summary*\n` +
+      `═════════════════════════\n` +
+      `💰 *Your Wallet Balance:* \`$${Number(user?.balance || 0).toFixed(2)} USD\`\n` +
+      `⚡ *Account Tier:* \`${isApiLinked ? `Direct API Linked (${apiProvider})` : 'Standard Member'}\`\n` +
+      `═════════════════════════\n` +
+      `🎮 *LootBar API Balance:* \`$${lbRes.balance} USD\` (${lbRes.success ? '✅ Connected' : '⚠️ Offline'})\n` +
+      `🌐 *TopupNation API Balance:* \`$${tpnRes.balance} USD\` (${tpnRes.success ? '✅ Connected' : '⚠️ Offline'})\n` +
+      `═════════════════════════\n` +
+      `💡 _API Balance တစ်ခုချင်းစီကို သီးသန့် ရွေးချယ်ကြည့်ရှုလိုပါက အောက်ပါခလုတ်များကို နှိပ်ပါ:_`;
 
     const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('💰 Request Balance Top-Up', 'topup_flow_start')]
+      [
+        Markup.button.callback('🎮 LootBar Balance', 'api_bal_lootbar'),
+        Markup.button.callback('🌐 TopupNation Balance', 'api_bal_topupnation')
+      ],
+      [
+        Markup.button.callback('🔄 Both API Balances', 'api_bal_both'),
+        Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')
+      ],
+      [
+        Markup.button.callback('👤 My Account Profile', 'view_my_profile')
+      ]
     ]);
-    return await safeReply(ctx, msg, keyboard);
+
+    if (isEdit) {
+      return await safeEditMessageText(ctx, msg, keyboard);
+    } else {
+      return await safeReply(ctx, msg, keyboard);
+    }
   }
 
-  bot.hears(['👤 My Account', 'My Account', 'Account', 'account', '👤 Profile', 'Profile', 'profile', '👤 My Profile'], async (ctx) => {
+  // Action Handlers for API Balance Switcher
+  bot.action('api_bal_both', async (ctx) => {
+    await ctx.answerCbQuery('Refreshing both API balances...');
+    return await renderDualApiBalance(ctx, 'both', true);
+  });
+
+  bot.action('api_bal_lootbar', async (ctx) => {
+    await ctx.answerCbQuery('Checking LootBar API balance...');
+    return await renderDualApiBalance(ctx, 'lootbar', true);
+  });
+
+  bot.action('api_bal_topupnation', async (ctx) => {
+    await ctx.answerCbQuery('Checking TopupNation API balance...');
+    return await renderDualApiBalance(ctx, 'topupnation', true);
+  });
+
+  bot.action('view_my_balance', async (ctx) => {
+    await ctx.answerCbQuery();
+    return await renderBalance(ctx, true);
+  });
+
+  bot.action('view_my_profile', async (ctx) => {
+    await ctx.answerCbQuery();
+    return await renderAccountProfile(ctx, true);
+  });
+
+  bot.hears([
+    '👤 My Account', 'My Account', 'Account', 'account', '👤 Profile', 'Profile', 'profile', '👤 My Profile'
+  ], async (ctx) => {
     return await renderAccountProfile(ctx);
   });
 
@@ -1250,11 +1425,29 @@ export function setupBot(
     return await renderAccountProfile(ctx);
   });
 
-  bot.hears(['💳 My Balance', 'My Balance', 'Balance', 'balance', 'Wallet', 'wallet', '💳 Wallet', '💰 Balance'], async (ctx) => {
+  bot.hears([
+    '💳 Check Balance', '💳 My Balance', 'My Balance', 'Balance', 'balance', 
+    'Wallet', 'wallet', '💳 Wallet', '💰 Balance', 'API Balance', 'api balance', 
+    'API Balance စစ်မည်', 'လက်ကျန်ငွေ', 'လက်ကျန်ငွေ စစ်မည်'
+  ], async (ctx) => {
     return await renderBalance(ctx);
   });
 
-  bot.command(['balance', 'wallet', 'mybalance', 'mywallet'], async (ctx) => {
+  bot.command([
+    'balance', 'wallet', 'mybalance', 'mywallet', 'checkbalance',
+    'apibalance', 'apibal', 'apis', 'api', 'adminbalance',
+    'lootbarbalance', 'lbbalance', 'tpnbalance', 'topupnationbalance'
+  ], async (ctx) => {
+    const text = (ctx.message && 'text' in ctx.message ? ctx.message.text : '').toLowerCase();
+    if (text.includes('lootbar') || text.includes('lbbalance')) {
+      return await renderDualApiBalance(ctx, 'lootbar');
+    }
+    if (text.includes('tpn') || text.includes('topupnation')) {
+      return await renderDualApiBalance(ctx, 'topupnation');
+    }
+    if (text.includes('apibalance') || text.includes('apis') || text.startsWith('/api')) {
+      return await renderDualApiBalance(ctx, 'both');
+    }
     return await renderBalance(ctx);
   });
 

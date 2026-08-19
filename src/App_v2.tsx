@@ -486,12 +486,16 @@ export default function App() {
       .catch(err => console.error(err));
   };
 
-  const handleToggleApiBalance = (chatId: string, currentIsApi: boolean) => {
+  const handleToggleApiBalance = (chatId: string, currentIsApi: boolean, apiProvider: 'both' | 'lootbar' | 'topupnation' = 'both') => {
     setTogglingApiUser(chatId);
     fetch('/api/telegram-users/toggle-api-balance', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chatId, useDirectApiBalance: !currentIsApi })
+      body: JSON.stringify({ 
+        chatId, 
+        useDirectApiBalance: !currentIsApi,
+        apiProvider: !currentIsApi ? apiProvider : 'both'
+      })
     })
       .then(res => res.json())
       .then(data => {
@@ -1467,7 +1471,9 @@ export default function App() {
                             {isApiLinked ? (
                               <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-100/80 border border-emerald-300 rounded-lg text-emerald-900 shadow-xs">
                                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                                <span className="text-xs font-bold uppercase tracking-wider">⚡ Direct API Balance Linked (VIP)</span>
+                                <span className="text-xs font-bold uppercase tracking-wider">
+                                  ⚡ API Linked ({user.apiProvider ? user.apiProvider.toUpperCase() : 'BOTH'})
+                                </span>
                                 <span className="text-xs text-emerald-700">| Direct Fulfillment</span>
                               </div>
                             ) : (
@@ -1502,19 +1508,40 @@ export default function App() {
                         {/* Action Buttons & Management */}
                         <div className="flex flex-col items-start lg:items-end gap-3 pt-3 lg:pt-0 border-t border-neutral-100 lg:border-t-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            {/* API Balance Mode Switcher Button */}
-                            <button
-                              onClick={() => handleToggleApiBalance(user.telegramChatId, isApiLinked)}
-                              disabled={togglingApiUser === user.telegramChatId}
-                              className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 shadow-xs disabled:opacity-50 ${
-                                isApiLinked
-                                  ? 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100'
-                                  : 'bg-emerald-600 border-emerald-600 text-white hover:bg-emerald-700'
-                              }`}
-                              title={isApiLinked ? 'Switch back to standard wallet balance mode' : 'Connect this user directly to LootBar Live API balance'}
-                            >
-                              <span>{isApiLinked ? '💳 Switch to Wallet Mode' : '⚡ Link to API Balance'}</span>
-                            </button>
+                            {/* API Balance Mode Switcher */}
+                            {isApiLinked ? (
+                              <div className="flex items-center gap-1">
+                                <select
+                                  value={user.apiProvider || 'both'}
+                                  onChange={(e) => handleToggleApiBalance(user.telegramChatId, false, e.target.value as any)}
+                                  className="text-xs font-semibold px-2 py-1.5 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 outline-none cursor-pointer"
+                                  title="Change linked API provider"
+                                >
+                                  <option value="both">🌐 Both APIs (Dual)</option>
+                                  <option value="lootbar">🎮 LootBar Only</option>
+                                  <option value="topupnation">🌐 TopupNation Only</option>
+                                </select>
+                                <button
+                                  onClick={() => handleToggleApiBalance(user.telegramChatId, true)}
+                                  disabled={togglingApiUser === user.telegramChatId}
+                                  className="text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 transition-all shadow-xs disabled:opacity-50"
+                                  title="Switch back to standard wallet balance mode"
+                                >
+                                  💳 Switch to Wallet
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={() => handleToggleApiBalance(user.telegramChatId, false, 'both')}
+                                  disabled={togglingApiUser === user.telegramChatId}
+                                  className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 transition-all flex items-center gap-1.5 shadow-xs disabled:opacity-50"
+                                  title="Connect this user directly to Dual Live API balance"
+                                >
+                                  <span>⚡ Link API Balance</span>
+                                </button>
+                              </div>
+                            )}
 
                             {/* Notification Alert Toggle */}
                             <button 
