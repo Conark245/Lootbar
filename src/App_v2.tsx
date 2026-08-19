@@ -29,7 +29,6 @@ export default function App() {
   const [loginError, setLoginError] = useState('');
   const [showLoginModal, setShowLoginModal] = useState(false);
 
-  
   // Owner & Balance State
   const [adminChatId, setAdminChatId] = useState('');
   const [lootbarBalance, setLootbarBalance] = useState<any>(null);
@@ -63,6 +62,153 @@ export default function App() {
 
   // Force dashboard re-fetch
   const [refreshKey, setRefreshKey] = useState(0);
+
+  // TopUpNation Reseller API State
+  const [tpnConfigured, setTpnConfigured] = useState<boolean | null>(null);
+  const [tpnApiKey, setTpnApiKey] = useState('');
+  const [tpnApiSecret, setTpnApiSecret] = useState('');
+  const [tpnWebhookSecret, setTpnWebhookSecret] = useState('');
+  const [tpnBaseUrl, setTpnBaseUrl] = useState('https://topupnation.io');
+  const [tpnWebhookUrl, setTpnWebhookUrl] = useState('');
+  const [tpnBalance, setTpnBalance] = useState<any>(null);
+  const [tpnProducts, setTpnProducts] = useState<any[]>([]);
+  const [loadingTpnProducts, setLoadingTpnProducts] = useState(false);
+  const [isSyncingTpn, setIsSyncingTpn] = useState(false);
+  const [tpnShortKeyInput, setTpnShortKeyInput] = useState<Record<string, string>>({});
+  const [showTpnModal, setShowTpnModal] = useState(false);
+  const [tpnError, setTpnError] = useState('');
+  const [isSavingTpn, setIsSavingTpn] = useState(false);
+  const [copiedWebhook, setCopiedWebhook] = useState(false);
+
+  const fetchTpnStatus = async () => {
+    try {
+      const data = await safeFetchJson('/api/settings/topupnation/status');
+      if (data) {
+        setTpnConfigured(!!data.isConfigured);
+        if (data.baseUrl) setTpnBaseUrl(data.baseUrl);
+        if (data.webhookUrl) {
+          setTpnWebhookUrl(data.webhookUrl);
+        } else {
+          setTpnWebhookUrl(`${window.location.origin}/api/webhooks/topupnation`);
+        }
+        if (data.isConfigured) {
+          fetchTpnBalance();
+          fetchTpnProducts();
+        }
+      } else {
+        setTpnConfigured(false);
+        setTpnWebhookUrl(`${window.location.origin}/api/webhooks/topupnation`);
+      }
+    } catch {
+      setTpnConfigured(false);
+    }
+  };
+
+  const fetchTpnBalance = async () => {
+    const data = await safeFetchJson('/api/topupnation/balance');
+    if (data?.success && data?.data) {
+      setTpnBalance(data.data);
+    }
+  };
+
+  const fetchTpnProducts = async () => {
+    setLoadingTpnProducts(true);
+    try {
+      const data = await safeFetchJson('/api/topupnation/products');
+      if (data?.success && Array.isArray(data.data || data.products)) {
+        setTpnProducts(data.data || data.products || []);
+      }
+    } finally {
+      setLoadingTpnProducts(false);
+    }
+  };
+
+  const handleSyncTpnProducts = async () => {
+    setIsSyncingTpn(true);
+    try {
+      const res = await fetch('/api/topupnation/products/sync', { method: 'POST' });
+      const data = await res.json();
+      if (data?.success) {
+        fetchTpnProducts();
+      } else {
+        alert(`Failed to sync: ${data?.error || 'Unknown error'}`);
+      }
+    } catch (err: any) {
+      alert(`Error syncing products: ${err.message}`);
+    } finally {
+      setIsSyncingTpn(false);
+    }
+  };
+
+  const handleSaveTpnCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setTpnError('');
+    setIsSavingTpn(true);
+    try {
+      const res = await fetch('/api/settings/topupnation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          apiKey: tpnApiKey,
+          apiSecret: tpnApiSecret,
+          webhookSecret: tpnWebhookSecret,
+          baseUrl: tpnBaseUrl
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setTpnError(data.error || 'Failed to authenticate with TopUpNation');
+      } else {
+        setShowTpnModal(false);
+        setTpnConfigured(true);
+        fetchTpnStatus();
+        fetchTpnBalance();
+        handleSyncTpnProducts();
+      }
+    } catch (err: any) {
+      setTpnError(err.message || 'Connection error');
+    } finally {
+      setIsSavingTpn(false);
+    }
+  };
+
+  const handleSaveTpnShortKey = async (productId: string) => {
+    const key = tpnShortKeyInput[productId];
+    if (key === undefined) return;
+    try {
+      const res = await fetch(`/api/topupnation/products/${productId}/shortkey`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shortKey: key })
+      });
+      const data = await res.json();
+      if (data?.success) {
+        fetchTpnProducts();
+      } else {
+        alert(data?.error || 'Failed to update shortKey');
+      }
+    } catch (err: any) {
+      alert(`Error updating shortKey: ${err.message}`);
+    }
+  };
+
+  const handleToggleTpnProduct = async (productId: string, currentEnabled: boolean) => {
+    try {
+      const res = await fetch(`/api/topupnation/products/${productId}/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isEnabled: !currentEnabled })
+      });
+      const data = await res.json();
+      if (data?.success) {
+        setTpnProducts(prev => prev.map(p => p.productId === productId ? { ...p, isEnabled: !currentEnabled, status: !currentEnabled ? 'ACTIVE' : 'DISABLED' } : p));
+      } else {
+        alert(data?.error || 'Failed to toggle product status');
+      }
+    } catch (err: any) {
+      alert(`Error toggling product: ${err.message}`);
+    }
+  };
 
   const fetchLootbarBalance = async () => {
     const data = await safeFetchJson('/api/lootbar/balance');
@@ -222,6 +368,8 @@ export default function App() {
     fetchSavedGames();
     fetchTelegramUsers();
     fetchOrders();
+    fetchTpnStatus();
+    fetchTpnProducts();
   }, []);
 
   useEffect(() => {
@@ -486,6 +634,111 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900 p-8">
+      {/* TopupNation Settings Modal */}
+      {showTpnModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white p-8 rounded-2xl shadow-sm border border-neutral-200 w-full max-w-lg relative">
+            <button 
+              onClick={() => setShowTpnModal(false)}
+              className="absolute top-4 right-4 text-neutral-400 hover:text-neutral-600 font-bold text-lg"
+            >
+              ✕
+            </button>
+            <div className="text-center mb-6">
+              <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center mx-auto mb-3 font-bold text-xl">
+                🌐
+              </div>
+              <h1 className="text-2xl font-bold text-neutral-900 tracking-tight">TopupNation Reseller API</h1>
+              <p className="text-neutral-500 mt-1 text-sm">Configure your TopupNation Reseller credentials and webhook</p>
+            </div>
+
+            <form onSubmit={handleSaveTpnCredentials} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 mb-1">API Key</label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="e.g. tpn_live_..."
+                  value={tpnApiKey}
+                  onChange={e => setTpnApiKey(e.target.value)}
+                  className="w-full px-4 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none font-mono text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 mb-1">API Secret (HMAC-SHA256)</label>
+                <input 
+                  type="password" 
+                  required
+                  placeholder="••••••••••••••••"
+                  value={tpnApiSecret}
+                  onChange={e => setTpnApiSecret(e.target.value)}
+                  className="w-full px-4 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none font-mono text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 mb-1">Webhook Secret (Optional)</label>
+                <input 
+                  type="password" 
+                  placeholder="Webhook signing secret"
+                  value={tpnWebhookSecret}
+                  onChange={e => setTpnWebhookSecret(e.target.value)}
+                  className="w-full px-4 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none font-mono text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 mb-1">API Base URL</label>
+                <input 
+                  type="text" 
+                  placeholder="https://topupnation.io/api/v1"
+                  value={tpnBaseUrl}
+                  onChange={e => setTpnBaseUrl(e.target.value)}
+                  className="w-full px-4 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none font-mono text-sm text-neutral-600"
+                />
+              </div>
+
+              {tpnWebhookUrl && (
+                <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-lg text-xs">
+                  <span className="font-semibold text-indigo-900 block mb-1">📌 Your Webhook Callback URL:</span>
+                  <div className="flex items-center gap-2">
+                    <code className="bg-white px-2 py-1 rounded border border-indigo-200 text-indigo-700 flex-1 truncate font-mono">
+                      {tpnWebhookUrl}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(tpnWebhookUrl);
+                        alert('Copied webhook URL!');
+                      }}
+                      className="px-2.5 py-1 bg-indigo-600 text-white rounded font-medium hover:bg-indigo-700 transition-colors"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                  <p className="text-indigo-600 mt-1 text-[11px]">Set this URL in TopupNation Reseller Portal to receive instant order updates.</p>
+                </div>
+              )}
+
+              {tpnError && (
+                <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm border border-red-100">
+                  {tpnError}
+                </div>
+              )}
+
+              <button 
+                type="submit" 
+                disabled={isSavingTpn}
+                className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-neutral-400 text-white font-medium rounded-lg transition-colors mt-4"
+              >
+                {isSavingTpn ? 'Verifying & Connecting...' : 'Save & Verify TopupNation API'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Login Modal */}
       {showLoginModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
@@ -554,71 +807,255 @@ export default function App() {
         </div>
       )}
 
-      <div className="max-w-3xl mx-auto space-y-8">
+      <div className="max-w-4xl mx-auto space-y-8">
         
-        <div className="flex justify-between items-center bg-white p-6 rounded-xl shadow-sm border border-neutral-200">
-          <div>
-            <h1 className="text-xl font-bold">LootBar Dashboard</h1>
-            <p className="text-neutral-500 text-sm">
-              {isConfigured ? 'Authenticated and connected to API' : 'Not connected to LootBar'}
-            </p>
+        {/* Multi-Provider Header */}
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-neutral-200">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-bold text-neutral-900">Reseller API Dashboard</h1>
+                <span className="text-xs bg-neutral-100 text-neutral-700 font-semibold px-2 py-0.5 rounded-full">Multi-Provider</span>
+              </div>
+              <p className="text-neutral-500 text-sm mt-0.5">
+                Manage integrated providers: LootBar API & TopUpNation API
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button 
+                onClick={() => setShowLoginModal(true)}
+                className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors flex items-center gap-1.5 ${
+                  isConfigured 
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100' 
+                    : 'bg-neutral-100 text-neutral-700 border-neutral-200 hover:bg-neutral-200'
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${isConfigured ? 'bg-emerald-500' : 'bg-neutral-400'}`}></span>
+                LootBar API: {isConfigured ? 'Connected' : 'Setup'}
+              </button>
+
+              <button 
+                onClick={() => setShowTpnModal(true)}
+                className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors flex items-center gap-1.5 ${
+                  tpnConfigured 
+                    ? 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100' 
+                    : 'bg-neutral-100 text-neutral-700 border-neutral-200 hover:bg-neutral-200'
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${tpnConfigured ? 'bg-indigo-500' : 'bg-neutral-400'}`}></span>
+                TopupNation API: {tpnConfigured ? 'Connected' : 'Setup'}
+              </button>
+            </div>
           </div>
-          <button 
-            onClick={() => setShowLoginModal(true)}
-            className="px-4 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm font-medium rounded-lg transition-colors"
-          >
-            {isConfigured ? 'Update Credentials' : 'Login to LootBar'}
-          </button>
         </div>
 
-        {/* Owner Info & Real Balance */}
+        {/* Owner Settings & Reseller Balances */}
         <div className="bg-white p-8 rounded-xl shadow-sm border border-neutral-200">
-          <div className="flex flex-col md:flex-row gap-8 justify-between">
-            <div className="flex-1">
-              <h2 className="text-lg font-bold text-neutral-900 mb-4">Owner Settings</h2>
-              <div className="flex gap-3">
-                <input 
-                  type="text" 
-                  placeholder="Owner Telegram Chat ID"
-                  value={adminChatId}
-                  onChange={e => setAdminChatId(e.target.value)}
-                  className="flex-1 px-4 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-                />
-                <button 
-                  onClick={handleSaveAdmin}
-                  className="px-4 py-2 bg-neutral-900 hover:bg-neutral-800 text-white font-medium rounded-lg transition-colors whitespace-nowrap"
-                >
-                  Save Owner
-                </button>
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+            {/* Owner settings */}
+            <div className="lg:col-span-5 flex flex-col justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-neutral-900 mb-1">Owner Settings</h2>
+                <p className="text-xs text-neutral-500 mb-4">Telegram Bot administrator chat ID for notifications & management</p>
+                <div className="flex gap-2">
+                  <input 
+                    type="text" 
+                    placeholder="Owner Chat ID"
+                    value={adminChatId}
+                    onChange={e => setAdminChatId(e.target.value)}
+                    className="flex-1 px-3.5 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm"
+                  />
+                  <button 
+                    onClick={handleSaveAdmin}
+                    className="px-4 py-2 bg-neutral-900 hover:bg-neutral-800 text-white text-sm font-medium rounded-lg transition-colors whitespace-nowrap"
+                  >
+                    Save
+                  </button>
+                </div>
               </div>
-              <p className="text-xs text-neutral-500 mt-2">This ID will receive notifications and have admin access in the Telegram Bot.</p>
             </div>
             
-            <div className="md:w-72 bg-gradient-to-br from-emerald-500 to-emerald-700 rounded-xl p-6 shadow-md border border-emerald-400 flex flex-col justify-center items-center text-white relative overflow-hidden">
-              <div className="absolute top-0 right-0 -mr-8 -mt-8 w-24 h-24 rounded-full bg-white/10 blur-xl"></div>
-              <div className="absolute bottom-0 left-0 -ml-8 -mb-8 w-32 h-32 rounded-full bg-black/10 blur-xl"></div>
-              
+            {/* LootBar Balance Card */}
+            <div className="lg:col-span-3.5 bg-gradient-to-br from-emerald-600 to-teal-700 rounded-xl p-5 shadow-md border border-emerald-500 flex flex-col justify-between text-white relative overflow-hidden">
               <div className="flex items-center justify-between w-full relative z-10 mb-2">
-                <span className="text-xs font-bold text-emerald-100 uppercase tracking-wider">LootBar Balance (API)</span>
+                <span className="text-[11px] font-bold text-emerald-100 uppercase tracking-wider">LootBar Balance</span>
                 <button 
                   onClick={fetchLootbarBalance}
-                  title="Refresh API Balance"
-                  className="p-1 hover:bg-white/20 rounded-md transition-colors text-emerald-100"
+                  title="Refresh Balance"
+                  className="p-1 hover:bg-white/20 rounded transition-colors text-emerald-100"
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
                 </button>
               </div>
 
               {lootbarBalance ? (
-                <div className="text-4xl font-extrabold relative z-10 flex items-baseline gap-1">
+                <div className="text-2xl font-extrabold relative z-10 flex items-baseline gap-1">
                   ${lootbarBalance.total_amount || lootbarBalance.balance || '0.00'} 
-                  <span className="text-sm text-emerald-200 font-semibold ml-1">USD</span>
+                  <span className="text-xs text-emerald-200 font-semibold">USD</span>
                 </div>
               ) : (
-                <div className="text-sm text-emerald-200 relative z-10 italic">Not available</div>
+                <div className="text-xs text-emerald-200 relative z-10 italic">Not connected</div>
+              )}
+            </div>
+
+            {/* TopupNation Balance Card */}
+            <div className="lg:col-span-3.5 bg-gradient-to-br from-indigo-600 to-violet-700 rounded-xl p-5 shadow-md border border-indigo-500 flex flex-col justify-between text-white relative overflow-hidden">
+              <div className="flex items-center justify-between w-full relative z-10 mb-2">
+                <span className="text-[11px] font-bold text-indigo-100 uppercase tracking-wider">TopupNation Balance</span>
+                <button 
+                  onClick={fetchTpnStatus}
+                  title="Refresh Balance"
+                  className="p-1 hover:bg-white/20 rounded transition-colors text-indigo-100"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+                </button>
+              </div>
+
+              {tpnBalance ? (
+                <div className="text-2xl font-extrabold relative z-10 flex items-baseline gap-1">
+                  ${Number(tpnBalance.balance || 0).toFixed(2)} 
+                  <span className="text-xs text-indigo-200 font-semibold">{tpnBalance.currency || 'USD'}</span>
+                </div>
+              ) : (
+                <div className="text-xs text-indigo-200 relative z-10 italic">
+                  {tpnConfigured ? 'Loading...' : 'Not connected'}
+                </div>
               )}
             </div>
           </div>
+        </div>
+
+        {/* TopupNation Products Management */}
+        <div className="bg-white p-8 rounded-xl shadow-sm border border-neutral-200">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-2">
+            <h2 className="text-xl font-bold text-neutral-900 flex items-center gap-2">
+              <span>🌐</span> TopUpNation Products Catalog
+            </h2>
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={handleSyncTpnProducts}
+                disabled={isSyncingTpn || !tpnConfigured}
+                className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-neutral-300 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5"
+              >
+                <svg className={`w-3.5 h-3.5 ${isSyncingTpn ? 'animate-spin' : ''}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                {isSyncingTpn ? 'Syncing Catalog...' : 'Sync TopupNation Catalog'}
+              </button>
+            </div>
+          </div>
+          <p className="text-sm text-neutral-500 mb-6">
+            Synced products from TopupNation. Set custom Short Keys for rapid ordering in Telegram (e.g. <span className="font-mono font-semibold text-neutral-800">.tp</span> or <span className="font-mono font-semibold text-neutral-800">.tml</span>).
+          </p>
+
+          {!tpnConfigured ? (
+            <div className="text-center py-10 bg-neutral-50 rounded-lg border border-neutral-200 border-dashed">
+              <p className="text-neutral-500 mb-3 text-sm">TopupNation API is not connected.</p>
+              <button 
+                onClick={() => setShowTpnModal(true)}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors"
+              >
+                Connect TopupNation API
+              </button>
+            </div>
+          ) : loadingTpnProducts ? (
+            <p className="text-neutral-500 py-6 text-center text-sm">Loading TopupNation products...</p>
+          ) : tpnProducts.length === 0 ? (
+            <div className="text-center py-8 bg-neutral-50 rounded-lg border border-neutral-200 text-sm text-neutral-500">
+              No products synced yet. Click <span className="font-semibold text-indigo-600">"Sync TopupNation Catalog"</span> to import products.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {tpnProducts.map((p) => {
+                const activeKey = p.shortKey || '';
+                const currentInput = tpnShortKeyInput[p.productId] !== undefined ? tpnShortKeyInput[p.productId] : activeKey;
+                const isModified = currentInput !== activeKey;
+                const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+
+                return (
+                  <div 
+                    key={p.productId} 
+                    className={`p-5 bg-white border-2 rounded-2xl transition-all flex flex-col justify-between ${
+                      isEnabled 
+                        ? 'border-indigo-500 shadow-md ring-1 ring-indigo-500/20' 
+                        : 'border-neutral-200 hover:border-neutral-300 shadow-sm opacity-75'
+                    }`}
+                  >
+                    <div className="mb-3">
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-extrabold text-base text-neutral-900 leading-tight">{p.name}</span>
+                            <span className="text-[10px] bg-indigo-50 text-indigo-700 font-semibold px-1.5 py-0.5 rounded border border-indigo-100">TopupNation</span>
+                          </div>
+                          <p className="text-xs text-neutral-400 font-mono mt-0.5">ID: {p.productId} • {p.skus?.length || 0} packages</p>
+                        </div>
+                        {isEnabled ? (
+                          <span className="text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-full whitespace-nowrap">
+                            ✓ Bot Active
+                          </span>
+                        ) : (
+                          <span className="text-[11px] font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full whitespace-nowrap">
+                            Disabled
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 text-xs text-neutral-700 space-y-1 mb-3">
+                        <div className="flex justify-between items-center">
+                          <span className="font-medium text-neutral-500">Short Key:</span>
+                          <span className="font-mono font-bold text-neutral-900">.{activeKey || `t${p.productId.slice(0, 4)}`}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="font-medium text-neutral-500">View Products:</span>
+                          <span className="font-mono text-neutral-700">.{activeKey || `t${p.productId.slice(0, 4)}`}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="font-medium text-neutral-500">Order Format:</span>
+                          <span className="font-mono text-neutral-700">.{activeKey || `t${p.productId.slice(0, 4)}`} &lt;PlayerID&gt; &lt;Product&gt;</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1 flex-1">
+                          <span className="text-xs font-bold text-neutral-400">.</span>
+                          <input
+                            type="text"
+                            placeholder="Custom Short Key (e.g. tp)"
+                            value={currentInput}
+                            onChange={(e) => {
+                              const val = e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+                              setTpnShortKeyInput(prev => ({ ...prev, [p.productId]: val }));
+                            }}
+                            className="w-full text-xs font-mono px-2 py-1 border border-neutral-300 rounded focus:ring-1 focus:ring-indigo-500 outline-none"
+                          />
+                        </div>
+                        {isModified && (
+                          <button
+                            onClick={() => handleSaveTpnShortKey(p.productId)}
+                            className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded transition-colors"
+                          >
+                            Save Key
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => handleToggleTpnProduct(p.productId, isEnabled)}
+                      className={`w-full py-2 text-xs font-bold rounded-xl transition-colors border flex justify-center items-center gap-1.5 ${
+                        isEnabled
+                          ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200'
+                          : 'bg-indigo-600 hover:bg-indigo-700 text-white border-transparent'
+                      }`}
+                    >
+                      {isEnabled ? 'Disable from Bot' : '✓ Enable for Bot'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Telegram Bot Games Management */}
@@ -1330,6 +1767,7 @@ export default function App() {
                   <thead>
                     <tr className="border-b border-neutral-200 bg-neutral-50/80 text-neutral-600 font-medium text-xs">
                       <th className="py-3 px-4">Date / Time</th>
+                      <th className="py-3 px-4">Provider</th>
                       <th className="py-3 px-4">User</th>
                       <th className="py-3 px-4">Game & Product</th>
                       <th className="py-3 px-4">Player Name</th>
@@ -1343,6 +1781,7 @@ export default function App() {
                     {filteredOrders.map((o) => {
                       const status = getOrderStateDetails(o.state);
                       const isSyncingThis = syncingRefId === o.referenceId;
+                      const provider = o.provider || 'lootbar';
 
                       return (
                         <tr key={o.referenceId} className="hover:bg-neutral-50/70 transition-colors">
@@ -1350,6 +1789,19 @@ export default function App() {
                           <td className="py-3.5 px-4 text-xs text-neutral-500 whitespace-nowrap">
                             <div className="font-medium text-neutral-700">{new Date(o.createdAt).toLocaleDateString()}</div>
                             <div className="text-[11px] text-neutral-400">{new Date(o.createdAt).toLocaleTimeString()}</div>
+                          </td>
+
+                          {/* Provider */}
+                          <td className="py-3.5 px-4 whitespace-nowrap">
+                            {provider === 'topupnation' ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md">
+                                🌐 TopupNation
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+                                🟢 LootBar
+                              </span>
+                            )}
                           </td>
 
                           {/* User */}

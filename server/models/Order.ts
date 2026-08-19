@@ -4,6 +4,13 @@ export interface IOrder extends Document {
   referenceId: string;
   orderId?: string;
   telegramChatId: number;
+  provider?: 'lootbar' | 'topupnation';
+  providerOrderId?: string;
+  providerReceiptNumber?: string;
+  providerProductId?: string;
+  providerSku?: string;
+  idempotencyKey?: string;
+  statusText?: string;
   gameId: string;
   gameName?: string;
   skuId: string;
@@ -18,8 +25,15 @@ export interface IOrder extends Document {
 
 const orderSchema = new mongoose.Schema({
   referenceId: { type: String, required: true, unique: true, index: true },
-  orderId: { type: String }, // LootBar's platform order number, set once known
-  telegramChatId: { type: Number, required: true },
+  orderId: { type: String, index: true }, // Platform order number (LootBar or TopupNation)
+  telegramChatId: { type: Number, required: true, index: true },
+  provider: { type: String, enum: ['lootbar', 'topupnation'], default: 'lootbar', index: true },
+  providerOrderId: { type: String, index: true },
+  providerReceiptNumber: { type: String },
+  providerProductId: { type: String },
+  providerSku: { type: String },
+  idempotencyKey: { type: String, index: true },
+  statusText: { type: String },
   gameId: { type: String, required: true },
   gameName: { type: String },
   skuId: { type: String, required: true },
@@ -27,7 +41,7 @@ const orderSchema = new mongoose.Schema({
   playerName: { type: String },
   price: { type: Number, default: 0 },
   extraInfo: { type: mongoose.Schema.Types.Mixed },
-  state: { type: Number, default: 1 }, // 1=in transaction, 2=success, 3=failed, 4=settling, 5=partial, 6=cancelled, 7=deleted
+  state: { type: Number, default: 1 }, // 0=pending, 1=in transaction/processing, 2=success, 3=failed, 4=settling, 5=partial, 6=cancelled, 7=refunded
 }, { timestamps: true });
 
 export const Order: Model<IOrder> = (mongoose.models.Order as Model<IOrder>) || mongoose.model<IOrder>('Order', orderSchema);

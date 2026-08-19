@@ -3,6 +3,8 @@ import path from "path";
 import cors from "cors";
 import dotenv from "dotenv";
 import { LootBarClient } from "./server/lootbar";
+import { TopupNationClient } from "./server/providers/topupnation/TopupNationClient";
+import { TopupNationService } from "./server/providers/topupnation/TopupNationService";
 import { setupBot } from "./server/bot";
 import { connectDB } from "./server/db";
 import { SavedGame } from "./server/models/SavedGame";
@@ -10,6 +12,7 @@ import { Order } from "./server/models/Order";
 import { AppConfig } from "./server/models/AppConfig";
 import { User } from "./server/models/User";
 import { TopupRequest } from "./server/models/TopupRequest";
+import { TopupNationProduct } from "./server/models/TopupNationProduct";
 import { createServer as createViteServer } from "vite";
 
 dotenv.config();
@@ -26,25 +29,23 @@ app.use(express.json({
   }
 }));
 
-// Initialize MongoDB and load config
-connectDB().then(async () => {
-  try {
-    const config = await AppConfig.findOne({ key: 'lootbar_credentials' });
-    if (config && config.value) {
-      lootbarClient.updateCredentials(config.value.nickname, config.value.email, config.value.password);
-      console.log("Loaded LootBar credentials from MongoDB");
-    }
-  } catch (err) {
-    console.error("Failed to load config from DB", err);
-  }
-});
-
 // Initialize LootBar Client
 const LOOTBAR_NICKNAME = process.env.LOOTBAR_NICKNAME || "";
 const LOOTBAR_EMAIL = process.env.LOOTBAR_EMAIL || "";
 const LOOTBAR_PASSWORD = process.env.LOOTBAR_PASSWORD || "";
 const APP_URL = (process.env.APP_URL || "").replace(/\/$/, "");
 const lootbarClient = new LootBarClient(LOOTBAR_NICKNAME, LOOTBAR_EMAIL, LOOTBAR_PASSWORD, undefined, APP_URL);
+
+// Initialize TopupNation Client & Service
+const TOPUPNATION_API_KEY = process.env.TOPUPNATION_API_KEY || "";
+const TOPUPNATION_API_SECRET = process.env.TOPUPNATION_API_SECRET || "";
+const TOPUPNATION_WEBHOOK_SECRET = process.env.TOPUPNATION_WEBHOOK_SECRET || "";
+const topupNationClient = new TopupNationClient({
+  apiKey: TOPUPNATION_API_KEY,
+  apiSecret: TOPUPNATION_API_SECRET,
+  webhookSecret: TOPUPNATION_WEBHOOK_SECRET
+});
+const topupNationService = new TopupNationService(topupNationClient);
 
 // Initialize Telegram Bot if Token is present
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -57,7 +58,10 @@ if (BOT_TOKEN && BOT_TOKEN !== 'YOUR_BOT_TOKEN_HERE') {
   telegramBot = setupBot(BOT_TOKEN, ADMIN_CHAT_ID, lootbarClient, {
     isServerless,
     webhookUrl
-  });
+  }, topupNationService);
+
+  // Provide Telegram instance to TopupNationService for order status notifications
+  topupNationService.setTelegram(telegramBot.telegram, ADMIN_CHAT_ID);
 
   // Mount Telegram webhook handler strictly on its dedicated route
   if (isServerless || webhookUrl) {
@@ -67,6 +71,32 @@ if (BOT_TOKEN && BOT_TOKEN !== 'YOUR_BOT_TOKEN_HERE') {
 } else {
   console.warn("TELEGRAM_BOT_TOKEN is missing or invalid. Bot will not start.");
 }
+
+// Initialize MongoDB and load config
+connectDB().then(async () => {
+  try {
+    const config = await AppConfig.findOne({ key: 'lootbar_credentials' });
+    if (config && config.value) {
+      lootbarClient.updateCredentials(config.value.nickname, config.value.email, config.value.password);
+      console.log("Loaded LootBar credentials from MongoDB");
+    }
+
+    const tpnConfig = await AppConfig.findOne({ key: 'topupnation_credentials' });
+    if (tpnConfig && tpnConfig.value) {
+      topupNationClient.updateCredentials(tpnConfig.value);
+      console.log("Loaded TopupNation credentials from MongoDB");
+    }
+  } catch (err) {
+    console.error("Failed to load config from DB", err);
+  }
+});
+
+// Periodic background poller for active TopupNation orders
+setInterval(() => {
+  topupNationService.pollActiveOrders().catch((err) => {
+    console.error("Error in TopupNation background poller:", err);
+  });
+}, 45000);
 
 // ---------------------------------------------------------
 // REST Endpoints
@@ -697,8 +727,187 @@ app.delete("/api/saved-games/:gameId", async (req, res) => {
   }
 });
 
+app.post("/api/saved-games/:gameId/toggle", async (req, res) => {
+  try {
+    if (!process.env.MONGODB_URI) {
+      return res.status(400).json({ error: "Database not configured" });
+    }
+    const { isEnabled } = req.body;
+    const game = await SavedGame.findOne({ gameId: req.params.gameId });
+    if (!game) {
+      return res.status(404).json({ error: "Game not found" });
+    }
+    game.isEnabled = isEnabled !== undefined ? Boolean(isEnabled) : !game.isEnabled;
+    await game.save();
+    res.json({ success: true, data: game });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ---------------------------------------------------------
-// Webhook Endpoint
+// TopupNation Provider Endpoints
+// ---------------------------------------------------------
+
+app.post("/api/settings/topupnation", async (req, res) => {
+  const { apiKey, apiSecret, webhookSecret, baseUrl } = req.body;
+  if (!apiKey || !apiSecret) {
+    return res.status(400).json({ error: "apiKey and apiSecret are required." });
+  }
+
+  try {
+    // 1. Temporarily test credentials
+    const testClient = new TopupNationClient({
+      apiKey,
+      apiSecret,
+      webhookSecret,
+      baseUrl: baseUrl || "https://topupnation.io"
+    });
+    
+    // Test connection with balance check
+    await testClient.getBalance();
+
+    // 2. Update server client
+    topupNationClient.updateCredentials({
+      apiKey,
+      apiSecret,
+      webhookSecret,
+      baseUrl: baseUrl || "https://topupnation.io"
+    });
+
+    // 3. Save to MongoDB
+    await AppConfig.findOneAndUpdate(
+      { key: 'topupnation_credentials' },
+      { value: { apiKey, apiSecret, webhookSecret, baseUrl: baseUrl || "https://topupnation.io" } },
+      { upsert: true, new: true }
+    );
+
+    res.json({ success: true, message: "TopupNation credentials saved and verified successfully." });
+  } catch (err: any) {
+    res.status(401).json({ error: err.message || "Failed to authenticate with TopupNation API." });
+  }
+});
+
+app.get("/api/settings/topupnation/status", async (req, res) => {
+  try {
+    const config = await AppConfig.findOne({ key: 'topupnation_credentials' });
+    const isConfigured = !!(config?.value?.apiKey && config?.value?.apiSecret) || topupNationClient.isConfigured();
+    res.json({
+      isConfigured,
+      baseUrl: config?.value?.baseUrl || "https://topupnation.io",
+      webhookUrl: `${(process.env.APP_URL || "").replace(/\/$/, "")}/api/webhooks/topupnation`
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/topupnation/balance", async (req, res) => {
+  try {
+    if (!topupNationClient.isConfigured()) {
+      return res.json({ success: false, data: null, error: "TopupNation API is not configured." });
+    }
+    const balanceData = await topupNationClient.getBalance();
+    res.json({ success: true, data: balanceData });
+  } catch (err: any) {
+    res.json({ success: false, data: null, error: err.message });
+  }
+});
+
+app.get("/api/topupnation/products", async (req, res) => {
+  try {
+    const products = await topupNationService.getProducts();
+    res.json({ success: true, data: products });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/topupnation/products/sync", async (req, res) => {
+  try {
+    if (!topupNationClient.isConfigured()) {
+      return res.status(400).json({ error: "TopupNation API is not configured." });
+    }
+    const syncResult = await topupNationService.syncProducts();
+    const allProducts = await topupNationService.getProducts();
+    res.json({ success: true, count: syncResult.synced, total: syncResult.total, data: allProducts });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/topupnation/products/:productId/shortkey", async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const { shortKey } = req.body;
+    if (!shortKey) {
+      return res.status(400).json({ error: "shortKey is required." });
+    }
+
+    const updated = await topupNationService.updateProductShortKey(productId, shortKey);
+    if (!updated) {
+      return res.status(404).json({ error: "Product not found." });
+    }
+
+    res.json({ success: true, data: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/topupnation/products/:productId/toggle", async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const { isEnabled } = req.body;
+    const updated = await topupNationService.toggleProductEnabled(productId, isEnabled);
+    if (!updated) {
+      return res.status(404).json({ error: "Product not found." });
+    }
+    res.json({ success: true, data: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/topupnation/order", async (req, res) => {
+  try {
+    const { telegramChatId, productId, sku, fields, quantity } = req.body;
+    if (!telegramChatId || !productId || !sku || !fields) {
+      return res.status(400).json({ error: "Missing required order parameters." });
+    }
+
+    const result = await topupNationService.placeOrder({
+      telegramChatId: Number(telegramChatId),
+      productId: String(productId),
+      sku: String(sku),
+      fields,
+      quantity: Number(quantity) || 1
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ success: false, error: result.error });
+    }
+
+    res.json({ success: true, data: result.order });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/webhooks/topupnation", async (req: any, res) => {
+  const signature = req.header("X-Signature") || req.header("x-signature") || "";
+  const rawBody = req.rawBody || JSON.stringify(req.body);
+
+  const result = await topupNationService.handleWebhook(req.body, signature, rawBody);
+  if (!result.success) {
+    return res.status(400).json({ success: false, error: result.error });
+  }
+
+  res.json({ success: true, message: "Webhook processed successfully." });
+});
+
+// ---------------------------------------------------------
+// Webhook Endpoint (LootBar)
 // ---------------------------------------------------------
 
 app.post("/notify", async (req: any, res) => {

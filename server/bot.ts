@@ -1,6 +1,8 @@
 import { Telegraf, Markup, Context } from 'telegraf';
 import { v4 as uuidv4 } from 'uuid';
 import { LootBarClient } from './lootbar';
+import { TopupNationService } from './providers/topupnation/TopupNationService';
+import { TopupNationProduct } from './models/TopupNationProduct';
 import { Order } from './models/Order';
 import { User } from './models/User';
 import { Session } from './models/Session';
@@ -110,6 +112,7 @@ async function getAdminChatId(defaultId: string | undefined): Promise<string | u
 
 // We augment the session context to keep track of conversation state
 interface SessionData {
+  provider?: 'lootbar' | 'topupnation';
   step?: string;
   gameId?: string;
   gameName?: string;
@@ -134,7 +137,8 @@ export function setupBot(
   botToken: string, 
   adminChatId: string | undefined, 
   lootbar: LootBarClient,
-  options: { isServerless?: boolean; webhookUrl?: string } = {}
+  options: { isServerless?: boolean; webhookUrl?: string } = {},
+  topupNation?: TopupNationService
 ) {
   const bot = new Telegraf<MyContext>(botToken);
   
@@ -268,7 +272,7 @@ export function setupBot(
   }
 
   const mainMenu = Markup.keyboard([
-    ['🎮 Game List'],
+    ['🎮 LootBar Games', '🌐 TopupNation Games'],
     ['👤 My Account', '💰 Request Top-Up'],
     ['📜 Order History']
   ]).resize();
@@ -277,11 +281,13 @@ export function setupBot(
     ctx.session = {}; // reset session
     return ctx.reply(
       '🎮 *Welcome to the Game Top-Up Bot!*\n\n' +
-      'ရရှိနိုင်သော Game များကို ကြည့်ရန် အောက်ပါ Menu မှ *🎮 Game List* ကို နှိပ်ပါ (သို့မဟုတ် /games ဟု ပို့ပါ)။\n\n' +
+      'သင်ဝယ်ယူလိုသော API Provider အလိုက် Games စာရင်းကို အောက်ပါ Menu မှ ရွေးချယ်ကြည့်ရှုနိုင်ပါသည်:\n' +
+      '• *🎮 LootBar Games* — LootBar API Games စာရင်း\n' +
+      '• *🌐 TopupNation Games* — TopupNation API Games စာရင်း\n\n' +
       '⚡ *အသုံးပြုနည်း အမြန်လမ်းညွှန်:*\n' +
-      '• Game ၏ Products စာရင်း ကြည့်ရန်: `.<shortKey>` (ဥပမာ `.p` သို့မဟုတ် `.ml`)\n' +
+      '• Game ၏ Products စာရင်း ကြည့်ရန်: `.<shortKey>` (ဥပမာ `.p`, `.ml`, `.tp`)\n' +
       '• အော်ဒါ တိုက်ရိုက်တင်ရန်: `.<shortKey> <Account ID> <Product>`\n' +
-      '👉 _ဥပမာ:_ `.p 5123456789 60`',
+      '👉 _ဥပမာ:_ `.p 5123456789 60` သို့မဟုတ် `.tp 5123456789 60`',
       {
         parse_mode: 'Markdown',
         ...mainMenu
@@ -289,35 +295,40 @@ export function setupBot(
     );
   });
 
-  // Text-only Game List handler (No buttons)
-  async function renderTextGameList(ctx: MyContext) {
+  // Text-only Game List handler for LootBar (No buttons, Owner-enabled only)
+  async function renderLootBarGameList(ctx: MyContext) {
     try {
-      let savedGames = await SavedGame.find({}).sort({ savedAt: -1 });
+      // Query ONLY enabled games
+      let savedGames = await SavedGame.find({ isEnabled: { $ne: false } }).sort({ savedAt: -1 });
 
       if (!savedGames || savedGames.length === 0) {
-        const response = await lootbar.getGames();
-        const allGames = response?.data?.items || [];
-        if (allGames.length > 0) {
-          for (const g of allGames.slice(0, 6)) {
-            const gId = String(g.id || g.game_id);
-            const gName = g.name || g.game_name || 'Game';
-            const shortKey = getGameDefaultShortKey(gName, gId);
-            await SavedGame.findOneAndUpdate(
-              { gameId: gId },
-              { name: gName, shortKey },
-              { upsert: true, new: true }
-            );
+        // Check if any games exist at all
+        const anyGames = await SavedGame.countDocuments();
+        if (anyGames === 0) {
+          const response = await lootbar.getGames();
+          const allGames = response?.data?.items || [];
+          if (allGames.length > 0) {
+            for (const g of allGames.slice(0, 6)) {
+              const gId = String(g.id || g.game_id);
+              const gName = g.name || g.game_name || 'Game';
+              const shortKey = getGameDefaultShortKey(gName, gId);
+              await SavedGame.findOneAndUpdate(
+                { gameId: gId },
+                { name: gName, shortKey, isEnabled: true },
+                { upsert: true, new: true }
+              );
+            }
+            savedGames = await SavedGame.find({ isEnabled: { $ne: false } }).sort({ savedAt: -1 });
           }
-          savedGames = await SavedGame.find({}).sort({ savedAt: -1 });
         }
       }
 
       if (!savedGames || savedGames.length === 0) {
-        return ctx.reply('⚠️ No games active currently. Please enable games from the Web Dashboard.');
+        return ctx.reply('⚠️ No LootBar games are currently enabled by the Owner. Please contact the administrator.');
       }
 
-      let msg = `🎮 *ရရှိနိုင်သော Games စာရင်း (Available Games)*\n\n` +
-        `အောက်ပါ Game များအား Top-Up ဝယ်ယူနိုင်ပါသည်။ Product စာရင်း ကြည့်ရှုရန် သို့မဟုတ် အော်ဒါတင်ရန် သက်ဆိုင်ရာ *Short Key* ဖြင့် အသုံးပြုနိုင်ပါသည်-\n\n`;
+      let msg = `🎮 *LootBar API — ရရှိနိုင်သော Games စာရင်း*\n\n` +
+        `အောက်ပါ Game များအား Top-Up ဝယ်ယူနိုင်ပါသည်။ Product စာရင်း ကြည့်ရှုရန် သို့မဟုတ် အော်ဒါတင်ရန် သက်ဆိုင်ရာ *Short Key* ဖြင့် အသုံးပြုနိုင်ပါသည်:\n\n`;
 
       const numEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
 
@@ -349,13 +360,111 @@ export function setupBot(
 
       msg += `━━━━━━━━━━━━━━━━━━━━\n` +
         `💡 *အသုံးပြုနည်း လမ်းညွှန်:*\n` +
-        `• Game တစ်ခုချင်းစီ၏ ဈေးနှုန်းနှင့် Package များ ကြည့်ရှုရန် \`.\` နောက်တွင် short key ရိုက်ပို့ပါ (ဥပမာ: \`.p\` သို့မဟုတ် \`.ml\`)\n` +
-        `• တိုက်ရိုက် Order တင်ရန် \`.\` short key နောက်တွင် account ID နှင့် product ရိုက်ပို့ပါ (ဥပမာ: \`.p 5123456789 60\`)`;
+        `• Packages & Prices ကြည့်ရှုရန်: \`.<shortKey>\` (ဥပမာ \`.p\`)\n` +
+        `• တိုက်ရိုက် Order တင်ရန်: \`.<shortKey> <UID> <Product>\``;
 
       return ctx.reply(msg, { parse_mode: 'Markdown' });
     } catch (error: any) {
-      console.error('Failed to fetch text game list:', error);
-      return ctx.reply(`An error occurred while fetching the game list: ${error.message}`);
+      console.error('Failed to fetch LootBar text game list:', error);
+      return ctx.reply(`An error occurred while fetching the LootBar game list: ${error.message}`);
+    }
+  }
+
+  // Text-only Game List handler for TopupNation (No buttons, Owner-enabled only)
+  async function renderTopupNationGameList(ctx: MyContext) {
+    try {
+      // Query ONLY enabled products
+      const products = await TopupNationProduct.find({ 
+        isEnabled: { $ne: false }, 
+        status: { $ne: 'DISABLED' } 
+      }).sort({ name: 1 });
+
+      if (!products || products.length === 0) {
+        return ctx.reply('⚠️ No TopupNation games are currently enabled by the Owner. Please contact the administrator.');
+      }
+
+      let msg = `🌐 *TopupNation API — ရရှိနိုင်သော Games စာရင်း*\n\n` +
+        `အောက်ပါ Game များအား TopupNation မှတစ်ဆင့် Top-Up ဝယ်ယူနိုင်ပါသည်။ Product စာရင်း ကြည့်ရှုရန် သို့မဟုတ် အော်ဒါတင်ရန် သက်ဆိုင်ရာ *Short Key* ဖြင့် အသုံးပြုနိုင်ပါသည်:\n\n`;
+
+      const numEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+
+      products.forEach((p: any, index: number) => {
+        const shortKey = (p.shortKey || `t${p.productId.slice(0, 4)}`).toLowerCase();
+        const numEmoji = numEmojis[index] || `🔹`;
+
+        const requiredFields = (p.fields || []).filter((f: any) => f.required);
+        let format = `.${shortKey} <PlayerID> <Product>`;
+        let example = `.${shortKey} 123456789 60`;
+
+        if (requiredFields.length === 1) {
+          const fName = requiredFields[0].title || requiredFields[0].name || 'PlayerID';
+          format = `.${shortKey} <${fName}> <Product>`;
+          example = `.${shortKey} 12345678 60`;
+        } else if (requiredFields.length >= 2) {
+          const f1 = requiredFields[0].title || requiredFields[0].name || 'Account';
+          const f2 = requiredFields[1].title || requiredFields[1].name || 'Server';
+          format = `.${shortKey} <${f1}> <${f2}> <Product>`;
+          example = `.${shortKey} 12345678 2001 86`;
+        }
+
+        msg += `${numEmoji} *${p.name}*\n` +
+          `   ▫️ *Short Key:* \`.${shortKey}\`\n` +
+          `   ▫️ *Packages ကြည့်ရန်:* \`.${shortKey}\`\n` +
+          `   ▫️ *Order တင်ရန်:* \`${format}\`\n` +
+          `   ▫️ *ဥပမာ:* \`${example}\`\n\n`;
+      });
+
+      msg += `━━━━━━━━━━━━━━━━━━━━\n` +
+        `💡 *အသုံးပြုနည်း လမ်းညွှန်:*\n` +
+        `• Packages & Prices ကြည့်ရှုရန်: \`.<shortKey>\` (ဥပမာ \`.${products[0]?.shortKey || 'tp'}\`)\n` +
+        `• တိုက်ရိုက် Order တင်ရန်: \`.<shortKey> <Account> <Product>\``;
+
+      return ctx.reply(msg, { parse_mode: 'Markdown' });
+    } catch (error: any) {
+      console.error('Failed to fetch TopupNation text game list:', error);
+      return ctx.reply(`An error occurred while fetching the TopupNation game list: ${error.message}`);
+    }
+  }
+
+  // Combined or generic Game List handler (shows both providers in text)
+  async function renderAllGamesList(ctx: MyContext) {
+    try {
+      const lootbarGames = await SavedGame.find({ isEnabled: { $ne: false } }).sort({ savedAt: -1 });
+      const tpnGames = await TopupNationProduct.find({ 
+        isEnabled: { $ne: false }, 
+        status: { $ne: 'DISABLED' } 
+      }).sort({ name: 1 });
+
+      if (lootbarGames.length === 0 && tpnGames.length === 0) {
+        return ctx.reply('⚠️ No games are currently enabled by the Owner.');
+      }
+
+      let msg = `🎮 *ရရှိနိုင်သော Games စာရင်း အားလုံး (All Available Games)*\n\n`;
+
+      if (lootbarGames.length > 0) {
+        msg += `🔹 *[LootBar API Games]*\n`;
+        lootbarGames.forEach(g => {
+          const sk = (g.shortKey || getGameDefaultShortKey(g.name, g.gameId)).toLowerCase();
+          msg += `• *${g.name}* ➔ \`.${sk}\`\n`;
+        });
+        msg += `\n`;
+      }
+
+      if (tpnGames.length > 0) {
+        msg += `🌐 *[TopupNation API Games]*\n`;
+        tpnGames.forEach(p => {
+          const sk = (p.shortKey || `t${p.productId.slice(0, 4)}`).toLowerCase();
+          msg += `• *${p.name}* ➔ \`.${sk}\`\n`;
+        });
+        msg += `\n`;
+      }
+
+      msg += `━━━━━━━━━━━━━━━━━━━━\n` +
+        `💡 *အသုံးပြုနည်း:* Package စာရင်းကြည့်ရန် \`.\` နောက်တွင် short key ရိုက်ပို့ပါ (ဥပမာ: \`.p\` သို့မဟုတ် \`.tp\`)`;
+
+      return ctx.reply(msg, { parse_mode: 'Markdown' });
+    } catch (err: any) {
+      return ctx.reply(`Error: ${err.message}`);
     }
   }
 
@@ -508,6 +617,150 @@ export function setupBot(
     }
   }
 
+  // Display packages & prices for TopupNation product
+  async function handleTopupNationPackageList(ctx: MyContext, product: any, shortKey: string) {
+    try {
+      const productName = product.name || 'Game';
+      const skus = (product.skus || []).filter((s: any) => s.available !== false && s.availability !== false);
+
+      if (!skus || skus.length === 0) {
+        return ctx.reply(`⚠️ No packages available for *${productName}* from TopupNation.`, { parse_mode: 'Markdown' });
+      }
+
+      const requiredFields = (product.fields || []).filter((f: any) => f.required);
+      let orderFormatDesc = `.${shortKey} <PlayerID> <Package>`;
+      let exampleDesc = `.${shortKey} 123456789 100`;
+
+      if (requiredFields.length === 1) {
+        const fName = requiredFields[0].title || requiredFields[0].name || 'PlayerID';
+        orderFormatDesc = `.${shortKey} <${fName}> <Package>`;
+        exampleDesc = `.${shortKey} 12345678 100`;
+      } else if (requiredFields.length >= 2) {
+        const f1 = requiredFields[0].title || requiredFields[0].name || 'UserAccount';
+        const f2 = requiredFields[1].title || requiredFields[1].name || 'Server';
+        orderFormatDesc = `.${shortKey} <${f1}> <${f2}> <Package>`;
+        exampleDesc = `.${shortKey} 12345678 2001 100`;
+      }
+
+      let msg = `🌐 *${productName} (TopupNation) — Packages & Prices*\n\n` +
+        `📦 *ရရှိနိုင်သော Products စာရင်း:*\n`;
+
+      skus.forEach((sku: any) => {
+        const name = sku.name || `Package #${sku.sku}`;
+        const price = sku.price || '0.00';
+        msg += `▫️ *${name}* — \`$${Number(price).toFixed(2)} USD\`\n`;
+      });
+
+      msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
+        `🛒 *Order တင်ရန် Command Format:*\n` +
+        `\`${orderFormatDesc}\`\n\n` +
+        `👉 *ဥပမာ:* \`${exampleDesc}\`\n` +
+        `━━━━━━━━━━━━━━━━━━━━`;
+
+      return ctx.reply(msg, { parse_mode: 'Markdown' });
+    } catch (err: any) {
+      console.error('Error fetching TopupNation package list:', err);
+      return ctx.reply(`❌ Error fetching package list: ${err.message}`);
+    }
+  }
+
+  // Direct order placement for TopupNation
+  async function handleTopupNationDirectOrder(ctx: MyContext, product: any, shortKey: string, args: string[]) {
+    try {
+      const productId = String(product.productId);
+      const productName = product.name || 'Game';
+      const skus = product.skus || [];
+
+      if (!skus || skus.length === 0) {
+        return ctx.reply(`⚠️ No packages available for *${productName}*.`, { parse_mode: 'Markdown' });
+      }
+
+      const requiredFields = (product.fields || []).filter((f: any) => f.required);
+      const minFields = requiredFields.length > 0 ? requiredFields.length : 1;
+
+      if (args.length < minFields + 1) {
+        let formatHelp = `.${shortKey} <Account> <Package>`;
+        let exampleHelp = `.${shortKey} 123456789 100`;
+        if (requiredFields.length === 2) {
+          formatHelp = `.${shortKey} <${requiredFields[0].title || 'Account'}> <${requiredFields[1].title || 'Server'}> <Package>`;
+          exampleHelp = `.${shortKey} 12345678 2001 100`;
+        }
+        return ctx.reply(
+          `⚡ *${productName} (TopupNation) Quick Order*\n\n` +
+          `📌 *Format:* \`${formatHelp}\`\n` +
+          `💡 *Example:* \`${exampleHelp}\`\n\n` +
+          `To view all packages & prices, send: \`.${shortKey}\``,
+          { parse_mode: 'Markdown' }
+        );
+      }
+
+      // Parse fields
+      const extraInfo: Record<string, any> = {};
+      if (requiredFields.length === 0) {
+        extraInfo['userAccount'] = args[0];
+      } else {
+        for (let i = 0; i < requiredFields.length; i++) {
+          const field = requiredFields[i];
+          extraInfo[field.name] = args[i];
+        }
+      }
+
+      const rawProductQuery = args.slice(minFields).join(' ').trim();
+      const productQuery = rawProductQuery.toLowerCase().replace(/uc|diamond|diamonds|dm|gem|gems/g, '').trim();
+
+      ctx.session = {};
+      ctx.session.provider = 'topupnation';
+      ctx.session.gameId = productId;
+      ctx.session.gameName = productName;
+      ctx.session.extraInfo = extraInfo;
+      ctx.session.skus = skus;
+
+      // Match SKU
+      const numbersInQuery = productQuery.match(/\d+/g);
+      let matchedSku = skus.find((s: any) => {
+        const name = (s.name || '').toLowerCase();
+        const numbersInName = name.match(/\d+/g);
+        if (numbersInQuery && numbersInName && numbersInName.includes(numbersInQuery[0])) {
+          return true;
+        }
+        return name.includes(productQuery) || String(s.sku).toLowerCase() === productQuery;
+      });
+
+      if (!matchedSku) {
+        const buttons = skus.map((sku: any) => {
+          const name = sku.name || 'Unknown Item';
+          const price = sku.price ? ` ($${sku.price})` : '';
+          return [Markup.button.callback(`${name}${price}`, `tpn_q_order_${productId}_${sku.sku}`)];
+        });
+        buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
+
+        let infoDesc = Object.entries(extraInfo).map(([k, v]) => `• ${k.toUpperCase()}: \`${v}\``).join('\n');
+
+        return ctx.reply(
+          `⚠️ Package matching \`${rawProductQuery}\` not found.\n\n` +
+          `🌐 *${productName} (TopupNation)*\n${infoDesc}\n\n` +
+          `Please select from the available packages below:`,
+          {
+            parse_mode: 'Markdown',
+            ...Markup.inlineKeyboard(buttons)
+          }
+        );
+      }
+
+      // SKU matched!
+      ctx.session.skuId = String(matchedSku.sku);
+      ctx.session.skuName = matchedSku.name || `${productName} Package`;
+      ctx.session.skuPrice = parseFloat(matchedSku.price || '0');
+
+      // Directly proceed to confirmation
+      await showOrderConfirmation(ctx);
+
+    } catch (err: any) {
+      console.error('TopupNation direct order error:', err);
+      return ctx.reply(`❌ Error processing order: ${err.message}`);
+    }
+  }
+
   // Universal Short Key Listener (e.g. .p, .ml, .ff, /p, etc.)
   bot.hears(/^[./]([a-zA-Z0-9_-]+)(\s+.*)?$/i, async (ctx, next) => {
     const text = ctx.message.text.trim();
@@ -517,8 +770,8 @@ export function setupBot(
     const inputKey = match[1].toLowerCase();
     const rawArgs = match[2] ? match[2].trim().split(/\s+/) : [];
 
-    // Skip reserved commands like /start, /cancel, /auth, /unauth, /users, /addbalance, /orders, /balance, /games, /account, /profile, /wallet, /topup, /deposit
-    const reservedCommands = ['start', 'cancel', 'auth', 'unauth', 'users', 'addbalance', 'orders', 'balance', 'games', 'help', 'account', 'profile', 'wallet', 'myaccount', 'mywallet', 'mybalance', 'topup', 'deposit', 'requesttopup', 'requestbalance', 'addmoney'];
+    // Skip reserved commands like /start, /cancel, /auth, /unauth, /users, /addbalance, /orders, /balance, /games, /account, /profile, /wallet, /topup, /deposit, /lootbar, /tpn
+    const reservedCommands = ['start', 'cancel', 'auth', 'unauth', 'users', 'addbalance', 'orders', 'balance', 'games', 'gamelist', 'help', 'account', 'profile', 'wallet', 'myaccount', 'mywallet', 'mybalance', 'topup', 'deposit', 'requesttopup', 'requestbalance', 'addmoney', 'lootbar', 'lb', 'tpn', 'topupnation'];
     if (reservedCommands.includes(inputKey)) {
       return next();
     }
@@ -544,13 +797,38 @@ export function setupBot(
           matchedGame = {
             gameId: String(fallback.id || fallback.game_id),
             name: fallback.name || fallback.game_name,
-            shortKey: inputKey
+            shortKey: inputKey,
+            isEnabled: true
           } as any;
         }
       }
 
       if (!matchedGame) {
+        // Try matching TopupNation products by shortKey
+        const tpnProducts = await TopupNationProduct.find({});
+        const matchedTpn = tpnProducts.find((p: any) => {
+          const k = (p.shortKey || '').toLowerCase();
+          return k === inputKey || String(p.productId).toLowerCase() === inputKey;
+        });
+
+        if (matchedTpn) {
+          if (matchedTpn.isEnabled === false || matchedTpn.status === 'DISABLED') {
+            return ctx.reply(`⚠️ *${matchedTpn.name}* is currently disabled by Admin.`, { parse_mode: 'Markdown' });
+          }
+
+          const activeShortKey = (matchedTpn.shortKey || inputKey).toLowerCase();
+          if (rawArgs.length === 0) {
+            return await handleTopupNationPackageList(ctx, matchedTpn, activeShortKey);
+          } else {
+            return await handleTopupNationDirectOrder(ctx, matchedTpn, activeShortKey, rawArgs);
+          }
+        }
+
         return next(); // Not a game short key, pass along
+      }
+
+      if (matchedGame.isEnabled === false) {
+        return ctx.reply(`⚠️ *${matchedGame.name}* is currently disabled by Admin.`, { parse_mode: 'Markdown' });
       }
 
       const activeShortKey = (matchedGame.shortKey || inputKey).toLowerCase();
@@ -584,6 +862,7 @@ export function setupBot(
       const savedGame = await SavedGame.findOne({ gameId });
       const gameName = savedGame?.name || selectedSku.game_name || 'Game';
 
+      ctx.session.provider = 'lootbar';
       ctx.session.gameId = gameId;
       ctx.session.gameName = gameName;
       ctx.session.skuId = String(selectedSku.sku_id);
@@ -593,6 +872,65 @@ export function setupBot(
       await showOrderConfirmation(ctx);
     } catch (err: any) {
       return ctx.reply(`❌ Error: ${err.message}`);
+    }
+  });
+
+  bot.action(/^tpn_q_order_(.+?)_(.+)$/, async (ctx) => {
+    const productId = ctx.match[1];
+    const skuId = ctx.match[2];
+    await ctx.answerCbQuery();
+
+    try {
+      const product = await TopupNationProduct.findOne({ productId });
+      if (!product) {
+        return ctx.reply('⚠️ TopupNation product not found.');
+      }
+
+      const sku = (product.skus || []).find((s: any) => String(s.sku) === String(skuId));
+      if (!sku) {
+        return ctx.reply('⚠️ Selected SKU not found in TopupNation catalog.');
+      }
+
+      ctx.session.provider = 'topupnation';
+      ctx.session.gameId = productId;
+      ctx.session.gameName = product.name;
+      ctx.session.skuId = String(sku.sku);
+      ctx.session.skuName = sku.name || 'Package';
+      ctx.session.skuPrice = typeof sku.price === 'number' ? sku.price : parseFloat(String(sku.price || '0'));
+
+      await showOrderConfirmation(ctx);
+    } catch (err: any) {
+      return ctx.reply(`❌ Error: ${err.message}`);
+    }
+  });
+
+  // TopupNation Games & Products Catalog Command
+  bot.command(['tpn', 'topupnation'], async (ctx) => {
+    try {
+      const products = await TopupNationProduct.find({}).sort({ name: 1 });
+      if (products.length === 0) {
+        return ctx.reply(
+          `🌐 *TopupNation Provider Catalog*\n\n` +
+          `No TopupNation products are currently synced. Please sync products in the Admin Panel.`,
+          { parse_mode: 'Markdown' }
+        );
+      }
+
+      let msg = `🌐 *TopupNation Games & Products*\n\n` +
+        `ရရှိနိုင်သော Games များကိုကြည့်ရန် သက်ဆိုင်ရာ Short Key ကို ပို့ပေးပါ:\n\n`;
+
+      products.forEach((p: any) => {
+        const sk = p.shortKey || `t${p.productId.slice(0, 4)}`;
+        msg += `🎮 *${p.name}* ➔ \`.${sk}\`\n`;
+      });
+
+      msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
+        `💡 *ဥပမာ:* \`.${products[0]?.shortKey || 'tp'}\` ပို့ပြီး Package စာရင်းနှင့် ဈေးနှုန်းကြည့်နိုင်ပါသည်။\n` +
+        `━━━━━━━━━━━━━━━━━━━━`;
+
+      return ctx.reply(msg, { parse_mode: 'Markdown' });
+    } catch (err: any) {
+      return ctx.reply(`❌ Error fetching TopupNation list: ${err.message}`);
     }
   });
 
@@ -1253,12 +1591,28 @@ export function setupBot(
     return await renderOrderHistory(ctx, true, 1);
   });
 
-  bot.hears('🎮 Game List', async (ctx) => {
-    return await renderTextGameList(ctx);
+  bot.hears(['🎮 LootBar Games', 'LootBar Games', 'Lootbar Games', 'LootBar', 'lootbar'], async (ctx) => {
+    return await renderLootBarGameList(ctx);
   });
 
-  bot.command('games', async (ctx) => {
-    return await renderTextGameList(ctx);
+  bot.hears(['🌐 TopupNation Games', 'TopupNation Games', 'TopUpNation Games', 'TopupNation', 'tpn'], async (ctx) => {
+    return await renderTopupNationGameList(ctx);
+  });
+
+  bot.hears(['🎮 Game List', 'Game List', 'Games', 'games', '🎮 Games'], async (ctx) => {
+    return await renderAllGamesList(ctx);
+  });
+
+  bot.command(['lootbar', 'lb'], async (ctx) => {
+    return await renderLootBarGameList(ctx);
+  });
+
+  bot.command(['tpn', 'topupnation'], async (ctx) => {
+    return await renderTopupNationGameList(ctx);
+  });
+
+  bot.command(['games', 'gamelist'], async (ctx) => {
+    return await renderAllGamesList(ctx);
   });
 
   bot.action(/^game_(.+)$/, async (ctx) => {
@@ -1625,8 +1979,9 @@ export function setupBot(
   });
 
   async function finalizeOrder(ctx: MyContext) {
+    const isTopupNation = ctx.session.provider === 'topupnation';
     ctx.session.step = 'DONE';
-    await ctx.reply('⏳ Processing your top-up order with LootBar API, please wait...');
+    await ctx.reply(`⏳ Processing your top-up order with ${isTopupNation ? 'TopupNation' : 'LootBar'} API, please wait...`);
     
     const referenceId = uuidv4().replace(/-/g, '').substring(0, 32);
     const gameId = ctx.session.gameId!;
@@ -1643,6 +1998,82 @@ export function setupBot(
     
     const isApiLinked = !!(userDoc.useDirectApiBalance || userDoc.balanceMode === 'api');
     let orderCost = ctx.session.skuPrice || 1;
+
+    if (isTopupNation && topupNation) {
+      // Execute through TopupNation Service
+      const result = await topupNation.placeOrder({
+        telegramChatId: ctx.chat!.id,
+        productId: gameId,
+        sku: skuId,
+        fields: extraInfo,
+        quantity: 1
+      });
+
+      if (!result.success || !result.order) {
+        return ctx.reply(`❌ Order failed: ${result.error || 'TopupNation rejected order'}`, mainMenu);
+      }
+
+      const order = result.order;
+      const orderId = order.providerOrderId || order.orderId;
+      const statusKeyboard = Markup.inlineKeyboard([
+        [
+          Markup.button.callback('🔄 Check Live Status', `track_order_${order.referenceId}`),
+          Markup.button.callback('📜 Order History', 'view_orders_action')
+        ]
+      ]);
+
+      const safeGame = escapeMd(gameName);
+      const safeSku = escapeMd(skuName);
+
+      const lines: string[] = [];
+      lines.push(`✅ *Top-Up Order Submitted!*`);
+      lines.push(`═════════════════════════`);
+      lines.push(`├── 🆔 Order ID: \`${orderId}\``);
+      lines.push(`├── 🌐 Provider: *TopupNation*`);
+      lines.push(`├── 🎮 Game: *${safeGame}*`);
+      lines.push(`├── 📦 Package: *${safeSku}*`);
+      if (order.playerName) {
+        lines.push(`├── 👤 Player/Account: \`${escapeCode(order.playerName)}\``);
+      }
+      lines.push(`├── 🔄 Status: *PROCESSING*`);
+      lines.push(`├── 💬 Message: _Order accepted by TopupNation API_`);
+      lines.push(`├── 💰 Price: \`$${orderCost.toFixed(3)}\``);
+      if (!isApiLinked) {
+        const updatedUser = await User.findOne({ telegramChatId: ctx.chat!.id });
+        lines.push(`└── 💳 Remaining Balance: \`$${(updatedUser?.balance || 0).toFixed(2)}\``);
+      } else {
+        lines.push(`└── 💳 Payment: \`⚡ Direct API Balance Linked\``);
+      }
+      lines.push(`═════════════════════════`);
+
+      await safeReply(ctx, lines.join('\n'), statusKeyboard);
+
+      // Notify Owner ONLY
+      const currentAdminIdForNotify = await getAdminChatId(adminChatId);
+      const fromUser = ctx.from?.username 
+        ? `@${ctx.from.username}` 
+        : (ctx.chat as any)?.username 
+          ? `@${(ctx.chat as any).username}` 
+          : ctx.from?.first_name || 'User';
+
+      const safeFromUser = escapeMd(fromUser);
+      const adminOrderNotificationMsg = `🔔 *New Top-Up Order (TopupNation)!*\n` +
+        `═════════════════════════\n` +
+        `├── 👤 User: \`${ctx.chat!.id}\` (${safeFromUser})\n` +
+        `├── 🌐 Provider: \`TopupNation\`\n` +
+        `├── 🎮 Game: *${safeGame}*\n` +
+        `├── 📦 Package: *${safeSku}*\n` +
+        `├── 💰 Price: \`$${orderCost.toFixed(2)} USD\`\n` +
+        (order.playerName ? `├── 🎯 Player/Account: \`${escapeCode(order.playerName)}\`\n` : '') +
+        `├── 💳 Payment: \`${isApiLinked ? 'Direct API Linked' : 'Wallet Balance'}\`\n` +
+        `└── 🆔 Order ID: \`${orderId}\`\n` +
+        `═════════════════════════`;
+
+      if (currentAdminIdForNotify) {
+        await safeSendMessage(bot.telegram, currentAdminIdForNotify, adminOrderNotificationMsg);
+      }
+      return;
+    }
 
     if (!isApiLinked) {
       if (userDoc.balance < orderCost) {

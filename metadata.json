@@ -1,6 +1,6 @@
 {
   "name": "Game Top-Up Bot Manager",
-  "description": "Telegram Game Top-Up Bot with LootBar API integration, wallet top-up request management, and reseller controls",
+  "description": "Telegram Game Top-Up Bot with LootBar and TopupNation Reseller API integrations, wallet top-up request management, and reseller controls",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
