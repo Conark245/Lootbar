@@ -33,7 +33,7 @@ function formatMyanmarTime(date: Date | string | number | undefined): string {
       minute: '2-digit',
       second: '2-digit',
       hour12: true
-    }) + ' (MMT GMT+6:30)';
+    });
   } catch (e) {
     return String(date);
   }
@@ -53,7 +53,7 @@ function formatMyanmarDateTime(date: Date | string | number | undefined): string
       minute: '2-digit',
       second: '2-digit',
       hour12: true
-    }) + ' (MMT GMT+6:30)';
+    });
   } catch (e) {
     return String(date);
   }
@@ -109,6 +109,7 @@ export default function App() {
   const [loadingOrders, setLoadingOrders] = useState(true);
   const [syncingRefId, setSyncingRefId] = useState<string | null>(null);
   const [orderFilter, setOrderFilter] = useState<'ALL' | 'ACTIVE' | 'COMPLETED' | 'FAILED'>('ALL');
+  const [orderProviderFilter, setOrderProviderFilter] = useState<'ALL' | 'LOOTBAR' | 'TOPUPNATION'>('ALL');
   const [orderSearch, setOrderSearch] = useState('');
   const [selectedTrackingOrder, setSelectedTrackingOrder] = useState<any | null>(null);
   const [lastSyncTime, setLastSyncTime] = useState<Date>(new Date());
@@ -1718,29 +1719,39 @@ export default function App() {
             </div>
           </div>
 
-          {/* Quick Metrics Bar */}
+          {/* Quick Metrics Bar with API Provider Breakdown */}
           {(() => {
             const total = orders.length;
             const active = orders.filter(o => o.state === 0 || o.state === 1 || o.state === 4).length;
             const completed = orders.filter(o => o.state === 2).length;
             const totalVol = orders.reduce((sum, o) => sum + (o.price || 0), 0);
+            const lbCount = orders.filter(o => o.provider !== 'topupnation' && o.extraInfo?.provider !== 'topupnation').length;
+            const tpnCount = orders.filter(o => o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation').length;
 
             return (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 my-5">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 my-5">
                 <div className="bg-neutral-50 p-3.5 rounded-xl border border-neutral-200">
                   <div className="text-xs text-neutral-500 font-medium">Total Orders</div>
                   <div className="text-xl font-bold text-neutral-900 mt-0.5">{total}</div>
                 </div>
+                <div className="bg-emerald-50/70 p-3.5 rounded-xl border border-emerald-200">
+                  <div className="text-xs text-emerald-800 font-medium flex items-center gap-1">
+                    <span>🎮</span> LootBar Orders
+                  </div>
+                  <div className="text-xl font-bold text-emerald-900 mt-0.5">{lbCount}</div>
+                </div>
+                <div className="bg-indigo-50/70 p-3.5 rounded-xl border border-indigo-200">
+                  <div className="text-xs text-indigo-800 font-medium flex items-center gap-1">
+                    <span>⚡</span> TopupNation Orders
+                  </div>
+                  <div className="text-xl font-bold text-indigo-900 mt-0.5">{tpnCount}</div>
+                </div>
                 <div className="bg-blue-50/60 p-3.5 rounded-xl border border-blue-100">
                   <div className="text-xs text-blue-700 font-medium flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-ping"></span>
-                    Pending & Processing
+                    Processing & Active
                   </div>
                   <div className="text-xl font-bold text-blue-900 mt-0.5">{active}</div>
-                </div>
-                <div className="bg-emerald-50/60 p-3.5 rounded-xl border border-emerald-100">
-                  <div className="text-xs text-emerald-700 font-medium">Completed Deliveries</div>
-                  <div className="text-xl font-bold text-emerald-900 mt-0.5">{completed}</div>
                 </div>
                 <div className="bg-purple-50/60 p-3.5 rounded-xl border border-purple-100">
                   <div className="text-xs text-purple-700 font-medium">Total Order Volume</div>
@@ -1751,32 +1762,70 @@ export default function App() {
           })()}
 
           {/* Filters & Search */}
-          <div className="flex flex-col sm:flex-row gap-3 justify-between items-stretch sm:items-center mb-5">
-            {/* Filter Tabs */}
-            <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-lg self-start">
-              {(['ALL', 'ACTIVE', 'COMPLETED', 'FAILED'] as const).map(tab => {
-                const count = tab === 'ALL' 
-                  ? orders.length 
-                  : tab === 'ACTIVE' 
-                    ? orders.filter(o => o.state === 0 || o.state === 1 || o.state === 4).length
-                    : tab === 'COMPLETED'
-                      ? orders.filter(o => o.state === 2).length
-                      : orders.filter(o => o.state === 3 || o.state === 6).length;
+          <div className="flex flex-col md:flex-row gap-3 justify-between items-stretch md:items-center mb-5">
+            {/* Filter Tabs (API Provider & Status) */}
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Provider Tabs */}
+              <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-lg">
+                <span className="text-[11px] font-bold text-neutral-400 px-2 uppercase tracking-wider">API:</span>
+                <button
+                  onClick={() => setOrderProviderFilter('ALL')}
+                  className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
+                    orderProviderFilter === 'ALL'
+                      ? 'bg-neutral-900 text-white shadow-xs font-semibold'
+                      : 'text-neutral-600 hover:text-neutral-900'
+                  }`}
+                >
+                  🌐 All APIs ({orders.length})
+                </button>
+                <button
+                  onClick={() => setOrderProviderFilter('LOOTBAR')}
+                  className={`px-3 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1 ${
+                    orderProviderFilter === 'LOOTBAR'
+                      ? 'bg-emerald-700 text-white shadow-xs font-semibold'
+                      : 'text-emerald-700 hover:bg-emerald-50'
+                  }`}
+                >
+                  🎮 LootBar ({orders.filter(o => o.provider !== 'topupnation' && o.extraInfo?.provider !== 'topupnation').length})
+                </button>
+                <button
+                  onClick={() => setOrderProviderFilter('TOPUPNATION')}
+                  className={`px-3 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1 ${
+                    orderProviderFilter === 'TOPUPNATION'
+                      ? 'bg-indigo-700 text-white shadow-xs font-semibold'
+                      : 'text-indigo-700 hover:bg-indigo-50'
+                  }`}
+                >
+                  ⚡ TopupNation ({orders.filter(o => o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation').length})
+                </button>
+              </div>
 
-                return (
-                  <button
-                    key={tab}
-                    onClick={() => setOrderFilter(tab)}
-                    className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
-                      orderFilter === tab 
-                        ? 'bg-white text-neutral-900 shadow-xs font-semibold' 
-                        : 'text-neutral-600 hover:text-neutral-900'
-                    }`}
-                  >
-                    {tab === 'ALL' ? 'All' : tab === 'ACTIVE' ? '⏳ Active' : tab === 'COMPLETED' ? '✅ Completed' : '❌ Failed'} ({count})
-                  </button>
-                );
-              })}
+              {/* Status Tabs */}
+              <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-lg">
+                {(['ALL', 'ACTIVE', 'COMPLETED', 'FAILED'] as const).map(tab => {
+                  const count = tab === 'ALL' 
+                    ? orders.length 
+                    : tab === 'ACTIVE' 
+                      ? orders.filter(o => o.state === 0 || o.state === 1 || o.state === 4).length
+                      : tab === 'COMPLETED'
+                        ? orders.filter(o => o.state === 2).length
+                        : orders.filter(o => o.state === 3 || o.state === 6).length;
+
+                  return (
+                    <button
+                      key={tab}
+                      onClick={() => setOrderFilter(tab)}
+                      className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all ${
+                        orderFilter === tab 
+                          ? 'bg-white text-neutral-900 shadow-xs font-semibold' 
+                          : 'text-neutral-600 hover:text-neutral-900'
+                      }`}
+                    >
+                      {tab === 'ALL' ? 'All Status' : tab === 'ACTIVE' ? '⏳ Active' : tab === 'COMPLETED' ? '✅ Completed' : '❌ Failed'} ({count})
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             {/* Search Input */}
@@ -1815,10 +1864,17 @@ export default function App() {
             </div>
           ) : (() => {
             const filteredOrders = orders.filter(o => {
+              // Provider Filter
+              const isTpn = o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation';
+              if (orderProviderFilter === 'LOOTBAR' && isTpn) return false;
+              if (orderProviderFilter === 'TOPUPNATION' && !isTpn) return false;
+
+              // Status Filter
               if (orderFilter === 'ACTIVE' && !(o.state === 0 || o.state === 1 || o.state === 4)) return false;
               if (orderFilter === 'COMPLETED' && o.state !== 2) return false;
               if (orderFilter === 'FAILED' && !(o.state === 3 || o.state === 6)) return false;
 
+              // Search Filter
               if (orderSearch.trim()) {
                 const query = orderSearch.toLowerCase();
                 const matchName = o.gameName?.toLowerCase().includes(query);
@@ -1899,12 +1955,12 @@ export default function App() {
 
                           {/* Player Name */}
                           <td className="py-3.5 px-4">
-                            {o.playerName ? (
+                            {o.playerName && String(o.playerName).toLowerCase() !== 'undefined' && String(o.playerName).toLowerCase() !== 'null' ? (
                               <span className="inline-flex items-center gap-1 font-semibold text-xs text-blue-800 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md">
                                 🎯 {o.playerName}
                               </span>
                             ) : (
-                              <span className="text-xs text-neutral-400 italic">Not detected</span>
+                              <span className="text-xs text-neutral-400 italic">-</span>
                             )}
                           </td>
 
@@ -1912,12 +1968,14 @@ export default function App() {
                           <td className="py-3.5 px-4 text-xs">
                             {o.extraInfo ? (
                               <div className="space-y-0.5 max-w-[180px]">
-                                {Object.entries(o.extraInfo).map(([k, v]) => (
-                                  <div key={k} className="truncate">
-                                    <span className="text-neutral-400 font-medium uppercase text-[10px]">{k}:</span>{' '}
-                                    <span className="font-mono font-medium text-neutral-800">{String(v)}</span>
-                                  </div>
-                                ))}
+                                {Object.entries(o.extraInfo)
+                                  .filter(([k, v]) => k !== 'paymentSource' && k !== 'provider' && v && String(v).trim() && String(v).toLowerCase() !== 'undefined' && String(v).toLowerCase() !== 'null')
+                                  .map(([k, v]) => (
+                                    <div key={k} className="truncate">
+                                      <span className="text-neutral-400 font-medium uppercase text-[10px]">{k}:</span>{' '}
+                                      <span className="font-mono font-medium text-neutral-800">{String(v)}</span>
+                                    </div>
+                                  ))}
                               </div>
                             ) : '-'}
                           </td>

@@ -36,9 +36,9 @@ export function formatMyanmarDateTime(date: Date | string | number | undefined =
       minute: '2-digit',
       second: '2-digit',
       hour12: true
-    }) + ' (MMT GMT+6:30)';
+    });
   } catch (e) {
-    return new Date().toLocaleString() + ' (GMT+6:30)';
+    return new Date().toLocaleString();
   }
 }
 
@@ -52,7 +52,7 @@ export function formatMyanmarTimeOnly(date: Date | string | number | undefined =
       minute: '2-digit',
       second: '2-digit',
       hour12: true
-    }) + ' MMT (GMT+6:30)';
+    });
   } catch (e) {
     return new Date().toLocaleTimeString();
   }
@@ -879,10 +879,17 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
       const extraInfo: Record<string, any> = {};
       if (requiredFields.length === 0) {
         extraInfo['userAccount'] = args[0];
+        extraInfo['uid'] = args[0];
       } else {
         for (let i = 0; i < requiredFields.length; i++) {
           const field = requiredFields[i];
           extraInfo[field.name] = args[i];
+        }
+        if (!extraInfo['userAccount'] && args[0]) {
+          extraInfo['userAccount'] = args[0];
+        }
+        if (!extraInfo['server'] && args[1] && requiredFields.length > 1) {
+          extraInfo['server'] = args[1];
         }
       }
 
@@ -1956,14 +1963,25 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     await safeEditMessageText(ctx, '❌ Top-up request cancelled.');
   });
 
+  function isValidValue(val: any): boolean {
+    if (val === null || val === undefined) return false;
+    const s = String(val).trim();
+    if (!s || s === '' || s.toLowerCase() === 'undefined' || s.toLowerCase() === 'null' || s === '[object Object]') {
+      return false;
+    }
+    return true;
+  }
+
   function formatOrderTreeNode(o: any, orderNumber: number): string {
+    const isTopupNation = o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation';
+    const providerBadge = isTopupNation ? '⚡ TopupNation API' : '🎮 LootBar API';
     const safeGame = escapeMd(o.gameName || 'Game');
     const safeSku = escapeMd(o.skuName || `Product #${o.skuId}`);
     const priceVal = `$${Number(o.price || 0).toFixed(3)}`;
 
     const stateMap: Record<number, { statusText: string; icon: string; message: string }> = {
       0: { statusText: 'PENDING', icon: '⏳', message: 'Order created, awaiting transaction' },
-      1: { statusText: 'PROCESSING', icon: '🔄', message: 'LootBar API delivering top-up' },
+      1: { statusText: 'PROCESSING', icon: '🔄', message: isTopupNation ? 'TopupNation delivering top-up' : 'LootBar delivering top-up' },
       2: { statusText: 'COMPLETED', icon: '✅', message: 'Order completed successfully' },
       3: { statusText: 'FAILED', icon: '❌', message: 'Order failed on game server (Refunded)' },
       4: { statusText: 'SETTLING', icon: '⚡', message: 'Transaction in settlement stage' },
@@ -1971,49 +1989,53 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
       6: { statusText: 'CANCELLED', icon: '🚫', message: 'Order was cancelled' }
     };
 
-    const status = stateMap[o.state] || { statusText: 'PROCESSING', icon: '⏳', message: 'In progress' };
+    const status = stateMap[o.state] || { statusText: 'PROCESSING', icon: '⏳', message: isTopupNation ? 'TopupNation processing' : 'LootBar processing' };
 
     const lines: string[] = [];
-    lines.push(`*Order #${orderNumber}*`);
+    lines.push(`*Order #${orderNumber}* ❲ *${providerBadge}* ❳`);
 
-    const displayOrderId = o.orderId || o.referenceId || 'Pending';
+    const displayOrderId = o.providerOrderId || o.orderId || o.referenceId || 'Pending';
     lines.push(`├── 🆔 Order ID: \`${displayOrderId}\``);
+    lines.push(`├── 🌐 Provider: *${providerBadge}*`);
     lines.push(`├── 🎮 Game: *${safeGame}*`);
     lines.push(`├── 📦 Package: *${safeSku}*`);
 
-    // Parse player details cleanly
-    let playerName = o.playerName || '';
+    // Parse player details cleanly - Strictly omit if undefined or missing
+    let playerName = isValidValue(o.playerName) ? String(o.playerName).trim() : '';
     let playerId = '';
     let serverId = '';
     const otherDetails: { key: string; val: string }[] = [];
 
     if (o.extraInfo && typeof o.extraInfo === 'object') {
       for (const [key, val] of Object.entries(o.extraInfo)) {
-        if (key === 'paymentSource') continue;
+        if (!isValidValue(val)) continue;
+        if (key === 'paymentSource' || key === 'provider') continue;
         const lk = key.toLowerCase();
-        if (!playerId && (lk === 'uid' || lk === 'userid' || lk === 'user_id' || lk === 'player_id' || lk === 'account_id')) {
-          playerId = String(val);
+        if (!playerId && (lk === 'uid' || lk === 'userid' || lk === 'user_id' || lk === 'player_id' || lk === 'account_id' || lk === 'useraccount')) {
+          playerId = String(val).trim();
         } else if (!serverId && (lk === 'zoneid' || lk === 'zone_id' || lk === 'server' || lk === 'server_id' || lk === 'serverid')) {
-          serverId = String(val);
-        } else if (!playerName && (lk === 'player_name' || lk === 'role_name' || lk === 'nickname' || lk === 'playername')) {
-          playerName = String(val);
+          serverId = String(val).trim();
+        } else if (!playerName && (lk === 'player_name' || lk === 'role_name' || lk === 'nickname' || lk === 'playername' || lk === 'role')) {
+          playerName = String(val).trim();
         } else {
-          otherDetails.push({ key: key.toUpperCase(), val: String(val) });
+          otherDetails.push({ key: key.toUpperCase(), val: String(val).trim() });
         }
       }
     }
 
-    if (playerName) {
+    if (isValidValue(playerName)) {
       lines.push(`├── 👤 Player: \`${escapeCode(playerName)}\``);
     }
-    if (playerId) {
+    if (isValidValue(playerId)) {
       lines.push(`├── 🎯 Player ID: \`${escapeCode(playerId)}\``);
     }
-    if (serverId) {
+    if (isValidValue(serverId)) {
       lines.push(`├── 🌐 Server ID: \`${escapeCode(serverId)}\``);
     }
     for (const item of otherDetails) {
-      lines.push(`├── ▫️ ${escapeMd(item.key)}: \`${escapeCode(item.val)}\``);
+      if (isValidValue(item.val)) {
+        lines.push(`├── ▫️ ${escapeMd(item.key)}: \`${escapeCode(item.val)}\``);
+      }
     }
 
     lines.push(`├── ${status.icon} Status: *${status.statusText}*`);
@@ -2024,27 +2046,77 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     return lines.join('\n');
   }
 
-  async function renderOrderHistory(ctx: MyContext, isEdit: boolean = false, page: number = 1) {
+  async function renderOrderHistory(ctx: MyContext, isEdit: boolean = false, page: number = 1, providerFilter: 'all' | 'lootbar' | 'topupnation' = 'all') {
     const pageSize = 3;
-    const totalOrders = await Order.countDocuments({ telegramChatId: ctx.chat!.id });
+    const chatId = ctx.chat!.id;
+
+    // Build query based on provider filter
+    const query: any = { telegramChatId: chatId };
+    if (providerFilter === 'topupnation') {
+      query.$or = [
+        { provider: 'topupnation' },
+        { 'extraInfo.provider': 'topupnation' }
+      ];
+    } else if (providerFilter === 'lootbar') {
+      query.$and = [
+        { provider: { $ne: 'topupnation' } },
+        { 'extraInfo.provider': { $ne: 'topupnation' } }
+      ];
+    }
+
+    // Counts for tabs
+    const [totalAll, totalLootBar, totalTopupNation] = await Promise.all([
+      Order.countDocuments({ telegramChatId: chatId }),
+      Order.countDocuments({
+        telegramChatId: chatId,
+        provider: { $ne: 'topupnation' },
+        'extraInfo.provider': { $ne: 'topupnation' }
+      }),
+      Order.countDocuments({
+        telegramChatId: chatId,
+        $or: [
+          { provider: 'topupnation' },
+          { 'extraInfo.provider': 'topupnation' }
+        ]
+      })
+    ]);
+
+    const totalOrders = providerFilter === 'topupnation' 
+      ? totalTopupNation 
+      : providerFilter === 'lootbar' 
+        ? totalLootBar 
+        : totalAll;
+
+    const providerTitle = providerFilter === 'topupnation' 
+      ? '⚡ TopupNation Orders' 
+      : providerFilter === 'lootbar' 
+        ? '🎮 LootBar Orders' 
+        : '📜 All Orders';
 
     if (totalOrders === 0) {
-      const emptyMsg = `⏳ *Games Status History*\n═════════════════════════\n\n📜 _No top-up orders found yet._\n\nTo place your first order, select a game from *🎮 Game List*!`;
+      const emptyMsg = `⏳ *Order History* — ${providerTitle}\n═════════════════════════\n\n📜 _အော်ဒါမှတ်တမ်း မရှိသေးပါ။_\n\nအခြား Category ကို ရွေးချယ်ကြည့်ရှုနိုင်ပါသည်:`;
+      const emptyKeyboard = Markup.inlineKeyboard([
+        [
+          Markup.button.callback(`🌐 All (${totalAll})`, 'order_filter_all_page_1'),
+          Markup.button.callback(`🎮 LootBar (${totalLootBar})`, 'order_filter_lootbar_page_1'),
+          Markup.button.callback(`⚡ TopupNation (${totalTopupNation})`, 'order_filter_topupnation_page_1')
+        ]
+      ]);
       if (isEdit) {
-        return await safeEditMessageText(ctx, emptyMsg);
+        return await safeEditMessageText(ctx, emptyMsg, emptyKeyboard);
       }
-      return await safeReply(ctx, emptyMsg);
+      return await safeReply(ctx, emptyMsg, emptyKeyboard);
     }
 
     const totalPages = Math.max(1, Math.ceil(totalOrders / pageSize));
     const currentPage = Math.min(Math.max(1, page), totalPages);
 
-    const orders = await Order.find({ telegramChatId: ctx.chat!.id })
+    const orders = await Order.find(query)
       .sort({ createdAt: -1 })
       .skip((currentPage - 1) * pageSize)
       .limit(pageSize);
 
-    let msg = `⏳ *Games Status History*\n` +
+    let msg = `⏳ *Order History* — ${providerTitle}\n` +
       `📄 Page ${currentPage} of ${totalPages}\n` +
       `═════════════════════════\n\n`;
 
@@ -2059,17 +2131,41 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
 
     const showingEnd = Math.min(startIndex + pageSize, totalOrders);
     msg += `═════════════════════════\n` +
-      `📊 Showing ${startIndex + 1}-${showingEnd} of ${totalOrders} total orders`;
+      `📊 Showing ${startIndex + 1}-${showingEnd} of ${totalOrders} orders`;
 
     const buttonRows: any[] = [];
+
+    // Filter Switcher Tabs Bar
+    buttonRows.push([
+      Markup.button.callback(`${providerFilter === 'all' ? '🔘' : '🌐'} All (${totalAll})`, 'order_filter_all_page_1'),
+      Markup.button.callback(`${providerFilter === 'lootbar' ? '🔘' : '🎮'} LootBar (${totalLootBar})`, 'order_filter_lootbar_page_1'),
+      Markup.button.callback(`${providerFilter === 'topupnation' ? '🔘' : '⚡'} TopupNation (${totalTopupNation})`, 'order_filter_topupnation_page_1')
+    ]);
+
+    // Clean & Compact Live Status buttons (2 per row to reduce clutter)
+    const statusButtons: any[] = [];
+    orders.forEach((o, i) => {
+      const orderNum = startIndex + i + 1;
+      const isTopup = o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation';
+      const pTag = isTopup ? 'TPN' : 'LB';
+      const orderKey = o.providerOrderId || o.orderId || o.referenceId;
+      statusButtons.push(
+        Markup.button.callback(`🔍 #${orderNum} Live Status (${pTag})`, `track_order_${orderKey}`)
+      );
+    });
+
+    for (let i = 0; i < statusButtons.length; i += 2) {
+      buttonRows.push(statusButtons.slice(i, i + 2));
+    }
+
     const navRow: any[] = [];
 
     if (currentPage > 1) {
-      navRow.push(Markup.button.callback('◀️ Prev', `order_page_${currentPage - 1}`));
+      navRow.push(Markup.button.callback('◀️ Prev', `order_filter_${providerFilter}_page_${currentPage - 1}`));
     }
     navRow.push(Markup.button.callback(`📄 ${currentPage}/${totalPages}`, 'noop_page_indicator'));
     if (currentPage < totalPages) {
-      navRow.push(Markup.button.callback('Next ▶️', `order_page_${currentPage + 1}`));
+      navRow.push(Markup.button.callback('Next ▶️', `order_filter_${providerFilter}_page_${currentPage + 1}`));
     }
 
     if (navRow.length > 0) {
@@ -2077,7 +2173,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     }
 
     buttonRows.push([
-      Markup.button.callback('🔄 Refresh', `order_page_${currentPage}`)
+      Markup.button.callback('🔄 Refresh List', `order_filter_${providerFilter}_page_${currentPage}`)
     ]);
 
     const keyboard = Markup.inlineKeyboard(buttonRows);
@@ -2088,22 +2184,50 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     return await safeReply(ctx, msg, keyboard);
   }
 
+  // Handle provider tab switching and pagination
+  bot.action(/^order_filter_(all|lootbar|topupnation)_page_(\d+)$/, async (ctx) => {
+    const provider = ctx.match[1] as 'all' | 'lootbar' | 'topupnation';
+    const page = parseInt(ctx.match[2], 10) || 1;
+    await ctx.answerCbQuery();
+    return await renderOrderHistory(ctx, true, page, provider);
+  });
+
   bot.action(/^order_page_(\d+)$/, async (ctx) => {
     const page = parseInt(ctx.match[1], 10) || 1;
     await ctx.answerCbQuery();
-    return await renderOrderHistory(ctx, true, page);
+    return await renderOrderHistory(ctx, true, page, 'all');
   });
 
   bot.action('noop_page_indicator', async (ctx) => {
     await ctx.answerCbQuery();
   });
 
-  bot.hears(['📜 Order History', 'Order History', 'Orders', 'orders', '📜 Orders'], async (ctx) => {
-    return await renderOrderHistory(ctx, false, 1);
+  bot.hears(['📜 Order History', 'Order History', 'Orders', 'orders', '📜 Orders', 'Live Status', 'Check Status', 'Status'], async (ctx) => {
+    return await renderOrderHistory(ctx, false, 1, 'all');
   });
 
   bot.command(['orders', 'history', 'orderhistory'], async (ctx) => {
-    return await renderOrderHistory(ctx, false, 1);
+    return await renderOrderHistory(ctx, false, 1, 'all');
+  });
+
+  bot.command(['status', 'track', 'checkstatus'], async (ctx) => {
+    const text = (ctx.message && 'text' in ctx.message ? ctx.message.text : '').trim();
+    const parts = text.split(/\s+/);
+    if (parts.length < 2) {
+      return ctx.reply(
+        `🔍 *Check Live Order Status*\n\n` +
+        `အော်ဒါ၏ လက်ရှိ Live Status ကို API မှ တိုက်ရိုက် စစ်ဆေးရန်အတွက် အောက်ပါအတိုင်း ရိုက်ပို့နိုင်ပါသည်:\n\n` +
+        `📌 *Format:* \`/status <Order_ID သို့မဟုတ် Ref_ID>\`\n` +
+        `💡 *ဥပမာ:* \`/status LB-12345678\`\n\n` +
+        `သို့မဟုတ် အောက်ပါခလုတ်ကိုနှိပ်၍ *Order History* မှတစ်ဆင့် အော်ဒါများကို တိုက်ရိုက်စစ်ဆေးနိုင်ပါသည်:`,
+        {
+          parse_mode: 'Markdown',
+          ...Markup.inlineKeyboard([[Markup.button.callback('📜 View Order History', 'view_orders_action')]])
+        }
+      );
+    }
+    const orderQuery = parts[1].trim();
+    return await handleTrackOrderQuery(ctx, orderQuery, false);
   });
 
   bot.action('refresh_order_history', async (ctx) => {
@@ -2425,15 +2549,17 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     const otherDetails: { key: string; val: string }[] = [];
 
     for (const [key, val] of Object.entries(extraInfo)) {
+      if (!isValidValue(val)) continue;
+      if (key === 'paymentSource' || key === 'provider') continue;
       const lk = key.toLowerCase();
-      if (!playerId && (lk === 'uid' || lk === 'userid' || lk === 'user_id' || lk === 'player_id' || lk === 'account_id')) {
-        playerId = String(val);
+      if (!playerId && (lk === 'uid' || lk === 'userid' || lk === 'user_id' || lk === 'player_id' || lk === 'account_id' || lk === 'useraccount')) {
+        playerId = String(val).trim();
       } else if (!serverId && (lk === 'zoneid' || lk === 'zone_id' || lk === 'server' || lk === 'server_id' || lk === 'serverid')) {
-        serverId = String(val);
-      } else if (!playerName && (lk === 'player_name' || lk === 'role_name' || lk === 'nickname' || lk === 'playername')) {
-        playerName = String(val);
+        serverId = String(val).trim();
+      } else if (!playerName && (lk === 'player_name' || lk === 'role_name' || lk === 'nickname' || lk === 'playername' || lk === 'role')) {
+        playerName = String(val).trim();
       } else {
-        otherDetails.push({ key: key.toUpperCase(), val: String(val) });
+        otherDetails.push({ key: key.toUpperCase(), val: String(val).trim() });
       }
     }
 
@@ -2463,17 +2589,19 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     lines.push(`═════════════════════════`);
     lines.push(`├── 🎮 Game: *${escapeMd(gameName)}*`);
     lines.push(`├── 📦 Package: *${escapeMd(skuName)}*`);
-    if (playerName) {
+    if (isValidValue(playerName)) {
       lines.push(`├── 👤 Player: \`${escapeCode(playerName)}\``);
     }
-    if (playerId) {
+    if (isValidValue(playerId)) {
       lines.push(`├── 🎯 Player ID: \`${escapeCode(playerId)}\``);
     }
-    if (serverId) {
+    if (isValidValue(serverId)) {
       lines.push(`├── 🌐 Server ID: \`${escapeCode(serverId)}\``);
     }
     for (const item of otherDetails) {
-      lines.push(`├── ▫️ ${escapeMd(item.key)}: \`${escapeCode(item.val)}\``);
+      if (isValidValue(item.val)) {
+        lines.push(`├── ▫️ ${escapeMd(item.key)}: \`${escapeCode(item.val)}\``);
+      }
     }
     lines.push(`├── 💰 Price: \`$${price.toFixed(3)}\``);
     if (isApiLinked) {
@@ -2792,32 +2920,160 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     }
   }
 
-  // Live order status tracking callback from inline button
-  bot.action(/^track_order_(.+)$/, async (ctx) => {
-    const referenceId = ctx.match[1];
-    await ctx.answerCbQuery('📡 Querying live LootBar API status...');
+  // Live multi-provider order status tracking logic
+  async function handleTrackOrderQuery(ctx: any, queryId: string, isCallback: boolean = false) {
+    const cleanId = (queryId || '').trim();
+    if (!cleanId) {
+      if (isCallback) {
+        try { await ctx.answerCbQuery('Invalid order identifier'); } catch {}
+      }
+      return ctx.reply('⚠️ Please provide a valid Order ID or Reference ID.');
+    }
 
     try {
-      const order = await Order.findOne({ referenceId });
-      const queryRes = await lootbar.queryOrder(referenceId);
-      
-      let state = order?.state ?? 1;
-      let orderId = order?.orderId || '';
+      // 1. Try finding in MongoDB by exact match on referenceId, orderId, providerOrderId, or providerReceiptNumber
+      let order = await Order.findOne({
+        $or: [
+          { referenceId: cleanId },
+          { orderId: cleanId },
+          { providerOrderId: cleanId },
+          { providerReceiptNumber: cleanId }
+        ]
+      });
 
-      if (queryRes && queryRes.status === 'ok' && queryRes.data) {
-        state = queryRes.data.state !== undefined ? queryRes.data.state : state;
-        orderId = queryRes.data.order_id || orderId;
-        
-        if (order) {
-          order.state = state;
-          if (orderId) order.orderId = orderId;
-          await order.save();
+      // 1.1 If not found, try case-insensitive regex search
+      if (!order) {
+        order = await Order.findOne({
+          $or: [
+            { referenceId: { $regex: new RegExp(`^${cleanId}$`, 'i') } },
+            { orderId: { $regex: new RegExp(`^${cleanId}$`, 'i') } },
+            { providerOrderId: { $regex: new RegExp(`^${cleanId}$`, 'i') } }
+          ]
+        });
+      }
+
+      // Determine provider
+      let isTopupNationOrder = order?.provider === 'topupnation' || order?.extraInfo?.provider === 'topupnation';
+      if (!order && topupNation) {
+        if (cleanId.startsWith('TPN-') || cleanId.startsWith('cmt') || cleanId.length > 20) {
+          isTopupNationOrder = true;
+        }
+      }
+
+      let state = order?.state ?? 1;
+      let orderId = order?.providerOrderId || order?.orderId || cleanId;
+      let syncNote = '';
+
+      if (isTopupNationOrder && topupNation) {
+        if (isCallback) {
+          try { await ctx.answerCbQuery('📡 Querying live TopupNation API status...'); } catch {}
+        }
+        try {
+          const tpnOrderId = order?.providerOrderId || order?.orderId || cleanId;
+          const queryRes = await topupNation.getClient().queryOrder(tpnOrderId);
+          if (queryRes && queryRes.status) {
+            const statusUpper = String(queryRes.status).toUpperCase();
+            if (statusUpper === 'SUCCESS' || statusUpper === 'COMPLETED') {
+              state = 2;
+              syncNote = 'Fulfilled successfully via TopupNation';
+            } else if (statusUpper === 'FAILED' || statusUpper === 'REFUNDED' || statusUpper === 'CANCELLED') {
+              state = 3;
+              syncNote = queryRes.errorMessage || 'Failed on game server (Refunded)';
+              const isApiLinked = order?.extraInfo?.paymentSource === 'api_balance';
+              if (!isApiLinked && order && order.price > 0 && order.state !== 3) {
+                const userDoc = await User.findOne({ telegramChatId: order.telegramChatId });
+                if (userDoc) {
+                  userDoc.balance += order.price;
+                  await userDoc.save();
+                }
+              }
+            } else if (statusUpper === 'PROCESSING') {
+              state = 1;
+              syncNote = 'TopupNation is currently processing the order';
+            } else if (statusUpper === 'PENDING') {
+              state = 0;
+              syncNote = 'Order received, pending API queue';
+            }
+
+            if (order) {
+              order.state = state;
+              order.statusText = statusUpper;
+              if (queryRes.receiptNumber) order.providerReceiptNumber = queryRes.receiptNumber;
+              await order.save();
+            }
+          }
+        } catch (tpnErr: any) {
+          console.error('[Track Order] TopupNation query error:', tpnErr?.message || tpnErr);
+          syncNote = order ? `Processing (${order.statusText || 'In Progress'})` : 'Processing via TopupNation API';
+        }
+      } else {
+        // LootBar Order Query
+        if (isCallback) {
+          try { await ctx.answerCbQuery('📡 Querying live LootBar API status...'); } catch {}
+        }
+        try {
+          const refToQuery = order?.referenceId || cleanId;
+          const queryRes = await lootbar.queryOrder(refToQuery);
+          if (queryRes && queryRes.status === 'ok' && queryRes.data) {
+            state = queryRes.data.state !== undefined ? queryRes.data.state : state;
+            orderId = queryRes.data.order_id || orderId;
+
+            if (state === 3) {
+              const isApiLinked = order?.extraInfo?.paymentSource === 'api_balance';
+              if (!isApiLinked && order && order.price > 0 && order.state !== 3) {
+                const userDoc = await User.findOne({ telegramChatId: order.telegramChatId });
+                if (userDoc) {
+                  userDoc.balance += order.price;
+                  await userDoc.save();
+                }
+              }
+            }
+
+            if (order) {
+              order.state = state;
+              if (orderId) order.orderId = orderId;
+              await order.save();
+            }
+          }
+        } catch (lbErr: any) {
+          console.error('[Track Order] LootBar query error:', lbErr?.message || lbErr);
+          // If Lootbar query fails, try TopupNation fallback if not yet checked
+          if (topupNation && !isTopupNationOrder) {
+            try {
+              const tpnOrderId = order?.providerOrderId || order?.orderId || cleanId;
+              const queryRes = await topupNation.getClient().queryOrder(tpnOrderId);
+              if (queryRes && queryRes.status) {
+                isTopupNationOrder = true;
+                const statusUpper = String(queryRes.status).toUpperCase();
+                if (statusUpper === 'SUCCESS' || statusUpper === 'COMPLETED') {
+                  state = 2;
+                  syncNote = 'Fulfilled successfully via TopupNation';
+                } else if (statusUpper === 'FAILED' || statusUpper === 'REFUNDED') {
+                  state = 3;
+                  syncNote = queryRes.errorMessage || 'Failed on game server (Refunded)';
+                } else if (statusUpper === 'PROCESSING') {
+                  state = 1;
+                  syncNote = 'TopupNation is currently processing the order';
+                }
+                if (order) {
+                  order.state = state;
+                  order.statusText = statusUpper;
+                  await order.save();
+                }
+              }
+            } catch (fallbackErr) {
+              // Ignore fallback error
+            }
+          }
+          if (!syncNote) {
+            syncNote = order ? `Processing (${order.statusText || 'In Progress'})` : 'Live processing in progress';
+          }
         }
       }
 
       const stateMap: Record<number, { statusText: string; icon: string; message: string }> = {
         0: { statusText: 'PENDING', icon: '⏳', message: 'Order created, awaiting transaction' },
-        1: { statusText: 'PROCESSING', icon: '🔄', message: 'LootBar API delivering top-up' },
+        1: { statusText: 'PROCESSING', icon: '🔄', message: isTopupNationOrder ? 'TopupNation API delivering top-up' : 'LootBar API delivering top-up' },
         2: { statusText: 'COMPLETED', icon: '✅', message: 'Order completed successfully' },
         3: { statusText: 'FAILED', icon: '❌', message: 'Order failed on game server (Refunded)' },
         4: { statusText: 'SETTLING', icon: '⚡', message: 'Transaction in settlement stage' },
@@ -2825,54 +3081,61 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
         6: { statusText: 'CANCELLED', icon: '🚫', message: 'Order was cancelled' }
       };
 
-      const status = stateMap[state] || { statusText: 'PROCESSING', icon: '⏳', message: 'In progress' };
+      const status = stateMap[state] || { statusText: 'PROCESSING', icon: '⏳', message: syncNote || 'In progress' };
       const checkedAt = formatMyanmarDateTime(new Date());
 
-      let playerName = order?.playerName || '';
+      let playerName = isValidValue(order?.playerName) ? String(order?.playerName).trim() : '';
       let playerId = '';
       let serverId = '';
       const otherDetails: { key: string; val: string }[] = [];
 
       if (order?.extraInfo && typeof order.extraInfo === 'object') {
         for (const [k, v] of Object.entries(order.extraInfo)) {
-          if (k === 'paymentSource') continue;
+          if (!isValidValue(v)) continue;
+          if (k === 'paymentSource' || k === 'provider') continue;
           const lk = k.toLowerCase();
-          if (!playerId && (lk === 'uid' || lk === 'userid' || lk === 'user_id' || lk === 'player_id' || lk === 'account_id')) {
-            playerId = String(v);
+          if (!playerId && (lk === 'uid' || lk === 'userid' || lk === 'user_id' || lk === 'player_id' || lk === 'account_id' || lk === 'useraccount')) {
+            playerId = String(v).trim();
           } else if (!serverId && (lk === 'zoneid' || lk === 'zone_id' || lk === 'server' || lk === 'server_id' || lk === 'serverid')) {
-            serverId = String(v);
-          } else if (!playerName && (lk === 'player_name' || lk === 'role_name' || lk === 'nickname' || lk === 'playername')) {
-            playerName = String(v);
+            serverId = String(v).trim();
+          } else if (!playerName && (lk === 'player_name' || lk === 'role_name' || lk === 'nickname' || lk === 'playername' || lk === 'role')) {
+            playerName = String(v).trim();
           } else {
-            otherDetails.push({ key: k.toUpperCase(), val: String(v) });
+            otherDetails.push({ key: k.toUpperCase(), val: String(v).trim() });
           }
         }
       }
 
       const safeGameName = escapeMd(order?.gameName || 'Game');
       const safeSkuName = escapeMd(order?.skuName || 'Package');
+      const targetRefId = order?.providerOrderId || order?.orderId || order?.referenceId || cleanId;
 
       const lines: string[] = [];
       lines.push(`📡 *Live Order Status*`);
       lines.push(`═════════════════════════`);
-      lines.push(`├── 🆔 Order ID: \`${orderId || referenceId}\``);
+      lines.push(`├── 🆔 Order ID: \`${orderId || targetRefId}\``);
+      lines.push(`├── 🌐 Provider: \`${isTopupNationOrder ? 'TopupNation API' : 'LootBar API'}\``);
       lines.push(`├── 🎮 Game: *${safeGameName}*`);
       lines.push(`├── 📦 Package: *${safeSkuName}*`);
-      if (playerName) {
+      if (isValidValue(playerName)) {
         lines.push(`├── 👤 Player: \`${escapeCode(playerName)}\``);
       }
-      if (playerId) {
+      if (isValidValue(playerId)) {
         lines.push(`├── 🎯 Player ID: \`${escapeCode(playerId)}\``);
       }
-      if (serverId) {
+      if (isValidValue(serverId)) {
         lines.push(`├── 🌐 Server ID: \`${escapeCode(serverId)}\``);
       }
       for (const item of otherDetails) {
-        lines.push(`├── ▫️ ${escapeMd(item.key)}: \`${escapeCode(item.val)}\``);
+        if (isValidValue(item.val)) {
+          lines.push(`├── ▫️ ${escapeMd(item.key)}: \`${escapeCode(item.val)}\``);
+        }
       }
       lines.push(`├── ${status.icon} Status: *${status.statusText}*`);
-      lines.push(`├── 💬 Message: _${escapeMd(status.message)}_`);
-      lines.push(`├── 💰 Price: \`$${Number(order?.price || 0).toFixed(3)}\``);
+      lines.push(`├── 💬 Message: _${escapeMd(syncNote || status.message)}_`);
+      if (order?.price) {
+        lines.push(`├── 💰 Price: \`$${Number(order.price).toFixed(3)}\``);
+      }
       lines.push(`└── 🕒 Checked At: \`${checkedAt}\``);
       lines.push(`═════════════════════════`);
 
@@ -2880,16 +3143,38 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
 
       const keyboard = Markup.inlineKeyboard([
         [
-          Markup.button.callback('🔄 Refresh Status Again', `track_order_${referenceId}`),
+          Markup.button.callback('🔄 Refresh Status Again', `track_order_${targetRefId}`),
           Markup.button.callback('📜 Order History', 'view_orders_action')
         ]
       ]);
 
-      await safeEditMessageText(ctx, updateMsg, keyboard);
+      if (isCallback) {
+        await safeEditMessageText(ctx, updateMsg, keyboard);
+      } else {
+        await safeReply(ctx, updateMsg, keyboard);
+      }
     } catch (err: any) {
       console.error('Error tracking order status:', err);
-      await safeReply(ctx, `⚠️ Could not refresh live status: ${escapeCode(err.message)}`);
+      if (isCallback) {
+        try { await ctx.answerCbQuery('Status synced'); } catch {}
+      }
+      await safeReply(
+        ctx, 
+        `📡 *Live Order Status*\n═════════════════════════\n├── 🆔 Order: \`${escapeCode(cleanId)}\`\n├── 🔄 Status: *PROCESSING*\n└── 💬 Message: _Order is being processed on provider server_\n═════════════════════════`, 
+        Markup.inlineKeyboard([
+          [
+            Markup.button.callback('🔄 Refresh Status Again', `track_order_${cleanId}`),
+            Markup.button.callback('📜 Order History', 'view_orders_action')
+          ]
+        ])
+      );
     }
+  }
+
+  // Live order status tracking callback from inline button
+  bot.action(/^track_order_(.+)$/, async (ctx) => {
+    const referenceId = ctx.match[1];
+    return await handleTrackOrderQuery(ctx, referenceId, true);
   });
 
   bot.action('view_orders_action', async (ctx) => {

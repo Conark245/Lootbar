@@ -226,20 +226,103 @@ export class TopupNationService {
     const referenceId = uuidv4().replace(/-/g, '').substring(0, 32);
     const idempotencyKey = existingIdempotencyKey || `TPN-${uuidv4().replace(/-/g, '')}`;
 
-    // Extract common fields (userAccount, server, role)
-    const userAccount = fields.userAccount || fields.uid || fields.userId || fields.user_id || fields.account_id || fields.playerId;
-    const server = fields.server || fields.zoneId || fields.zone_id || fields.serverId || fields.server_id;
-    const role = fields.role || fields.playerName || fields.role_name || fields.nickname || null;
+    // Robust extraction of userAccount (Player ID / User ID / Account)
+    let userAccount: string = String(
+      fields.userAccount ||
+      fields.user_account ||
+      fields.uid ||
+      fields.userId ||
+      fields.userid ||
+      fields.user_id ||
+      fields.account_id ||
+      fields.accountId ||
+      fields.playerId ||
+      fields.player_id ||
+      fields.playerid ||
+      fields.account ||
+      fields.id ||
+      fields.login ||
+      fields.email ||
+      ''
+    ).trim();
+
+    // Fallback: search any key that looks like user / account / player / id
+    if (!userAccount) {
+      for (const [k, v] of Object.entries(fields)) {
+        const lk = k.toLowerCase();
+        if (v && (lk.includes('user') || lk.includes('account') || lk.includes('player') || lk.includes('uid') || lk === 'id')) {
+          userAccount = String(v).trim();
+          break;
+        }
+      }
+    }
+
+    // Fallback: take the first non-empty primitive value in fields
+    if (!userAccount) {
+      const values = Object.values(fields).filter(v => v !== undefined && v !== null && String(v).trim() !== '' && typeof v !== 'object');
+      if (values.length > 0) {
+        userAccount = String(values[0]).trim();
+      }
+    }
+
+    // Robust extraction of server / zoneId
+    let server: string | undefined = fields.server || fields.server_id || fields.serverId || fields.zoneId || fields.zone_id || fields.zoneid || fields.serverid || fields.region;
+    if (!server) {
+      for (const [k, v] of Object.entries(fields)) {
+        const lk = k.toLowerCase();
+        if (v && (lk.includes('zone') || lk.includes('server') || lk.includes('region'))) {
+          server = String(v).trim();
+          break;
+        }
+      }
+    }
+
+    // Robust extraction of role / nickname
+    let role: string | null = fields.role || fields.role_name || fields.roleName || fields.playerName || fields.player_name || fields.nickname || fields.nick_name || null;
+    if (!role) {
+      for (const [k, v] of Object.entries(fields)) {
+        const lk = k.toLowerCase();
+        if (v && (lk.includes('role') || lk.includes('name') || lk.includes('nick'))) {
+          role = String(v).trim();
+          break;
+        }
+      }
+    }
+
+    // Clean fields and construct official TopupNation Reseller API order payload
+    const cleanFields: Record<string, any> = {};
+    for (const [k, v] of Object.entries(fields)) {
+      if (v !== undefined && v !== null && String(v).trim() !== '') {
+        cleanFields[k] = v;
+      }
+    }
 
     const orderPayload: TopupNationOrderRequest = {
-      productId,
-      sku,
-      userAccount: userAccount ? String(userAccount) : undefined,
-      server: server ? String(server) : undefined,
-      role: role ? String(role) : undefined,
-      quantity,
-      ...fields
+      ...cleanFields,
+      productId: String(productId),
+      sku: String(sku),
+      userAccount: String(userAccount),
+      quantity: Number(quantity) || 1
     };
+
+    if (server) {
+      orderPayload.server = String(server);
+    }
+    if (role) {
+      orderPayload.role = String(role);
+    }
+
+    // Final verification that userAccount is present
+    if (!orderPayload.userAccount || orderPayload.userAccount.trim() === '') {
+      if (!isApiLinked) {
+        user.balance += totalCost;
+        await user.save();
+      }
+      return {
+        success: false,
+        error: 'Missing required account field: Player ID / User Account is required.'
+      };
+    }
 
     // 5. Call TopupNation API
     try {
