@@ -5,6 +5,60 @@
 
 import React, { useEffect, useState } from 'react';
 
+// Myanmar Timezone (GMT+6:30 / Asia/Yangon) formatters
+function formatMyanmarDate(date: Date | string | number | undefined): string {
+  try {
+    if (!date) return '-';
+    const d = new Date(date);
+    if (isNaN(d.getTime())) return '-';
+    return d.toLocaleDateString('en-GB', {
+      timeZone: 'Asia/Yangon',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
+    });
+  } catch (e) {
+    return String(date);
+  }
+}
+
+function formatMyanmarTime(date: Date | string | number | undefined): string {
+  try {
+    if (!date) return '-';
+    const d = new Date(date);
+    if (isNaN(d.getTime())) return '-';
+    return d.toLocaleTimeString('en-US', {
+      timeZone: 'Asia/Yangon',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true
+    }) + ' (MMT GMT+6:30)';
+  } catch (e) {
+    return String(date);
+  }
+}
+
+function formatMyanmarDateTime(date: Date | string | number | undefined): string {
+  try {
+    if (!date) return '-';
+    const d = new Date(date);
+    if (isNaN(d.getTime())) return '-';
+    return d.toLocaleString('en-GB', {
+      timeZone: 'Asia/Yangon',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true
+    }) + ' (MMT GMT+6:30)';
+  } catch (e) {
+    return String(date);
+  }
+}
+
 async function safeFetchJson<T = any>(url: string, options?: RequestInit): Promise<T | null> {
   try {
     const res = await fetch(url, options);
@@ -1814,8 +1868,8 @@ export default function App() {
                         <tr key={o.referenceId} className="hover:bg-neutral-50/70 transition-colors">
                           {/* Date */}
                           <td className="py-3.5 px-4 text-xs text-neutral-500 whitespace-nowrap">
-                            <div className="font-medium text-neutral-700">{new Date(o.createdAt).toLocaleDateString()}</div>
-                            <div className="text-[11px] text-neutral-400">{new Date(o.createdAt).toLocaleTimeString()}</div>
+                            <div className="font-medium text-neutral-700">{formatMyanmarDate(o.createdAt)}</div>
+                            <div className="text-[11px] text-neutral-400">{formatMyanmarTime(o.createdAt)}</div>
                           </td>
 
                           {/* Provider */}
@@ -2061,7 +2115,7 @@ export default function App() {
                   ))}
                   <div className="flex justify-between py-1">
                     <span className="text-neutral-500">Created At:</span>
-                    <span className="text-neutral-700">{new Date(selectedTrackingOrder.createdAt).toLocaleString()}</span>
+                    <span className="text-neutral-700 font-medium">{formatMyanmarDateTime(selectedTrackingOrder.createdAt)}</span>
                   </div>
                 </div>
               </div>

@@ -22,6 +22,42 @@ export function escapeCode(str: any): string {
   return String(str).replace(/[`\\]/g, '');
 }
 
+// Helper to format Date/Timestamp in Myanmar Time (GMT+6:30 / Asia/Yangon)
+export function formatMyanmarDateTime(date: Date | string | number | undefined = new Date()): string {
+  try {
+    const d = date ? new Date(date) : new Date();
+    if (isNaN(d.getTime())) return 'N/A';
+    return d.toLocaleString('en-GB', {
+      timeZone: 'Asia/Yangon',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true
+    }) + ' (MMT GMT+6:30)';
+  } catch (e) {
+    return new Date().toLocaleString() + ' (GMT+6:30)';
+  }
+}
+
+export function formatMyanmarTimeOnly(date: Date | string | number | undefined = new Date()): string {
+  try {
+    const d = date ? new Date(date) : new Date();
+    if (isNaN(d.getTime())) return 'N/A';
+    return d.toLocaleTimeString('en-US', {
+      timeZone: 'Asia/Yangon',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true
+    }) + ' MMT (GMT+6:30)';
+  } catch (e) {
+    return new Date().toLocaleTimeString();
+  }
+}
+
 // Safe reply with fallback to plain text if Markdown parsing fails
 export async function safeReply(ctx: Context, text: string, extra: any = {}) {
   try {
@@ -518,6 +554,133 @@ export function setupBot(
     }
   }
 
+// Smart SKU matching helpers for products with long or complex names
+function findLootBarSkuMatch(skus: any[], rawQuery: string): any {
+  if (!rawQuery || !skus || skus.length === 0) return null;
+  const query = rawQuery.trim().toLowerCase();
+  const cleanQuery = query.replace(/uc|diamond|diamonds|dm|gem|gems|credits|cp/g, '').trim();
+
+  // 1. Exact SKU ID match
+  const exactId = skus.find((s: any) => String(s.sku_id).toLowerCase() === query);
+  if (exactId) return exactId;
+
+  // 2. Exact name match
+  const exactName = skus.find((s: any) => (s.sku_name || '').toLowerCase().trim() === query);
+  if (exactName) return exactName;
+
+  // 3. Exact alias mappings
+  if (query === 'wdp' || query === 'weekly' || query === 'pass') {
+    const wdp = skus.find((s: any) => /weekly/i.test(s.sku_name || ''));
+    if (wdp) return wdp;
+  }
+  if (query === 'tp' || query === 'twilight') {
+    const tp = skus.find((s: any) => /twilight/i.test(s.sku_name || ''));
+    if (tp) return tp;
+  }
+  if (query === 'monthly') {
+    const monthly = skus.find((s: any) => /monthly/i.test(s.sku_name || ''));
+    if (monthly) return monthly;
+  }
+
+  // 4. Number match (e.g. user typed "60" or "86" or "100")
+  const queryNumbers = cleanQuery.match(/\d+/g) || query.match(/\d+/g);
+  if (queryNumbers && queryNumbers.length > 0) {
+    const targetNum = queryNumbers[0];
+    const exactWordNum = skus.find((s: any) => {
+      const name = (s.sku_name || '').toLowerCase();
+      const numRegex = new RegExp(`\\b${targetNum}\\b`);
+      return numRegex.test(name);
+    });
+    if (exactWordNum) return exactWordNum;
+
+    const anyNumMatch = skus.find((s: any) => {
+      const name = (s.sku_name || '').toLowerCase();
+      const nameNumbers = name.match(/\d+/g);
+      return nameNumbers && nameNumbers.includes(targetNum);
+    });
+    if (anyNumMatch) return anyNumMatch;
+  }
+
+  // 5. Multi-word tokens match (all words in user query appear in sku_name)
+  const tokens = query.split(/\s+/).filter(t => t.length > 0);
+  if (tokens.length > 1) {
+    const tokenMatch = skus.find((s: any) => {
+      const name = (s.sku_name || '').toLowerCase();
+      return tokens.every(t => name.includes(t));
+    });
+    if (tokenMatch) return tokenMatch;
+  }
+
+  // 6. Substring match
+  const subMatch = skus.find((s: any) => (s.sku_name || '').toLowerCase().includes(query) || (s.sku_name || '').toLowerCase().includes(cleanQuery));
+  if (subMatch) return subMatch;
+
+  return null;
+}
+
+function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
+  if (!rawQuery || !skus || skus.length === 0) return null;
+  const query = rawQuery.trim().toLowerCase();
+  const cleanQuery = query.replace(/uc|diamond|diamonds|dm|gem|gems|credits|cp/g, '').trim();
+
+  // 1. Exact SKU ID match
+  const exactId = skus.find((s: any) => String(s.sku).toLowerCase() === query);
+  if (exactId) return exactId;
+
+  // 2. Exact name match
+  const exactName = skus.find((s: any) => (s.name || '').toLowerCase().trim() === query);
+  if (exactName) return exactName;
+
+  // 3. Exact alias mappings
+  if (query === 'wdp' || query === 'weekly' || query === 'pass') {
+    const wdp = skus.find((s: any) => /weekly/i.test(s.name || ''));
+    if (wdp) return wdp;
+  }
+  if (query === 'tp' || query === 'twilight') {
+    const tp = skus.find((s: any) => /twilight/i.test(s.name || ''));
+    if (tp) return tp;
+  }
+  if (query === 'monthly') {
+    const monthly = skus.find((s: any) => /monthly/i.test(s.name || ''));
+    if (monthly) return monthly;
+  }
+
+  // 4. Number match
+  const queryNumbers = cleanQuery.match(/\d+/g) || query.match(/\d+/g);
+  if (queryNumbers && queryNumbers.length > 0) {
+    const targetNum = queryNumbers[0];
+    const exactWordNum = skus.find((s: any) => {
+      const name = (s.name || '').toLowerCase();
+      const numRegex = new RegExp(`\\b${targetNum}\\b`);
+      return numRegex.test(name);
+    });
+    if (exactWordNum) return exactWordNum;
+
+    const anyNumMatch = skus.find((s: any) => {
+      const name = (s.name || '').toLowerCase();
+      const nameNumbers = name.match(/\d+/g);
+      return nameNumbers && nameNumbers.includes(targetNum);
+    });
+    if (anyNumMatch) return anyNumMatch;
+  }
+
+  // 5. Multi-word tokens match
+  const tokens = query.split(/\s+/).filter(t => t.length > 0);
+  if (tokens.length > 1) {
+    const tokenMatch = skus.find((s: any) => {
+      const name = (s.name || '').toLowerCase();
+      return tokens.every(t => name.includes(t));
+    });
+    if (tokenMatch) return tokenMatch;
+  }
+
+  // 6. Substring match
+  const subMatch = skus.find((s: any) => (s.name || '').toLowerCase().includes(query) || (s.name || '').toLowerCase().includes(cleanQuery));
+  if (subMatch) return subMatch;
+
+  return null;
+}
+
   // Direct order placement using Owner-defined Short Key
   async function handleGameDirectOrder(ctx: MyContext, game: any, shortKey: string, args: string[]) {
     try {
@@ -534,7 +697,7 @@ export function setupBot(
       const requiredFields = (skus[0]?.extra_info || []).filter((f: any) => f.required);
       const minFields = requiredFields.length > 0 ? requiredFields.length : 1;
 
-      if (args.length < minFields + 1) {
+      if (args.length < minFields) {
         let formatHelp = `.${shortKey} <UID> <Product>`;
         let exampleHelp = `.${shortKey} 5123456789 60`;
         if (requiredFields.length === 2) {
@@ -561,8 +724,34 @@ export function setupBot(
         }
       }
 
+      // If user provided account details without a product name, show 1-click buttons!
+      if (args.length === minFields) {
+        ctx.session = {};
+        ctx.session.gameId = gameId;
+        ctx.session.gameName = gameName;
+        ctx.session.extraInfo = extraInfo;
+        ctx.session.skus = skus;
+
+        const buttons = skus.map((sku: any) => {
+          const name = sku.sku_name || 'Unknown Item';
+          const price = sku.reseller_price || sku.price ? ` ($${sku.reseller_price || sku.price})` : '';
+          return [Markup.button.callback(`${name}${price}`, `q_order_${gameId}_${sku.sku_id}`)];
+        });
+        buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
+
+        let infoDesc = Object.entries(extraInfo).map(([k, v]) => `• ${k.toUpperCase()}: \`${v}\``).join('\n');
+
+        return ctx.reply(
+          `🎮 *${gameName}*\n${infoDesc}\n\n` +
+          `👇 ဝယ်ယူလိုသော Package ကို အောက်ပါ Button များမှ ရွေးချယ်နှိပ်ပါ:`,
+          {
+            parse_mode: 'Markdown',
+            ...Markup.inlineKeyboard(buttons)
+          }
+        );
+      }
+
       const rawProductQuery = args.slice(minFields).join(' ').trim();
-      const productQuery = rawProductQuery.toLowerCase().replace(/uc|diamond|diamonds|dm|gem|gems/g, '').trim();
 
       ctx.session = {};
       ctx.session.gameId = gameId;
@@ -570,16 +759,8 @@ export function setupBot(
       ctx.session.extraInfo = extraInfo;
       ctx.session.skus = skus;
 
-      // Match SKU
-      const numbersInQuery = productQuery.match(/\d+/g);
-      let matchedSku = skus.find((s: any) => {
-        const name = (s.sku_name || '').toLowerCase();
-        const numbersInName = name.match(/\d+/g);
-        if (numbersInQuery && numbersInName && numbersInName.includes(numbersInQuery[0])) {
-          return true;
-        }
-        return name.includes(productQuery);
-      });
+      // Match SKU using smart matcher
+      const matchedSku = findLootBarSkuMatch(skus, rawProductQuery);
 
       if (!matchedSku) {
         // Show available packages for quick selection
@@ -678,7 +859,7 @@ export function setupBot(
       const requiredFields = (product.fields || []).filter((f: any) => f.required);
       const minFields = requiredFields.length > 0 ? requiredFields.length : 1;
 
-      if (args.length < minFields + 1) {
+      if (args.length < minFields) {
         let formatHelp = `.${shortKey} <Account> <Package>`;
         let exampleHelp = `.${shortKey} 123456789 100`;
         if (requiredFields.length === 2) {
@@ -705,8 +886,35 @@ export function setupBot(
         }
       }
 
+      // If user provided account details without a product name, show 1-click buttons!
+      if (args.length === minFields) {
+        ctx.session = {};
+        ctx.session.provider = 'topupnation';
+        ctx.session.gameId = productId;
+        ctx.session.gameName = productName;
+        ctx.session.extraInfo = extraInfo;
+        ctx.session.skus = skus;
+
+        const buttons = skus.map((sku: any) => {
+          const name = sku.name || 'Unknown Item';
+          const price = sku.price ? ` ($${sku.price})` : '';
+          return [Markup.button.callback(`${name}${price}`, `tpn_q_order_${productId}_${sku.sku}`)];
+        });
+        buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
+
+        let infoDesc = Object.entries(extraInfo).map(([k, v]) => `• ${k.toUpperCase()}: \`${v}\``).join('\n');
+
+        return ctx.reply(
+          `🌐 *${productName} (TopupNation)*\n${infoDesc}\n\n` +
+          `👇 ဝယ်ယူလိုသော Package ကို အောက်ပါ Button များမှ ရွေးချယ်နှိပ်ပါ:`,
+          {
+            parse_mode: 'Markdown',
+            ...Markup.inlineKeyboard(buttons)
+          }
+        );
+      }
+
       const rawProductQuery = args.slice(minFields).join(' ').trim();
-      const productQuery = rawProductQuery.toLowerCase().replace(/uc|diamond|diamonds|dm|gem|gems/g, '').trim();
 
       ctx.session = {};
       ctx.session.provider = 'topupnation';
@@ -715,16 +923,8 @@ export function setupBot(
       ctx.session.extraInfo = extraInfo;
       ctx.session.skus = skus;
 
-      // Match SKU
-      const numbersInQuery = productQuery.match(/\d+/g);
-      let matchedSku = skus.find((s: any) => {
-        const name = (s.name || '').toLowerCase();
-        const numbersInName = name.match(/\d+/g);
-        if (numbersInQuery && numbersInName && numbersInName.includes(numbersInQuery[0])) {
-          return true;
-        }
-        return name.includes(productQuery) || String(s.sku).toLowerCase() === productQuery;
-      });
+      // Match SKU using smart matcher
+      const matchedSku = findTopupNationSkuMatch(skus, rawProductQuery);
 
       if (!matchedSku) {
         const buttons = skus.map((sku: any) => {
@@ -1176,6 +1376,31 @@ export function setupBot(
   }
 
   async function renderDualApiBalance(ctx: MyContext, viewMode: 'both' | 'lootbar' | 'topupnation' = 'both', isEdit: boolean = false) {
+    const user = await User.findOne({ telegramChatId: ctx.chat!.id });
+    const currentAdminId = await getAdminChatId(adminChatId);
+    const isOwner = String(ctx.chat!.id) === currentAdminId;
+    const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
+
+    // Security & Privacy Check: Non-API-linked members cannot access API balances
+    if (!isApiLinked && !isOwner) {
+      const msg = `🔒 *Access Restricted: API Balance*\n\n` +
+        `တိုက်ရိုက် API Balance စစ်ဆေးခြင်းကို Direct API Linked Reseller (VIP) သို့မဟုတ် Admin သာ ကြည့်ရှုခွင့်ရှိပါသည်။\n\n` +
+        `💰 *သင့် Wallet လက်ကျန်ငွေ:* \`$${Number(user?.balance || 0).toFixed(2)} USD\``;
+
+      const keyboard = Markup.inlineKeyboard([
+        [
+          Markup.button.callback('💰 Request Balance Top-Up', 'topup_flow_start'),
+          Markup.button.callback('👤 My Account Profile', 'view_my_profile')
+        ]
+      ]);
+
+      if (isEdit) {
+        return await safeEditMessageText(ctx, msg, keyboard);
+      } else {
+        return await safeReply(ctx, msg, keyboard);
+      }
+    }
+
     if (viewMode === 'lootbar') {
       const lbRes = await getLootBarLiveBalance();
       const msg = `🎮 *LootBar API Live Asset Balance*\n` +
@@ -1184,7 +1409,7 @@ export function setupBot(
         `├── 💰 Live Asset Balance: \`$${lbRes.balance} USD\`\n` +
         `├── 📊 Connection Status: \`${lbRes.success ? '✅ Live Connected' : '⚠️ Offline'}\`\n` +
         (!lbRes.success && lbRes.error ? `├── ⚠️ Note: \`${escapeMd(lbRes.error)}\`\n` : '') +
-        `└── 🕒 Synced At: \`${new Date().toLocaleTimeString()}\`\n` +
+        `└── 🕒 Synced At: \`${formatMyanmarDateTime(new Date())}\`\n` +
         `═════════════════════════\n` +
         `✨ _LootBar API Wallet မှ လက်ကျန်ငွေ အခြေအနေ ဖြစ်ပါသည်။_`;
 
@@ -1218,7 +1443,7 @@ export function setupBot(
         `├── 💵 Available Balance: \`$${tpnRes.available} ${tpnRes.currency}\`\n` +
         `├── 📊 Connection Status: \`${tpnRes.success ? '✅ Live Connected' : '⚠️ Offline'}\`\n` +
         (!tpnRes.success && tpnRes.error ? `├── ⚠️ Note: \`${escapeMd(tpnRes.error)}\`\n` : '') +
-        `└── 🕒 Synced At: \`${new Date().toLocaleTimeString()}\`\n` +
+        `└── 🕒 Synced At: \`${formatMyanmarDateTime(new Date())}\`\n` +
         `═════════════════════════\n` +
         `✨ _TopupNation Reseller API Wallet မှ လက်ကျန်ငွေ ဖြစ်ပါသည်။_`;
 
@@ -1297,6 +1522,33 @@ export function setupBot(
         ? escapeMd(user.firstName) 
         : 'Not set';
 
+    // Standard Member Profile (Hide API balances completely)
+    if (!isApiLinked && !isOwner) {
+      let msg = `👤 *My Account Profile*\n` +
+        `═════════════════════════\n` +
+        `🆔 *Chat ID:* \`${ctx.chat!.id}\`\n` +
+        `👤 *Username:* ${usernameDisplay}\n` +
+        `📊 *Status:* ✅ \`Authorized\`\n` +
+        `⚡ *Account Tier:* \`Standard Member\`\n` +
+        `💰 *Wallet Balance:* \`$${Number(user.balance || 0).toFixed(2)} USD\`\n` +
+        `📦 *Ordering Mode:* \`Pre-funded Wallet Balance\`\n` +
+        `═════════════════════════`;
+
+      const keyboard = Markup.inlineKeyboard([
+        [
+          Markup.button.callback('💰 Request Balance Top-Up', 'topup_flow_start'),
+          Markup.button.callback('📜 Order History', 'view_my_orders')
+        ]
+      ]);
+
+      if (isEdit) {
+        return await safeEditMessageText(ctx, msg, keyboard);
+      } else {
+        return await safeReply(ctx, msg, keyboard);
+      }
+    }
+
+    // Direct API Linked VIP or Owner Profile
     const [lbRes, tpnRes] = await Promise.all([
       getLootBarLiveBalance(),
       getTopupNationLiveBalance()
@@ -1316,9 +1568,8 @@ export function setupBot(
         `🌐 *TopupNation API Live:* \`$${tpnRes.balance} USD\`\n\n` +
         `_✨ Your account is directly connected to live API funds for instant top-up fulfillment._`;
     } else {
-      msg += `⚡ *Account Tier:* \`Standard Member\`\n` +
-        `💰 *Wallet Balance:* \`$${Number(user.balance || 0).toFixed(2)} USD\`\n` +
-        `📦 *Ordering Mode:* \`Pre-funded Wallet Balance\`\n\n` +
+      msg += `⚡ *Account Tier:* \`Admin / Owner\`\n` +
+        `💰 *Wallet Balance:* \`$${Number(user.balance || 0).toFixed(2)} USD\`\n\n` +
         `🎮 *LootBar API Live:* \`$${lbRes.balance} USD\`\n` +
         `🌐 *TopupNation API Live:* \`$${tpnRes.balance} USD\``;
     }
@@ -1353,18 +1604,43 @@ export function setupBot(
     const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
     const apiProvider = (user?.apiProvider || 'both').toUpperCase();
 
+    // Standard Member: ONLY show personal wallet balance (Hide API balances completely)
+    if (!isApiLinked && !isOwner) {
+      let msg = `💳 *Your Wallet Balance*\n` +
+        `═════════════════════════\n` +
+        `💰 *Current Balance:* \`$${Number(user?.balance || 0).toFixed(2)} USD\`\n` +
+        `⚡ *Account Tier:* \`Standard Member\`\n` +
+        `📦 *Ordering Mode:* \`Pre-funded Wallet Balance\`\n` +
+        `═════════════════════════\n` +
+        `_💡 သင့် Wallet ထဲသို့ ငွေဖြည့်သွင်းလိုပါက အောက်ပါ Request Balance Top-Up ခလုတ်ကို နှိပ်ပါ:_`;
+
+      const keyboard = Markup.inlineKeyboard([
+        [
+          Markup.button.callback('💰 Request Balance Top-Up', 'topup_flow_start'),
+          Markup.button.callback('👤 My Account Profile', 'view_my_profile')
+        ]
+      ]);
+
+      if (isEdit) {
+        return await safeEditMessageText(ctx, msg, keyboard);
+      } else {
+        return await safeReply(ctx, msg, keyboard);
+      }
+    }
+
+    // Direct API Linked VIP or Owner: Show Live API Balances
     const [lbRes, tpnRes] = await Promise.all([
       getLootBarLiveBalance(),
       getTopupNationLiveBalance()
     ]);
 
-    let msg = `💳 *Account & API Balance Summary*\n` +
+    let msg = `⚡ *Direct API Live Balance (VIP / Reseller)*\n` +
       `═════════════════════════\n` +
-      `💰 *Your Wallet Balance:* \`$${Number(user?.balance || 0).toFixed(2)} USD\`\n` +
-      `⚡ *Account Tier:* \`${isApiLinked ? `Direct API Linked (${apiProvider})` : 'Standard Member'}\`\n` +
+      `💰 *Personal Wallet:* \`$${Number(user?.balance || 0).toFixed(2)} USD\`\n` +
+      `🌐 *Linked Provider:* \`${apiProvider}\`\n` +
       `═════════════════════════\n` +
-      `🎮 *LootBar API Balance:* \`$${lbRes.balance} USD\` (${lbRes.success ? '✅ Connected' : '⚠️ Offline'})\n` +
-      `🌐 *TopupNation API Balance:* \`$${tpnRes.balance} USD\` (${tpnRes.success ? '✅ Connected' : '⚠️ Offline'})\n` +
+      `🎮 *LootBar API:* \`$${lbRes.balance} USD\` (${lbRes.success ? '✅ Connected' : '⚠️ Offline'})\n` +
+      `🌐 *TopupNation API:* \`$${tpnRes.balance} USD\` (${tpnRes.success ? '✅ Connected' : '⚠️ Offline'})\n` +
       `═════════════════════════\n` +
       `💡 _API Balance တစ်ခုချင်းစီကို သီးသန့် ရွေးချယ်ကြည့်ရှုလိုပါက အောက်ပါခလုတ်များကို နှိပ်ပါ:_`;
 
@@ -1391,16 +1667,43 @@ export function setupBot(
 
   // Action Handlers for API Balance Switcher
   bot.action('api_bal_both', async (ctx) => {
+    const user = await User.findOne({ telegramChatId: ctx.chat!.id });
+    const currentAdminId = await getAdminChatId(adminChatId);
+    const isOwner = String(ctx.chat!.id) === currentAdminId;
+    const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
+
+    if (!isApiLinked && !isOwner) {
+      return await ctx.answerCbQuery('⚠️ API balance access is only for API-linked VIP members.', { show_alert: true });
+    }
+
     await ctx.answerCbQuery('Refreshing both API balances...');
     return await renderDualApiBalance(ctx, 'both', true);
   });
 
   bot.action('api_bal_lootbar', async (ctx) => {
+    const user = await User.findOne({ telegramChatId: ctx.chat!.id });
+    const currentAdminId = await getAdminChatId(adminChatId);
+    const isOwner = String(ctx.chat!.id) === currentAdminId;
+    const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
+
+    if (!isApiLinked && !isOwner) {
+      return await ctx.answerCbQuery('⚠️ API balance access is only for API-linked VIP members.', { show_alert: true });
+    }
+
     await ctx.answerCbQuery('Checking LootBar API balance...');
     return await renderDualApiBalance(ctx, 'lootbar', true);
   });
 
   bot.action('api_bal_topupnation', async (ctx) => {
+    const user = await User.findOne({ telegramChatId: ctx.chat!.id });
+    const currentAdminId = await getAdminChatId(adminChatId);
+    const isOwner = String(ctx.chat!.id) === currentAdminId;
+    const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
+
+    if (!isApiLinked && !isOwner) {
+      return await ctx.answerCbQuery('⚠️ API balance access is only for API-linked VIP members.', { show_alert: true });
+    }
+
     await ctx.answerCbQuery('Checking TopupNation API balance...');
     return await renderDualApiBalance(ctx, 'topupnation', true);
   });
@@ -1413,6 +1716,11 @@ export function setupBot(
   bot.action('view_my_profile', async (ctx) => {
     await ctx.answerCbQuery();
     return await renderAccountProfile(ctx, true);
+  });
+
+  bot.action('view_my_orders', async (ctx) => {
+    await ctx.answerCbQuery();
+    return await renderOrderHistory(ctx);
   });
 
   bot.hears([
@@ -1438,14 +1746,30 @@ export function setupBot(
     'apibalance', 'apibal', 'apis', 'api', 'adminbalance',
     'lootbarbalance', 'lbbalance', 'tpnbalance', 'topupnationbalance'
   ], async (ctx) => {
+    const user = await User.findOne({ telegramChatId: ctx.chat!.id });
+    const currentAdminId = await getAdminChatId(adminChatId);
+    const isOwner = String(ctx.chat!.id) === currentAdminId;
+    const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
+
     const text = (ctx.message && 'text' in ctx.message ? ctx.message.text : '').toLowerCase();
+
+    // If a regular user calls API-specific balance commands, enforce permissions
     if (text.includes('lootbar') || text.includes('lbbalance')) {
+      if (!isApiLinked && !isOwner) {
+        return await renderBalance(ctx);
+      }
       return await renderDualApiBalance(ctx, 'lootbar');
     }
     if (text.includes('tpn') || text.includes('topupnation')) {
+      if (!isApiLinked && !isOwner) {
+        return await renderBalance(ctx);
+      }
       return await renderDualApiBalance(ctx, 'topupnation');
     }
     if (text.includes('apibalance') || text.includes('apis') || text.startsWith('/api')) {
+      if (!isApiLinked && !isOwner) {
+        return await renderBalance(ctx);
+      }
       return await renderDualApiBalance(ctx, 'both');
     }
     return await renderBalance(ctx);
@@ -1525,6 +1849,7 @@ export function setupBot(
       `├── 📸 Payment Slip: \`Attached ✅\`\n` +
       (note ? `├── 📝 Note / Ref: \`${escapeCode(note)}\`\n` : '') +
       `├── 💳 Current Balance: \`$${Number(user.balance || 0).toFixed(2)} USD\`\n` +
+      `├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
       `└── ⏳ Status: *PENDING APPROVAL*\n` +
       `═════════════════════════\n` +
       `Admin / Owner ထံသို့ ငွေလွှဲပြေစာနှင့်တကွ တိုက်ရိုက် အကြောင်းကြားစာ ပို့ပြီးပါပြီ။ Owner မှ စစ်ဆေးအတည်ပြုပြီးပါက သင့် Wallet ထဲသို့ Balance တိုက်ရိုက်ထည့်သွင်းပေးပါမည်။`;
@@ -1542,7 +1867,8 @@ export function setupBot(
       `├── 👤 User: \`${chatId}\` (${userDisplay})\n` +
       `├── 💵 Requested Amount: \`$${amount.toFixed(2)} USD\`\n` +
       `├── 💳 Current Balance: \`$${Number(user.balance || 0).toFixed(2)} USD\`\n` +
-      `└── 📝 Note / Ref: \`${safeNote}\`\n` +
+      `├── 📝 Note / Ref: \`${safeNote}\`\n` +
+      `└── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
       `═════════════════════════\n` +
       `အောက်ပါ ခလုတ်များကို နှိပ်၍ အတည်ပြု/ပယ်ဖျက်နိုင်ပါသည်:`;
 
@@ -1692,7 +2018,8 @@ export function setupBot(
 
     lines.push(`├── ${status.icon} Status: *${status.statusText}*`);
     lines.push(`├── 💬 Message: _${escapeMd(status.message)}_`);
-    lines.push(`└── 💰 Price: \`${priceVal}\``);
+    lines.push(`├── 💰 Price: \`${priceVal}\``);
+    lines.push(`└── 🕒 Time: \`${formatMyanmarDateTime(o.createdAt)}\``);
 
     return lines.join('\n');
   }
@@ -2231,6 +2558,7 @@ export function setupBot(
       lines.push(`├── 🔄 Status: *PROCESSING*`);
       lines.push(`├── 💬 Message: _Order accepted by TopupNation API_`);
       lines.push(`├── 💰 Price: \`$${orderCost.toFixed(3)}\``);
+      lines.push(`├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\``);
       if (!isApiLinked) {
         const updatedUser = await User.findOne({ telegramChatId: ctx.chat!.id });
         lines.push(`└── 💳 Remaining Balance: \`$${(updatedUser?.balance || 0).toFixed(2)}\``);
@@ -2259,6 +2587,7 @@ export function setupBot(
         `├── 💰 Price: \`$${orderCost.toFixed(2)} USD\`\n` +
         (order.playerName ? `├── 🎯 Player/Account: \`${escapeCode(order.playerName)}\`\n` : '') +
         `├── 💳 Payment: \`${isApiLinked ? 'Direct API Linked' : 'Wallet Balance'}\`\n` +
+        `├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
         `└── 🆔 Order ID: \`${orderId}\`\n` +
         `═════════════════════════`;
 
@@ -2356,6 +2685,7 @@ export function setupBot(
         lines.push(`├── 🔄 Status: *PROCESSING*`);
         lines.push(`├── 💬 Message: _Order accepted by LootBar API_`);
         lines.push(`├── 💰 Price: \`$${orderCost.toFixed(3)}\``);
+        lines.push(`├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\``);
         if (!isApiLinked) {
           lines.push(`└── 💳 Remaining Balance: \`$${userDoc.balance.toFixed(2)}\``);
         } else {
@@ -2388,6 +2718,7 @@ export function setupBot(
           (playerName ? `├── 🎯 Player: \`${escapeCode(playerName)}\`\n` : '') +
           (playerId ? `├── 🎯 Player ID: \`${escapeCode(playerId)}\`\n` : '') +
           `├── 💳 Payment: \`${isApiLinked ? 'Direct API Linked' : 'Wallet Balance'}\`\n` +
+          `├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
           `└── 🆔 Order ID: \`${orderId}\`\n` +
           `═════════════════════════`;
         
@@ -2495,7 +2826,7 @@ export function setupBot(
       };
 
       const status = stateMap[state] || { statusText: 'PROCESSING', icon: '⏳', message: 'In progress' };
-      const checkedAt = new Date().toLocaleTimeString();
+      const checkedAt = formatMyanmarDateTime(new Date());
 
       let playerName = order?.playerName || '';
       let playerId = '';
