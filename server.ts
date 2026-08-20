@@ -586,35 +586,105 @@ async function syncActiveOrders() {
   }
 }
 
+// Backfill missing telegramUsername and info on existing orders
+async function backfillOrderUsernames() {
+  try {
+    const ordersWithoutUsername = await Order.find({
+      $or: [
+        { telegramUsername: { $exists: false } },
+        { telegramUsername: null },
+        { telegramUsername: '' }
+      ]
+    }).limit(1000);
+
+    if (ordersWithoutUsername.length > 0) {
+      const chatIds = Array.from(new Set(ordersWithoutUsername.map(o => o.telegramChatId)));
+      const users = await User.find({ telegramChatId: { $in: chatIds } });
+      const userMap = new Map(users.map(u => [u.telegramChatId, u]));
+
+      let count = 0;
+      for (const ord of ordersWithoutUsername) {
+        const u = userMap.get(ord.telegramChatId);
+        if (u && (u.username || u.firstName)) {
+          if (u.username) ord.telegramUsername = u.username;
+          if (u.firstName) ord.telegramFirstName = u.firstName;
+          await ord.save();
+          count++;
+        }
+      }
+      if (count > 0) {
+        console.log(`[Database Migration] Populated Telegram username on ${count} orders.`);
+      }
+    }
+  } catch (e) {
+    console.error('Order username backfill notice:', e);
+  }
+}
+
+// Trigger initial backfill
+setTimeout(backfillOrderUsernames, 2000);
+
 // Run active order sync every 8 seconds
 setInterval(syncActiveOrders, 8000);
 
 app.get("/api/orders", async (req, res) => {
   try {
-    const orders = await Order.find().sort({ createdAt: -1 }).limit(100);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 500, 1), 1000);
+    const orders = await Order.find().sort({ createdAt: -1 }).limit(limit);
     res.setHeader('Content-Type', 'application/json');
     res.json({ success: true, data: orders });
     // Trigger sync in background non-blocking
     syncActiveOrders().catch(() => {});
+    topupNationService.pollActiveOrders().catch(() => {});
   } catch (err: any) {
     res.status(500).json({ success: false, data: [], error: err.message });
   }
 });
 
-// Force sync a specific order in real time
+// Force sync a specific order in real time (Supports LootBar and TopupNation)
 app.post("/api/orders/:referenceId/sync", async (req, res) => {
   try {
     const { referenceId } = req.params;
-    const order = await Order.findOne({ referenceId });
+    const order = await Order.findOne({
+      $or: [
+        { referenceId },
+        { orderId: referenceId },
+        { providerOrderId: referenceId }
+      ]
+    });
     if (!order) {
       return res.status(404).json({ error: "Order not found" });
+    }
+
+    const isTpn = order.provider === 'topupnation' || order.extraInfo?.provider === 'topupnation';
+    if (isTpn) {
+      if (!topupNationClient.isConfigured()) {
+        return res.status(400).json({ error: "TopupNation API not configured" });
+      }
+      const orderIdToQuery = order.providerOrderId || order.orderId || order.referenceId;
+      const tpnRes = await topupNationClient.queryOrder(orderIdToQuery);
+      if (tpnRes && tpnRes.status) {
+        const statusUpper = tpnRes.status.toUpperCase();
+        let newState = order.state;
+        if (statusUpper === 'SUCCESS') newState = 2;
+        else if (statusUpper === 'FAILED' || statusUpper === 'REFUNDED') newState = 3;
+        else if (statusUpper === 'PROCESSING') newState = 1;
+        
+        order.state = newState;
+        order.statusText = statusUpper;
+        if (tpnRes.id) order.providerOrderId = tpnRes.id;
+        if (tpnRes.receiptNumber) order.providerReceiptNumber = tpnRes.receiptNumber;
+        await order.save();
+        return res.json({ success: true, data: order, apiData: tpnRes });
+      }
+      return res.json({ success: true, data: order, message: "No change from TopupNation API" });
     }
 
     if (!lootbarClient.isConfigured()) {
       return res.status(400).json({ error: "LootBar API not configured" });
     }
 
-    const queryRes = await lootbarClient.queryOrder(referenceId);
+    const queryRes = await lootbarClient.queryOrder(order.referenceId);
     if (queryRes && queryRes.status === 'ok' && queryRes.data) {
       const newState = queryRes.data.state;
       const orderId = queryRes.data.order_id || order.orderId;

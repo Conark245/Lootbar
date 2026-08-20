@@ -1876,16 +1876,19 @@ export default function App() {
 
               // Search Filter
               if (orderSearch.trim()) {
-                const query = orderSearch.toLowerCase();
+                const query = orderSearch.toLowerCase().trim();
+                const cleanQuery = query.replace(/^@/, '');
                 const matchName = o.gameName?.toLowerCase().includes(query);
                 const matchSku = o.skuName?.toLowerCase().includes(query);
                 const matchPlayer = o.playerName?.toLowerCase().includes(query);
                 const matchRef = o.referenceId?.toLowerCase().includes(query);
                 const matchOrder = o.orderId?.toLowerCase().includes(query);
                 const matchChat = String(o.telegramChatId).includes(query);
+                const matchUsername = o.telegramUsername?.toLowerCase().includes(cleanQuery);
+                const matchFirstName = o.telegramFirstName?.toLowerCase().includes(cleanQuery);
                 const matchExtra = o.extraInfo ? JSON.stringify(o.extraInfo).toLowerCase().includes(query) : false;
 
-                return matchName || matchSku || matchPlayer || matchRef || matchOrder || matchChat || matchExtra;
+                return matchName || matchSku || matchPlayer || matchRef || matchOrder || matchChat || matchUsername || matchFirstName || matchExtra;
               }
               return true;
             });
@@ -1943,8 +1946,50 @@ export default function App() {
 
                           {/* User */}
                           <td className="py-3.5 px-4">
-                            <span className="font-mono text-xs text-neutral-800 font-semibold block">{o.telegramChatId}</span>
-                            <span className="text-[11px] text-neutral-400">Telegram User</span>
+                            {(() => {
+                              const matchedUser = telegramUsers.find(u => String(u.telegramChatId) === String(o.telegramChatId));
+                              const isApi = !!(matchedUser?.useDirectApiBalance || matchedUser?.balanceMode === 'api');
+                              const username = o.telegramUsername || matchedUser?.username;
+                              const firstName = o.telegramFirstName || matchedUser?.firstName;
+
+                              return (
+                                <div className="space-y-0.5">
+                                  {username ? (
+                                    <button
+                                      onClick={() => setOrderSearch(`@${username}`)}
+                                      className="font-medium text-xs text-blue-700 hover:text-blue-900 hover:underline flex items-center gap-1 group"
+                                      title="Filter by @username"
+                                    >
+                                      <span className="font-semibold text-neutral-900 group-hover:text-blue-800">@{username}</span>
+                                    </button>
+                                  ) : firstName ? (
+                                    <div className="font-medium text-xs text-neutral-800">{firstName}</div>
+                                  ) : null}
+
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      onClick={() => setOrderSearch(String(o.telegramChatId))}
+                                      className="font-mono text-[11px] text-neutral-500 hover:text-neutral-800 hover:underline"
+                                      title="Filter by Chat ID"
+                                    >
+                                      ID: {o.telegramChatId}
+                                    </button>
+                                  </div>
+
+                                  {matchedUser?.notes ? (
+                                    <div className="text-[11px] text-neutral-600 truncate max-w-[130px] font-medium" title={matchedUser.notes}>
+                                      📝 {matchedUser.notes}
+                                    </div>
+                                  ) : null}
+
+                                  {isApi && (
+                                    <span className="inline-block mt-0.5 text-[9px] font-bold text-purple-700 bg-purple-50 border border-purple-200 px-1.5 py-0.2 rounded">
+                                      VIP API
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </td>
 
                           {/* Game & Product */}

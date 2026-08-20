@@ -4,6 +4,9 @@ export interface IOrder extends Document {
   referenceId: string;
   orderId?: string;
   telegramChatId: number;
+  telegramUsername?: string;
+  telegramFirstName?: string;
+  telegramLastName?: string;
   provider?: 'lootbar' | 'topupnation';
   providerOrderId?: string;
   providerReceiptNumber?: string;
@@ -27,6 +30,9 @@ const orderSchema = new mongoose.Schema({
   referenceId: { type: String, required: true, unique: true, index: true },
   orderId: { type: String, index: true }, // Platform order number (LootBar or TopupNation)
   telegramChatId: { type: Number, required: true, index: true },
+  telegramUsername: { type: String, index: true },
+  telegramFirstName: { type: String },
+  telegramLastName: { type: String },
   provider: { type: String, enum: ['lootbar', 'topupnation'], default: 'lootbar', index: true },
   providerOrderId: { type: String, index: true },
   providerReceiptNumber: { type: String },

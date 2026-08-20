@@ -166,13 +166,26 @@ export class TopupNationService {
    */
   public async placeOrder(params: {
     telegramChatId: number;
+    telegramUsername?: string;
+    telegramFirstName?: string;
+    telegramLastName?: string;
     productId: string;
     sku: string;
     fields: Record<string, any>;
     quantity?: number;
     existingIdempotencyKey?: string;
   }): Promise<{ success: boolean; order?: IOrder; error?: string }> {
-    const { telegramChatId, productId, sku, fields, quantity = 1, existingIdempotencyKey } = params;
+    const { 
+      telegramChatId, 
+      telegramUsername,
+      telegramFirstName,
+      telegramLastName,
+      productId, 
+      sku, 
+      fields, 
+      quantity = 1, 
+      existingIdempotencyKey 
+    } = params;
 
     // 1. Fetch Product & SKU details
     const product = await this.getProduct(productId);
@@ -347,6 +360,9 @@ export class TopupNationService {
         idempotencyKey,
         statusText,
         telegramChatId,
+        telegramUsername: telegramUsername || user?.username || undefined,
+        telegramFirstName: telegramFirstName || user?.firstName || undefined,
+        telegramLastName: telegramLastName || undefined,
         gameId: productId,
         gameName: product.name,
         skuId: sku,

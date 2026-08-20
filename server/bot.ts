@@ -1972,7 +1972,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     return true;
   }
 
-  function formatOrderTreeNode(o: any, orderNumber: number): string {
+  function formatOrderTreeNode(o: any, orderNumber: number, showUserInfo: boolean = false): string {
     const isTopupNation = o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation';
     const providerBadge = isTopupNation ? '⚡ TopupNation API' : '🎮 LootBar API';
     const safeGame = escapeMd(o.gameName || 'Game');
@@ -1993,6 +1993,13 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
 
     const lines: string[] = [];
     lines.push(`*Order #${orderNumber}* ❲ *${providerBadge}* ❳`);
+
+    if (o.telegramUsername || (showUserInfo && o.telegramChatId)) {
+      const userDisplay = o.telegramUsername 
+        ? `@${escapeMd(o.telegramUsername)}` 
+        : (o.telegramFirstName ? escapeMd(o.telegramFirstName) : `User \`${o.telegramChatId}\``);
+      lines.push(`├── 👤 User: *${userDisplay}* \`(${o.telegramChatId})\``);
+    }
 
     const displayOrderId = o.providerOrderId || o.orderId || o.referenceId || 'Pending';
     lines.push(`├── 🆔 Order ID: \`${displayOrderId}\``);
@@ -2046,12 +2053,27 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     return lines.join('\n');
   }
 
-  async function renderOrderHistory(ctx: MyContext, isEdit: boolean = false, page: number = 1, providerFilter: 'all' | 'lootbar' | 'topupnation' = 'all') {
+  async function renderOrderHistory(
+    ctx: MyContext, 
+    isEdit: boolean = false, 
+    page: number = 1, 
+    providerFilter: 'all' | 'lootbar' | 'topupnation' = 'all',
+    scope?: 'all' | 'mine'
+  ) {
     const pageSize = 3;
     const chatId = ctx.chat!.id;
+    const currentAdminId = await getAdminChatId(adminChatId);
+    const isOwner = String(chatId) === currentAdminId;
+
+    // Determine actual scope: if owner and not explicitly set to 'mine', default to 'all' for owner
+    const actualScope: 'all' | 'mine' = isOwner ? (scope || 'all') : 'mine';
+    const isAllUsersView = isOwner && actualScope === 'all';
+
+    // Build base user query condition
+    const userQuery: any = isAllUsersView ? {} : { telegramChatId: chatId };
 
     // Build query based on provider filter
-    const query: any = { telegramChatId: chatId };
+    const query: any = { ...userQuery };
     if (providerFilter === 'topupnation') {
       query.$or = [
         { provider: 'topupnation' },
@@ -2066,14 +2088,14 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
 
     // Counts for tabs
     const [totalAll, totalLootBar, totalTopupNation] = await Promise.all([
-      Order.countDocuments({ telegramChatId: chatId }),
+      Order.countDocuments(userQuery),
       Order.countDocuments({
-        telegramChatId: chatId,
+        ...userQuery,
         provider: { $ne: 'topupnation' },
         'extraInfo.provider': { $ne: 'topupnation' }
       }),
       Order.countDocuments({
-        telegramChatId: chatId,
+        ...userQuery,
         $or: [
           { provider: 'topupnation' },
           { 'extraInfo.provider': 'topupnation' }
@@ -2088,20 +2110,34 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
         : totalAll;
 
     const providerTitle = providerFilter === 'topupnation' 
-      ? '⚡ TopupNation Orders' 
+      ? '⚡ TopupNation' 
       : providerFilter === 'lootbar' 
-        ? '🎮 LootBar Orders' 
-        : '📜 All Orders';
+        ? '🎮 LootBar' 
+        : '🌐 All Providers';
+
+    const headerTitle = isAllUsersView 
+      ? `👑 *All Users' Orders (Admin View)* — ${providerTitle}`
+      : `⏳ *My Order History* — ${providerTitle}`;
 
     if (totalOrders === 0) {
-      const emptyMsg = `⏳ *Order History* — ${providerTitle}\n═════════════════════════\n\n📜 _အော်ဒါမှတ်တမ်း မရှိသေးပါ။_\n\nအခြား Category ကို ရွေးချယ်ကြည့်ရှုနိုင်ပါသည်:`;
-      const emptyKeyboard = Markup.inlineKeyboard([
+      const emptyMsg = `${headerTitle}\n═════════════════════════\n\n📜 _အော်ဒါမှတ်တမ်း မရှိသေးပါ။_\n\nအခြား Category ကို ရွေးချယ်ကြည့်ရှုနိုင်ပါသည်:`;
+      const buttons: any[] = [
         [
-          Markup.button.callback(`🌐 All (${totalAll})`, 'order_filter_all_page_1'),
-          Markup.button.callback(`🎮 LootBar (${totalLootBar})`, 'order_filter_lootbar_page_1'),
-          Markup.button.callback(`⚡ TopupNation (${totalTopupNation})`, 'order_filter_topupnation_page_1')
+          Markup.button.callback(`🌐 All (${totalAll})`, `order_filter_all_${actualScope}_page_1`),
+          Markup.button.callback(`🎮 LootBar (${totalLootBar})`, `order_filter_lootbar_${actualScope}_page_1`),
+          Markup.button.callback(`⚡ TopupNation (${totalTopupNation})`, `order_filter_topupnation_${actualScope}_page_1`)
         ]
-      ]);
+      ];
+
+      if (isOwner) {
+        buttons.push([
+          isAllUsersView 
+            ? Markup.button.callback('👤 Switch to My Orders Only', `order_filter_${providerFilter}_mine_page_1`)
+            : Markup.button.callback('👑 Switch to All Users\' Orders', `order_filter_${providerFilter}_all_page_1`)
+        ]);
+      }
+
+      const emptyKeyboard = Markup.inlineKeyboard(buttons);
       if (isEdit) {
         return await safeEditMessageText(ctx, emptyMsg, emptyKeyboard);
       }
@@ -2116,14 +2152,14 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
       .skip((currentPage - 1) * pageSize)
       .limit(pageSize);
 
-    let msg = `⏳ *Order History* — ${providerTitle}\n` +
+    let msg = `${headerTitle}\n` +
       `📄 Page ${currentPage} of ${totalPages}\n` +
       `═════════════════════════\n\n`;
 
     const startIndex = (currentPage - 1) * pageSize;
     orders.forEach((o, i) => {
       const orderNumber = startIndex + i + 1;
-      msg += formatOrderTreeNode(o, orderNumber) + '\n';
+      msg += formatOrderTreeNode(o, orderNumber, isAllUsersView) + '\n';
       if (i < orders.length - 1) {
         msg += `─────────────────────────\n\n`;
       }
@@ -2137,35 +2173,28 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
 
     // Filter Switcher Tabs Bar
     buttonRows.push([
-      Markup.button.callback(`${providerFilter === 'all' ? '🔘' : '🌐'} All (${totalAll})`, 'order_filter_all_page_1'),
-      Markup.button.callback(`${providerFilter === 'lootbar' ? '🔘' : '🎮'} LootBar (${totalLootBar})`, 'order_filter_lootbar_page_1'),
-      Markup.button.callback(`${providerFilter === 'topupnation' ? '🔘' : '⚡'} TopupNation (${totalTopupNation})`, 'order_filter_topupnation_page_1')
+      Markup.button.callback(`${providerFilter === 'all' ? '🔘' : '🌐'} All (${totalAll})`, `order_filter_all_${actualScope}_page_1`),
+      Markup.button.callback(`${providerFilter === 'lootbar' ? '🔘' : '🎮'} LootBar (${totalLootBar})`, `order_filter_lootbar_${actualScope}_page_1`),
+      Markup.button.callback(`${providerFilter === 'topupnation' ? '🔘' : '⚡'} TopupNation (${totalTopupNation})`, `order_filter_topupnation_${actualScope}_page_1`)
     ]);
 
-    // Clean & Compact Live Status buttons (2 per row to reduce clutter)
-    const statusButtons: any[] = [];
-    orders.forEach((o, i) => {
-      const orderNum = startIndex + i + 1;
-      const isTopup = o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation';
-      const pTag = isTopup ? 'TPN' : 'LB';
-      const orderKey = o.providerOrderId || o.orderId || o.referenceId;
-      statusButtons.push(
-        Markup.button.callback(`🔍 #${orderNum} Live Status (${pTag})`, `track_order_${orderKey}`)
-      );
-    });
-
-    for (let i = 0; i < statusButtons.length; i += 2) {
-      buttonRows.push(statusButtons.slice(i, i + 2));
+    // For Owner: Scope switcher button
+    if (isOwner) {
+      buttonRows.push([
+        isAllUsersView 
+          ? Markup.button.callback('👤 Switch: My Orders Only', `order_filter_${providerFilter}_mine_page_1`)
+          : Markup.button.callback('👑 Switch: All Users\' Orders', `order_filter_${providerFilter}_all_page_1`)
+      ]);
     }
 
     const navRow: any[] = [];
 
     if (currentPage > 1) {
-      navRow.push(Markup.button.callback('◀️ Prev', `order_filter_${providerFilter}_page_${currentPage - 1}`));
+      navRow.push(Markup.button.callback('◀️ Prev', `order_filter_${providerFilter}_${actualScope}_page_${currentPage - 1}`));
     }
     navRow.push(Markup.button.callback(`📄 ${currentPage}/${totalPages}`, 'noop_page_indicator'));
     if (currentPage < totalPages) {
-      navRow.push(Markup.button.callback('Next ▶️', `order_filter_${providerFilter}_page_${currentPage + 1}`));
+      navRow.push(Markup.button.callback('Next ▶️', `order_filter_${providerFilter}_${actualScope}_page_${currentPage + 1}`));
     }
 
     if (navRow.length > 0) {
@@ -2173,7 +2202,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     }
 
     buttonRows.push([
-      Markup.button.callback('🔄 Refresh List', `order_filter_${providerFilter}_page_${currentPage}`)
+      Markup.button.callback('🔄 Refresh List', `order_filter_${providerFilter}_${actualScope}_page_${currentPage}`)
     ]);
 
     const keyboard = Markup.inlineKeyboard(buttonRows);
@@ -2184,7 +2213,15 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     return await safeReply(ctx, msg, keyboard);
   }
 
-  // Handle provider tab switching and pagination
+  // Handle provider and scope tab switching and pagination
+  bot.action(/^order_filter_(all|lootbar|topupnation)_(all|mine)_page_(\d+)$/, async (ctx) => {
+    const provider = ctx.match[1] as 'all' | 'lootbar' | 'topupnation';
+    const scope = ctx.match[2] as 'all' | 'mine';
+    const page = parseInt(ctx.match[3], 10) || 1;
+    await ctx.answerCbQuery();
+    return await renderOrderHistory(ctx, true, page, provider, scope);
+  });
+
   bot.action(/^order_filter_(all|lootbar|topupnation)_page_(\d+)$/, async (ctx) => {
     const provider = ctx.match[1] as 'all' | 'lootbar' | 'topupnation';
     const page = parseInt(ctx.match[2], 10) || 1;
@@ -2196,6 +2233,19 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     const page = parseInt(ctx.match[1], 10) || 1;
     await ctx.answerCbQuery();
     return await renderOrderHistory(ctx, true, page, 'all');
+  });
+
+  bot.action('view_orders_action', async (ctx) => {
+    await ctx.answerCbQuery();
+    return await renderOrderHistory(ctx);
+  });
+
+  bot.command(['allorders', 'adminorders', 'all_orders', 'admin_orders', 'ownerorders'], async (ctx) => {
+    const currentAdminId = await getAdminChatId(adminChatId);
+    if (String(ctx.chat.id) !== currentAdminId) {
+      return ctx.reply('🚫 Unauthorized: Owner only command.');
+    }
+    return await renderOrderHistory(ctx, false, 1, 'all', 'all');
   });
 
   bot.action('noop_page_indicator', async (ctx) => {
@@ -2643,6 +2693,10 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     if (!userDoc) {
       return ctx.reply('❌ User account not found.');
     }
+
+    const currentTelegramUsername = ctx.from?.username || (ctx.chat as any)?.username || userDoc.username || undefined;
+    const currentTelegramFirstName = ctx.from?.first_name || (ctx.chat as any)?.first_name || userDoc.firstName || undefined;
+    const currentTelegramLastName = ctx.from?.last_name || (ctx.chat as any)?.last_name || undefined;
     
     const isApiLinked = !!(userDoc.useDirectApiBalance || userDoc.balanceMode === 'api');
     let orderCost = ctx.session.skuPrice || 1;
@@ -2651,6 +2705,9 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
       // Execute through TopupNation Service
       const result = await topupNation.placeOrder({
         telegramChatId: ctx.chat!.id,
+        telegramUsername: currentTelegramUsername,
+        telegramFirstName: currentTelegramFirstName,
+        telegramLastName: currentTelegramLastName,
         productId: gameId,
         sku: skuId,
         fields: extraInfo,
@@ -2746,6 +2803,9 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
             referenceId,
             orderId,
             telegramChatId: ctx.chat!.id,
+            telegramUsername: currentTelegramUsername,
+            telegramFirstName: currentTelegramFirstName,
+            telegramLastName: currentTelegramLastName,
             gameId,
             gameName,
             skuId,
