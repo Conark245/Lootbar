@@ -554,6 +554,16 @@ export function setupBot(
     }
   }
 
+// Helper to cleanly parse command arguments respecting parentheses, brackets, and commas
+function parseCommandArgs(rawText: string): string[] {
+  if (!rawText) return [];
+  // Handles formatting like: "1235988728 (13997)wp", "1235988728(13997)14", "1235988728, 13997, wp", "1235988728 (13997) 14"
+  const cleaned = rawText
+    .replace(/[()[\],]/g, ' ')
+    .trim();
+  return cleaned.split(/\s+/).filter(Boolean);
+}
+
 // Smart SKU matching helpers for products with long or complex names
 function findLootBarSkuMatch(skus: any[], rawQuery: string): any {
   if (!rawQuery || !skus || skus.length === 0) return null;
@@ -569,23 +579,32 @@ function findLootBarSkuMatch(skus: any[], rawQuery: string): any {
   if (exactName) return exactName;
 
   // 3. Exact alias mappings
-  if (query === 'wdp' || query === 'weekly' || query === 'pass') {
-    const wdp = skus.find((s: any) => /weekly/i.test(s.sku_name || ''));
+  if (query === 'wp' || query === 'wdp' || query === 'weekly' || query === 'pass' || query === 'weekly pass' || query === 'weeklypass') {
+    const wdp = skus.find((s: any) => /weekly/i.test(s.sku_name || '') || /wdp/i.test(s.sku_name || '') || /pass/i.test(s.sku_name || ''));
     if (wdp) return wdp;
   }
-  if (query === 'tp' || query === 'twilight') {
+  if (query === 'tp' || query === 'twilight' || query === 'twilight pass' || query === 'twilightpass') {
     const tp = skus.find((s: any) => /twilight/i.test(s.sku_name || ''));
     if (tp) return tp;
   }
-  if (query === 'monthly') {
+  if (query === 'monthly' || query === 'monthly pass' || query === 'monthlypass') {
     const monthly = skus.find((s: any) => /monthly/i.test(s.sku_name || ''));
     if (monthly) return monthly;
   }
 
-  // 4. Number match (e.g. user typed "60" or "86" or "100")
+  // 4. Number match (e.g. user typed "60" or "86" or "100" or "14")
   const queryNumbers = cleanQuery.match(/\d+/g) || query.match(/\d+/g);
   if (queryNumbers && queryNumbers.length > 0) {
     const targetNum = queryNumbers[0];
+    
+    // 4.1 Prioritize item starting with target number (e.g. "14 Diamonds" or "14 Diamonds (13+1)")
+    const leadingNumMatch = skus.find((s: any) => {
+      const name = (s.sku_name || '').toLowerCase().trim();
+      return name.startsWith(targetNum + ' ') || name.startsWith(targetNum + 'd') || name.startsWith(targetNum + '(');
+    });
+    if (leadingNumMatch) return leadingNumMatch;
+
+    // 4.2 Exact word boundary
     const exactWordNum = skus.find((s: any) => {
       const name = (s.sku_name || '').toLowerCase();
       const numRegex = new RegExp(`\\b${targetNum}\\b`);
@@ -593,6 +612,7 @@ function findLootBarSkuMatch(skus: any[], rawQuery: string): any {
     });
     if (exactWordNum) return exactWordNum;
 
+    // 4.3 Any numeric match
     const anyNumMatch = skus.find((s: any) => {
       const name = (s.sku_name || '').toLowerCase();
       const nameNumbers = name.match(/\d+/g);
@@ -612,7 +632,10 @@ function findLootBarSkuMatch(skus: any[], rawQuery: string): any {
   }
 
   // 6. Substring match
-  const subMatch = skus.find((s: any) => (s.sku_name || '').toLowerCase().includes(query) || (s.sku_name || '').toLowerCase().includes(cleanQuery));
+  const subMatch = skus.find((s: any) => 
+    (s.sku_name || '').toLowerCase().includes(query) || 
+    (cleanQuery && (s.sku_name || '').toLowerCase().includes(cleanQuery))
+  );
   if (subMatch) return subMatch;
 
   return null;
@@ -631,24 +654,33 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
   const exactName = skus.find((s: any) => (s.name || '').toLowerCase().trim() === query);
   if (exactName) return exactName;
 
-  // 3. Exact alias mappings
-  if (query === 'wdp' || query === 'weekly' || query === 'pass') {
-    const wdp = skus.find((s: any) => /weekly/i.test(s.name || ''));
+  // 3. Exact alias mappings (Weekly Pass, Twilight Pass, Monthly)
+  if (query === 'wp' || query === 'wdp' || query === 'weekly' || query === 'pass' || query === 'weekly pass' || query === 'weeklypass') {
+    const wdp = skus.find((s: any) => /weekly/i.test(s.name || '') || /wdp/i.test(s.name || '') || /pass/i.test(s.name || ''));
     if (wdp) return wdp;
   }
-  if (query === 'tp' || query === 'twilight') {
+  if (query === 'tp' || query === 'twilight' || query === 'twilight pass' || query === 'twilightpass') {
     const tp = skus.find((s: any) => /twilight/i.test(s.name || ''));
     if (tp) return tp;
   }
-  if (query === 'monthly') {
+  if (query === 'monthly' || query === 'monthly pass' || query === 'monthlypass') {
     const monthly = skus.find((s: any) => /monthly/i.test(s.name || ''));
     if (monthly) return monthly;
   }
 
-  // 4. Number match
+  // 4. Number match (e.g. user typed "14", "42", "86", "100")
   const queryNumbers = cleanQuery.match(/\d+/g) || query.match(/\d+/g);
   if (queryNumbers && queryNumbers.length > 0) {
     const targetNum = queryNumbers[0];
+
+    // 4.1 Prioritize item starting with target number (e.g. "14 Diamonds" or "14 Diamonds (13+1)")
+    const leadingNumMatch = skus.find((s: any) => {
+      const name = (s.name || '').toLowerCase().trim();
+      return name.startsWith(targetNum + ' ') || name.startsWith(targetNum + 'd') || name.startsWith(targetNum + '(');
+    });
+    if (leadingNumMatch) return leadingNumMatch;
+
+    // 4.2 Exact word boundary
     const exactWordNum = skus.find((s: any) => {
       const name = (s.name || '').toLowerCase();
       const numRegex = new RegExp(`\\b${targetNum}\\b`);
@@ -656,6 +688,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     });
     if (exactWordNum) return exactWordNum;
 
+    // 4.3 Any numeric match
     const anyNumMatch = skus.find((s: any) => {
       const name = (s.name || '').toLowerCase();
       const nameNumbers = name.match(/\d+/g);
@@ -675,7 +708,10 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
   }
 
   // 6. Substring match
-  const subMatch = skus.find((s: any) => (s.name || '').toLowerCase().includes(query) || (s.name || '').toLowerCase().includes(cleanQuery));
+  const subMatch = skus.find((s: any) => 
+    (s.name || '').toLowerCase().includes(query) || 
+    (cleanQuery && (s.name || '').toLowerCase().includes(cleanQuery))
+  );
   if (subMatch) return subMatch;
 
   return null;
@@ -727,15 +763,16 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
       // If user provided account details without a product name, show 1-click buttons!
       if (args.length === minFields) {
         ctx.session = {};
+        ctx.session.provider = 'lootbar';
         ctx.session.gameId = gameId;
         ctx.session.gameName = gameName;
         ctx.session.extraInfo = extraInfo;
         ctx.session.skus = skus;
 
-        const buttons = skus.map((sku: any) => {
+        const buttons = skus.map((sku: any, idx: number) => {
           const name = sku.sku_name || 'Unknown Item';
           const price = sku.reseller_price || sku.price ? ` ($${sku.reseller_price || sku.price})` : '';
-          return [Markup.button.callback(`${name}${price}`, `q_order_${gameId}_${sku.sku_id}`)];
+          return [Markup.button.callback(`${name}${price}`, `lb_s_${idx}`)];
         });
         buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
 
@@ -754,6 +791,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
       const rawProductQuery = args.slice(minFields).join(' ').trim();
 
       ctx.session = {};
+      ctx.session.provider = 'lootbar';
       ctx.session.gameId = gameId;
       ctx.session.gameName = gameName;
       ctx.session.extraInfo = extraInfo;
@@ -764,10 +802,10 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
 
       if (!matchedSku) {
         // Show available packages for quick selection
-        const buttons = skus.map((sku: any) => {
+        const buttons = skus.map((sku: any, idx: number) => {
           const name = sku.sku_name || 'Unknown Item';
           const price = sku.reseller_price || sku.price ? ` ($${sku.reseller_price || sku.price})` : '';
-          return [Markup.button.callback(`${name}${price}`, `q_order_${gameId}_${sku.sku_id}`)];
+          return [Markup.button.callback(`${name}${price}`, `lb_s_${idx}`)];
         });
         buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
 
@@ -902,10 +940,10 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
         ctx.session.extraInfo = extraInfo;
         ctx.session.skus = skus;
 
-        const buttons = skus.map((sku: any) => {
+        const buttons = skus.map((sku: any, idx: number) => {
           const name = sku.name || 'Unknown Item';
           const price = sku.price ? ` ($${sku.price})` : '';
-          return [Markup.button.callback(`${name}${price}`, `tpn_q_order_${productId}_${sku.sku}`)];
+          return [Markup.button.callback(`${name}${price}`, `tpn_s_${idx}`)];
         });
         buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
 
@@ -934,10 +972,10 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
       const matchedSku = findTopupNationSkuMatch(skus, rawProductQuery);
 
       if (!matchedSku) {
-        const buttons = skus.map((sku: any) => {
+        const buttons = skus.map((sku: any, idx: number) => {
           const name = sku.name || 'Unknown Item';
           const price = sku.price ? ` ($${sku.price})` : '';
-          return [Markup.button.callback(`${name}${price}`, `tpn_q_order_${productId}_${sku.sku}`)];
+          return [Markup.button.callback(`${name}${price}`, `tpn_s_${idx}`)];
         });
         buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
 
@@ -957,7 +995,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
       // SKU matched!
       ctx.session.skuId = String(matchedSku.sku);
       ctx.session.skuName = matchedSku.name || `${productName} Package`;
-      ctx.session.skuPrice = parseFloat(matchedSku.price || '0');
+      ctx.session.skuPrice = typeof matchedSku.price === 'number' ? matchedSku.price : parseFloat(String(matchedSku.price || '0'));
 
       // Directly proceed to confirmation
       await showOrderConfirmation(ctx);
@@ -975,7 +1013,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     if (!match) return next();
 
     const inputKey = match[1].toLowerCase();
-    const rawArgs = match[2] ? match[2].trim().split(/\s+/) : [];
+    const rawArgs = match[2] ? parseCommandArgs(match[2]) : [];
 
     // Skip reserved commands like /start, /cancel, /auth, /unauth, /users, /addbalance, /orders, /balance, /games, /account, /profile, /wallet, /topup, /deposit, /lootbar, /tpn
     const reservedCommands = ['start', 'cancel', 'auth', 'unauth', 'users', 'addbalance', 'orders', 'balance', 'games', 'gamelist', 'help', 'account', 'profile', 'wallet', 'myaccount', 'mywallet', 'mybalance', 'topup', 'deposit', 'requesttopup', 'requestbalance', 'addmoney', 'lootbar', 'lb', 'tpn', 'topupnation'];
@@ -1049,6 +1087,44 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
       }
     } catch (err: any) {
       console.error('Short key processing error:', err);
+      return ctx.reply(`❌ Error: ${err.message}`);
+    }
+  });
+
+  bot.action(/^lb_s_(\d+)$/, async (ctx) => {
+    const idx = parseInt(ctx.match[1], 10);
+    await ctx.answerCbQuery();
+    try {
+      const skus = ctx.session.skus || [];
+      const selectedSku = skus[idx];
+      if (!selectedSku) {
+        return ctx.reply('⚠️ Session expired. Please type the command again.');
+      }
+      ctx.session.provider = 'lootbar';
+      ctx.session.skuId = String(selectedSku.sku_id);
+      ctx.session.skuName = selectedSku.sku_name || 'Item';
+      ctx.session.skuPrice = parseFloat(selectedSku.reseller_price || selectedSku.price || '0');
+      await showOrderConfirmation(ctx);
+    } catch (err: any) {
+      return ctx.reply(`❌ Error: ${err.message}`);
+    }
+  });
+
+  bot.action(/^tpn_s_(\d+)$/, async (ctx) => {
+    const idx = parseInt(ctx.match[1], 10);
+    await ctx.answerCbQuery();
+    try {
+      const skus = ctx.session.skus || [];
+      const sku = skus[idx];
+      if (!sku) {
+        return ctx.reply('⚠️ Session expired. Please type the command again.');
+      }
+      ctx.session.provider = 'topupnation';
+      ctx.session.skuId = String(sku.sku);
+      ctx.session.skuName = sku.name || 'Package';
+      ctx.session.skuPrice = typeof sku.price === 'number' ? sku.price : parseFloat(String(sku.price || '0'));
+      await showOrderConfirmation(ctx);
+    } catch (err: any) {
       return ctx.reply(`❌ Error: ${err.message}`);
     }
   });
