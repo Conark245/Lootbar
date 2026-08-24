@@ -17,6 +17,15 @@ import { createServer as createViteServer } from "vite";
 
 dotenv.config();
 
+// Prevent server crash from unhandled rejections (e.g. Telegram 409 Conflict)
+process.on('unhandledRejection', (reason: any, promise) => {
+  if (reason?.response?.error_code === 409) {
+    console.warn('⚠️ Telegram Bot Polling Conflict (409) caught globally: Another instance is running (e.g. Railway vs Local). Ignoring to prevent crash...');
+  } else {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  }
+});
+
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -47,29 +56,48 @@ const topupNationClient = new TopupNationClient({
 });
 const topupNationService = new TopupNationService(topupNationClient);
 
-// Initialize Telegram Bot if Token is present
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
+// Initialize Telegram Bot State
+let telegramBot: ReturnType<typeof setupBot> | undefined;
+let activeBotToken: string = process.env.TELEGRAM_BOT_TOKEN || '';
+let activeAdminChatId: string = process.env.ADMIN_CHAT_ID || '';
 const isServerless = !!process.env.VERCEL || process.env.IS_SERVERLESS === 'true';
 const webhookUrl = process.env.TELEGRAM_WEBHOOK_URL;
 
-let telegramBot: ReturnType<typeof setupBot> | undefined;
-if (BOT_TOKEN && BOT_TOKEN !== 'YOUR_BOT_TOKEN_HERE') {
-  telegramBot = setupBot(BOT_TOKEN, ADMIN_CHAT_ID, lootbarClient, {
-    isServerless,
-    webhookUrl
-  }, topupNationService);
-
-  // Provide Telegram instance to TopupNationService for order status notifications
-  topupNationService.setTelegram(telegramBot.telegram, ADMIN_CHAT_ID);
-
-  // Mount Telegram webhook handler strictly on its dedicated route
-  if (isServerless || webhookUrl) {
-    app.use('/api/telegram-webhook', telegramBot.webhookCallback('/api/telegram-webhook'));
-    app.use('/telegram-webhook', telegramBot.webhookCallback('/telegram-webhook'));
+// Function to safely stop and (re)start the bot
+async function initOrRestartTelegramBot(token: string, adminChatId: string) {
+  if (telegramBot) {
+    try {
+      telegramBot.stop('Restarting due to token change');
+    } catch (e) {}
+    telegramBot = undefined;
   }
-} else {
-  console.warn("TELEGRAM_BOT_TOKEN is missing or invalid. Bot will not start.");
+  
+  if (token && token !== 'YOUR_BOT_TOKEN_HERE') {
+    activeBotToken = token;
+    activeAdminChatId = adminChatId;
+    
+    telegramBot = setupBot(token, adminChatId, lootbarClient, {
+      isServerless,
+      webhookUrl
+    }, topupNationService);
+
+    // Provide Telegram instance to TopupNationService for order status notifications
+    topupNationService.setTelegram(telegramBot.telegram, adminChatId);
+  } else {
+    console.warn("TELEGRAM_BOT_TOKEN is missing or invalid. Bot will not start.");
+  }
+}
+
+// Dynamically mount Telegram webhook handler strictly on its dedicated routes
+if (isServerless || webhookUrl) {
+  app.use('/api/telegram-webhook', (req, res, next) => {
+    if (telegramBot) return telegramBot.webhookCallback('/api/telegram-webhook')(req, res, next);
+    next();
+  });
+  app.use('/telegram-webhook', (req, res, next) => {
+    if (telegramBot) return telegramBot.webhookCallback('/telegram-webhook')(req, res, next);
+    next();
+  });
 }
 
 // Initialize MongoDB and load config
@@ -86,6 +114,22 @@ connectDB().then(async () => {
       topupNationClient.updateCredentials(tpnConfig.value);
       console.log("Loaded TopupNation credentials from MongoDB");
     }
+    
+    // Load Telegram configuration from DB
+    const adminConfig = await AppConfig.findOne({ key: 'admin_chat_id' });
+    if (adminConfig && adminConfig.value) {
+      activeAdminChatId = adminConfig.value;
+    }
+    
+    const tokenConfig = await AppConfig.findOne({ key: 'telegram_bot_token' });
+    if (tokenConfig && tokenConfig.value) {
+      activeBotToken = tokenConfig.value;
+      console.log("Loaded Telegram Bot Token from MongoDB");
+    }
+    
+    // Initialize the bot after reading from DB
+    initOrRestartTelegramBot(activeBotToken, activeAdminChatId);
+    
   } catch (err) {
     console.error("Failed to load config from DB", err);
   }
@@ -156,20 +200,39 @@ app.get("/api/lootbar/balance", async (req, res) => {
 app.get("/api/settings/admin", async (req, res) => {
   try {
     const config = await AppConfig.findOne({ key: 'admin_chat_id' });
-    res.json({ success: true, adminChatId: config?.value || process.env.ADMIN_CHAT_ID || '' });
+    const tokenConfig = await AppConfig.findOne({ key: 'telegram_bot_token' });
+    res.json({ 
+      success: true, 
+      adminChatId: config?.value || process.env.ADMIN_CHAT_ID || '',
+      telegramBotToken: tokenConfig?.value || process.env.TELEGRAM_BOT_TOKEN || ''
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
 app.post("/api/settings/admin", async (req, res) => {
-  const { adminChatId } = req.body;
+  const { adminChatId, telegramBotToken } = req.body;
   try {
     await AppConfig.findOneAndUpdate(
       { key: 'admin_chat_id' },
       { value: String(adminChatId) },
       { upsert: true, new: true }
     );
+    
+    if (telegramBotToken !== undefined) {
+      await AppConfig.findOneAndUpdate(
+        { key: 'telegram_bot_token' },
+        { value: String(telegramBotToken) },
+        { upsert: true, new: true }
+      );
+      
+      // Attempt to restart/reinitialize bot if the token changed
+      initOrRestartTelegramBot(telegramBotToken, adminChatId);
+    } else {
+      initOrRestartTelegramBot(activeBotToken, adminChatId);
+    }
+    
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

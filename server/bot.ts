@@ -3320,9 +3320,22 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
 
   // If not serverless, start polling mode in background
   if (!options.isServerless) {
-    bot.launch({ dropPendingUpdates: true }).catch(err => {
-      console.error("Failed to launch bot. Is the TELEGRAM_BOT_TOKEN valid?", err?.message || err);
-    });
+    const launchBot = async () => {
+      try {
+        await bot.launch({ dropPendingUpdates: true });
+      } catch (err: any) {
+        if (err?.response?.error_code === 409) {
+          console.warn('⚠️ Telegram Bot Polling Conflict (409): Another instance is running (e.g. Railway). Retrying in 15 seconds to prevent crash...');
+        } else {
+          console.error("Failed to launch bot. Retrying in 15 seconds...", err?.message || err);
+        }
+        
+        try { bot.stop(); } catch (e) {}
+        setTimeout(launchBot, 15000);
+      }
+    };
+    
+    launchBot();
     console.log("Telegram bot initialized in Long-Polling mode (VPS / Continuous Server).");
   } else {
     console.log("Telegram bot initialized in Webhook / Serverless mode.");

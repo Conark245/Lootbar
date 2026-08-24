@@ -85,6 +85,7 @@ export default function App() {
 
   // Owner & Balance State
   const [adminChatId, setAdminChatId] = useState('');
+  const [telegramBotToken, setTelegramBotToken] = useState('');
   const [lootbarBalance, setLootbarBalance] = useState<any>(null);
   const [balanceInput, setBalanceInput] = useState<Record<string, string>>({});
 
@@ -416,7 +417,10 @@ export default function App() {
     fetch('/api/settings/admin')
       .then(res => res.json())
       .then(data => {
-        if(data.success) setAdminChatId(data.adminChatId);
+        if(data.success) {
+          setAdminChatId(data.adminChatId || '');
+          setTelegramBotToken(data.telegramBotToken || '');
+        }
       });
       
     fetchLootbarBalance();
@@ -464,10 +468,10 @@ export default function App() {
     fetch('/api/settings/admin', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ adminChatId })
+      body: JSON.stringify({ adminChatId, telegramBotToken })
     })
       .then(res => res.json())
-      .then(() => alert('Admin Chat ID saved!'));
+      .then(() => alert('Admin settings & Bot Token saved!'));
   };
 
   const handleAddBalance = (chatId: string) => {
@@ -914,21 +918,38 @@ export default function App() {
             {/* Owner settings */}
             <div className="lg:col-span-5 flex flex-col justify-between">
               <div>
-                <h2 className="text-lg font-bold text-neutral-900 mb-1">Owner Settings</h2>
-                <p className="text-xs text-neutral-500 mb-4">Telegram Bot administrator chat ID for notifications & management</p>
-                <div className="flex gap-2">
-                  <input 
-                    type="text" 
-                    placeholder="Owner Chat ID"
-                    value={adminChatId}
-                    onChange={e => setAdminChatId(e.target.value)}
-                    className="flex-1 px-3.5 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm"
-                  />
+                <h2 className="text-lg font-bold text-neutral-900 mb-1">Telegram Bot Settings</h2>
+                <p className="text-xs text-neutral-500 mb-4">Configure your bot token and admin chat ID</p>
+                
+                <div className="space-y-3 mb-4">
+                  <div className="flex flex-col">
+                    <label className="text-xs font-semibold text-neutral-600 mb-1">Bot Token</label>
+                    <input 
+                      type="password" 
+                      placeholder="123456789:ABCdefGHIjklMNO..."
+                      value={telegramBotToken}
+                      onChange={e => setTelegramBotToken(e.target.value)}
+                      className="w-full px-3.5 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm"
+                    />
+                  </div>
+                  <div className="flex flex-col">
+                    <label className="text-xs font-semibold text-neutral-600 mb-1">Admin Chat ID</label>
+                    <input 
+                      type="text" 
+                      placeholder="Owner Chat ID"
+                      value={adminChatId}
+                      onChange={e => setAdminChatId(e.target.value)}
+                      className="w-full px-3.5 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-end">
                   <button 
                     onClick={handleSaveAdmin}
-                    className="px-4 py-2 bg-neutral-900 hover:bg-neutral-800 text-white text-sm font-medium rounded-lg transition-colors whitespace-nowrap"
+                    className="px-4 py-2 bg-neutral-900 hover:bg-neutral-800 text-white text-sm font-medium rounded-lg transition-colors whitespace-nowrap w-full"
                   >
-                    Save
+                    Save Bot Settings
                   </button>
                 </div>
               </div>
