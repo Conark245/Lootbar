@@ -3325,13 +3325,23 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
         await bot.launch({ dropPendingUpdates: true });
       } catch (err: any) {
         if (err?.response?.error_code === 409) {
-          console.warn('⚠️ Telegram Bot Polling Conflict (409): Another instance is running (e.g. Railway). Retrying in 15 seconds to prevent crash...');
+          const isProd = process.env.NODE_ENV === 'production' || !!process.env.RAILWAY_ENVIRONMENT_NAME;
+          
+          if (isProd) {
+            console.warn('⚠️ Telegram Bot Polling Conflict (409): Railway/Production instance detected. Retrying to take control...');
+            try { bot.stop(); } catch (e) {}
+            setTimeout(launchBot, 5000);
+          } else {
+            console.warn('⚠️ Telegram Bot Polling Conflict (409): Another instance (e.g., Railway) is active. Stopping local AI Studio polling to prevent conflicts.');
+            try { bot.stop(); } catch (e) {}
+            // DO NOT retry. Let Railway handle it.
+            return;
+          }
         } else {
           console.error("Failed to launch bot. Retrying in 15 seconds...", err?.message || err);
+          try { bot.stop(); } catch (e) {}
+          setTimeout(launchBot, 15000);
         }
-        
-        try { bot.stop(); } catch (e) {}
-        setTimeout(launchBot, 15000);
       }
     };
     
