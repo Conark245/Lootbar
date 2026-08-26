@@ -4,8 +4,8 @@ export function findLootBarSkuMatch(skus: any[], rawQuery: string, skuShortKeys?
   
   if (skuShortKeys) {
     for (const [skuId, shortKey] of Object.entries(skuShortKeys)) {
-      if (shortKey.toLowerCase() === query) {
-        const match = skus.find(s => String(s.sku_id) === skuId);
+      if (shortKey && String(shortKey).trim().toLowerCase() === query) {
+        const match = skus.find(s => String(s.sku_id || s.sku) === String(skuId));
         if (match) return match;
       }
     }
@@ -90,8 +90,8 @@ export function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortK
   
   if (skuShortKeys) {
     for (const [skuId, shortKey] of Object.entries(skuShortKeys)) {
-      if (shortKey.toLowerCase() === query) {
-        const match = skus.find(s => String(s.sku) === skuId);
+      if (shortKey && String(shortKey).trim().toLowerCase() === query) {
+        const match = skus.find(s => String(s.sku || s.sku_id) === String(skuId));
         if (match) return match;
       }
     }

@@ -838,15 +838,66 @@ app.post("/api/saved-games", async (req, res) => {
       .replace(/^[./]+/, '')
       .trim();
     
+    // Fetch initial SKUs from LootBar if available
+    let initialSkus: any[] = [];
+    if (lootbarClient.isConfigured()) {
+      try {
+        const skuRes = await lootbarClient.getSkus(gameId);
+        if (skuRes?.data?.items && Array.isArray(skuRes.data.items)) {
+          initialSkus = skuRes.data.items;
+        }
+      } catch (e) {}
+    }
+
+    const updateDoc: any = { name, shortKey: cleanShortKey };
+    if (initialSkus.length > 0) {
+      updateDoc.lastKnownSkus = initialSkus;
+    }
+
     // Upsert the game with shortKey
     const saved = await SavedGame.findOneAndUpdate(
       { gameId },
-      { name, shortKey: cleanShortKey },
+      updateDoc,
       { upsert: true, returnDocument: 'after' }
     );
     res.json({ data: saved });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/saved-games/:gameId/skus", async (req, res) => {
+  try {
+    const { gameId } = req.params;
+    let skus: any[] = [];
+
+    // 1. Try to fetch live SKUs from LootBar API
+    if (lootbarClient.isConfigured()) {
+      try {
+        const skuRes = await lootbarClient.getSkus(gameId);
+        if (skuRes?.data?.items && Array.isArray(skuRes.data.items) && skuRes.data.items.length > 0) {
+          skus = skuRes.data.items;
+          // Cache to database
+          if (process.env.MONGODB_URI) {
+            await SavedGame.findOneAndUpdate({ gameId }, { lastKnownSkus: skus });
+          }
+        }
+      } catch (err: any) {
+        console.warn(`Could not fetch live SKUs from LootBar for ${gameId}:`, err.message);
+      }
+    }
+
+    // 2. Fallback to cached SKUs in DB if live fetch was empty
+    if (skus.length === 0 && process.env.MONGODB_URI) {
+      const game = await SavedGame.findOne({ gameId });
+      if (game && game.lastKnownSkus && game.lastKnownSkus.length > 0) {
+        skus = game.lastKnownSkus;
+      }
+    }
+
+    res.json({ success: true, data: skus });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message, data: [] });
   }
 });
 

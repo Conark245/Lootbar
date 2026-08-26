@@ -408,13 +408,23 @@ export function setupBot(
         orderFormatDesc = `.${shortKey} ${fieldsList} <Product>`;
       }
 
+      // Extract SKU short keys if defined
+      let skuKeys: Record<string, string> = {};
+      if (game.skuShortKeys) {
+        skuKeys = typeof game.skuShortKeys.get === 'function' 
+          ? Object.fromEntries(game.skuShortKeys) 
+          : (game.skuShortKeys || {});
+      }
+
       let msg = `🎮 *${gameName} — Packages & Prices*\n\n` +
         `📦 *ရရှိနိုင်သော Products စာရင်း:*\n`;
 
       skus.forEach((sku: any) => {
         const name = sku.sku_name || `Product #${sku.sku_id}`;
         const price = sku.reseller_price || sku.price || '0.00';
-        msg += `▫️ *${name}* — \`$${Number(price).toFixed(2)} USD\`\n`;
+        const customKey = skuKeys[String(sku.sku_id)];
+        const keyInfo = customKey ? ` ➔ \`.${shortKey} ... ${customKey}\`` : '';
+        msg += `▫️ *${name}*${keyInfo} — \`$${Number(price).toFixed(2)} USD\`\n`;
       });
 
       msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
@@ -429,93 +439,6 @@ export function setupBot(
       return ctx.reply(`❌ Error fetching package list: ${err.message}`);
     }
   }
-
-// Helper to cleanly parse command arguments respecting parentheses, brackets, and commas
-function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: Record<string, string>): any {
-  if (!rawQuery || !skus || skus.length === 0) return null;
-  const query = rawQuery.trim().toLowerCase();
-  
-  if (skuShortKeys) {
-    for (const [skuId, shortKey] of Object.entries(skuShortKeys)) {
-      if (shortKey.toLowerCase() === query) {
-        const match = skus.find(s => String(s.sku) === skuId);
-        if (match) return match;
-      }
-    }
-  }
-
-  const cleanQuery = query.replace(/uc|diamond|diamonds|dm|gem|gems|credits|cp/g, '').trim();
-
-  // 1. Exact SKU ID match
-  const exactId = skus.find((s: any) => String(s.sku).toLowerCase() === query);
-  if (exactId) return exactId;
-
-  // 2. Exact name match
-  const exactName = skus.find((s: any) => (s.name || '').toLowerCase().trim() === query);
-  if (exactName) return exactName;
-
-  // 3. Exact alias mappings (Weekly Pass, Twilight Pass, Monthly)
-  if (query === 'wp' || query === 'wdp' || query === 'weekly' || query === 'pass' || query === 'weekly pass' || query === 'weeklypass') {
-    const weekly = skus.find((s: any) => /weekly/i.test(s.name || ''));
-    if (weekly) return weekly;
-  }
-  if (query === 'tp' || query === 'twilight' || query === 'twilight pass' || query === 'twilightpass') {
-    const twilight = skus.find((s: any) => /twilight/i.test(s.name || ''));
-    if (twilight) return twilight;
-  }
-  if (query === 'monthly' || query === 'monthly pass' || query === 'monthlypass') {
-    const monthly = skus.find((s: any) => /monthly/i.test(s.name || ''));
-    if (monthly) return monthly;
-  }
-
-  // 4. Number match (e.g. user typed "14", "42", "86", "100")
-  const queryNumbers = cleanQuery.match(/\d+/g) || query.match(/\d+/g);
-  if (queryNumbers && queryNumbers.length > 0) {
-    const targetNum = queryNumbers[0];
-
-    // 4.1 Prioritize item starting with target number (e.g. "14 Diamonds" or "14 Diamonds (13+1)")
-    const leadingNumMatch = skus.find((s: any) => {
-      const name = (s.name || '').toLowerCase().trim();
-      return name.startsWith(targetNum + ' ') || name.startsWith(targetNum + 'd') || name.startsWith(targetNum + '(');
-    });
-    if (leadingNumMatch) return leadingNumMatch;
-
-    // 4.2 Exact word boundary
-    const exactWordNum = skus.find((s: any) => {
-      const name = (s.name || '').toLowerCase();
-      const numRegex = new RegExp(`\\b${targetNum}\\b`);
-      return numRegex.test(name);
-    });
-    if (exactWordNum) return exactWordNum;
-
-    // 4.3 Any numeric match
-    const anyNumMatch = skus.find((s: any) => {
-      const name = (s.name || '').toLowerCase();
-      const nameNumbers = name.match(/\d+/g);
-      return nameNumbers && nameNumbers.includes(targetNum);
-    });
-    if (anyNumMatch) return anyNumMatch;
-  }
-
-  // 5. Multi-word tokens match
-  const tokens = query.split(/\s+/).filter(t => t.length > 0);
-  if (tokens.length > 1) {
-    const tokenMatch = skus.find((s: any) => {
-      const name = (s.name || '').toLowerCase();
-      return tokens.every(t => name.includes(t));
-    });
-    if (tokenMatch) return tokenMatch;
-  }
-
-  // 6. Substring match
-  const subMatch = skus.find((s: any) => 
-    (s.name || '').toLowerCase().includes(query) || 
-    (cleanQuery && (s.name || '').toLowerCase().includes(cleanQuery))
-  );
-  if (subMatch) return subMatch;
-
-  return null;
-}
 
 // Direct order placement using Owner-defined Short Key
   async function handleGameDirectOrder(ctx: MyContext, game: any, shortKey: string, args: string[]) {
@@ -674,13 +597,23 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
         exampleDesc = `.${shortKey} 12345678 2001 100`;
       }
 
+      // Extract SKU short keys if defined
+      let skuKeys: Record<string, string> = {};
+      if (product.skuShortKeys) {
+        skuKeys = typeof product.skuShortKeys.get === 'function' 
+          ? Object.fromEntries(product.skuShortKeys) 
+          : (product.skuShortKeys || {});
+      }
+
       let msg = `🌐 *${productName} (TopupNation) — Packages & Prices*\n\n` +
         `📦 *ရရှိနိုင်သော Products စာရင်း:*\n`;
 
       skus.forEach((sku: any) => {
         const name = sku.name || `Package #${sku.sku}`;
         const price = sku.price || '0.00';
-        msg += `▫️ *${name}* — \`$${Number(price).toFixed(2)} USD\`\n`;
+        const customKey = skuKeys[String(sku.sku || sku.sku_id)];
+        const keyInfo = customKey ? ` ➔ \`.${shortKey} ... ${customKey}\`` : '';
+        msg += `▫️ *${name}*${keyInfo} — \`$${Number(price).toFixed(2)} USD\`\n`;
       });
 
       msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
@@ -2513,29 +2446,19 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
     const balanceAfter = userBalance - price;
 
     const failKeyboard = Markup.inlineKeyboard([
-      [
-        Markup.button.callback('➖ 1', 'qty_dec'),
-        Markup.button.callback(`🔢 Qty: ${quantity}`, 'qty_prompt'),
-        Markup.button.callback('➕ 1', 'qty_inc'),
-      ],
-      [
-        Markup.button.callback('x1', 'qty_set_1'),
-        Markup.button.callback('x2', 'qty_set_2'),
-        Markup.button.callback('x3', 'qty_set_3'),
-        Markup.button.callback('x5', 'qty_set_5'),
-        Markup.button.callback('x10', 'qty_set_10'),
-      ],
       [Markup.button.callback('💰 Top Up Balance', 'topup_flow_start')],
       [Markup.button.callback('❌ Cancel', 'cancel_order')]
     ]);
 
     if (!isApiLinked && userBalance < price) {
       const needed = (price - userBalance).toFixed(2);
-      const failMsg = `⚠️ *Insufficient Balance!*\n═════════════════════════\n` +
+      let failMsg = `⚠️ *Insufficient Balance!*\n═════════════════════════\n` +
         `├── 🎮 Game: *${escapeMd(gameName)}*\n` +
-        `├── 📦 Package: *${escapeMd(skuName)}*\n` +
-        `├── 🔢 Quantity / Count: *${quantity}x*\n` +
-        `├── 💰 Required: \`$${price.toFixed(3)}\`\n` +
+        `├── 📦 Package: *${escapeMd(skuName)}*\n`;
+      if (quantity > 1) {
+        failMsg += `├── 🔢 Quantity: *${quantity}x*\n`;
+      }
+      failMsg += `├── 💰 Required: \`$${price.toFixed(3)}\`\n` +
         `└── 💳 Your Balance: \`$${userBalance.toFixed(3)}\`\n` +
         `═════════════════════════\n` +
         `_You need $${needed} USD more to place this order._`;
@@ -2558,7 +2481,9 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
     lines.push(`═════════════════════════`);
     lines.push(`├── 🎮 Game: *${escapeMd(gameName)}*`);
     lines.push(`├── 📦 Package: *${escapeMd(skuName)}*`);
-    lines.push(`├── 🔢 Count / Quantity: *${quantity}x*`);
+    if (quantity > 1) {
+      lines.push(`├── 🔢 Quantity: *${quantity}x*`);
+    }
     if (isValidValue(playerName)) {
       lines.push(`├── 👤 Player: \`${escapeCode(playerName)}\``);
     }
@@ -2588,19 +2513,6 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
     lines.push(`═════════════════════════`);
 
     const keyboard = Markup.inlineKeyboard([
-      [
-        Markup.button.callback('➖ 1', 'qty_dec'),
-        Markup.button.callback(`🔢 Qty: ${quantity}`, 'qty_prompt'),
-        Markup.button.callback('➕ 1', 'qty_inc'),
-      ],
-      [
-        Markup.button.callback('x1', 'qty_set_1'),
-        Markup.button.callback('x2', 'qty_set_2'),
-        Markup.button.callback('x3', 'qty_set_3'),
-        Markup.button.callback('x5', 'qty_set_5'),
-        Markup.button.callback('x10', 'qty_set_10'),
-      ],
-      [Markup.button.callback('✏️ Custom Count / အကြိမ်ရေ ရိုက်ထည့်ရန်', 'qty_prompt')],
       [Markup.button.callback(`✅ Confirm & Pay ($${price.toFixed(2)})`, 'confirm_place_order')],
       [Markup.button.callback('❌ Cancel Order', 'cancel_order')]
     ]);

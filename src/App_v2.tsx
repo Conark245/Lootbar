@@ -97,6 +97,9 @@ export default function App() {
   const [skuModalGame, setSkuModalGame] = useState<any>(null);
   const [skuShortKeysInput, setSkuShortKeysInput] = useState<Record<string, string>>({});
   const [savingSkuKeys, setSavingSkuKeys] = useState(false);
+  const [loadingModalSkus, setLoadingModalSkus] = useState(false);
+  const [skuSearchFilter, setSkuSearchFilter] = useState('');
+  const [skuModalSuccessMsg, setSkuModalSuccessMsg] = useState('');
 
   const [loadingSaved, setLoadingSaved] = useState(true);
   const [showTpnGames, setShowTpnGames] = useState(false);
@@ -612,34 +615,126 @@ export default function App() {
   };
 
   
-  const openSkuModal = (game: any, isTpn: boolean) => {
-    setSkuModalGame({ ...game, isTpn });
-    setSkuShortKeysInput(game.skuShortKeys || {});
+  const openSkuModal = async (game: any, isTpn: boolean) => {
+    setSkuModalSuccessMsg('');
+    setSkuSearchFilter('');
+    
+    // Normalize existing keys
+    const existingKeys: Record<string, string> = {};
+    if (game.skuShortKeys) {
+      if (typeof game.skuShortKeys === 'object' && !Array.isArray(game.skuShortKeys)) {
+        Object.entries(game.skuShortKeys).forEach(([k, v]) => {
+          if (v) existingKeys[String(k)] = String(v);
+        });
+      }
+    }
+    setSkuShortKeysInput(existingKeys);
+
+    if (isTpn) {
+      setSkuModalGame({ ...game, isTpn: true, modalSkus: game.skus || [] });
+    } else {
+      const localSkus = game.lastKnownSkus || [];
+      setSkuModalGame({ ...game, isTpn: false, modalSkus: localSkus });
+      
+      // Fetch fresh SKUs from server
+      setLoadingModalSkus(true);
+      try {
+        const res = await fetch(`/api/saved-games/${game.gameId}/skus`);
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data) && json.data.length > 0) {
+          setSkuModalGame((prev: any) => (prev && prev.gameId === game.gameId) ? { ...prev, modalSkus: json.data } : prev);
+        }
+      } catch (e) {
+        console.error('Error fetching game SKUs:', e);
+      } finally {
+        setLoadingModalSkus(false);
+      }
+    }
+  };
+
+  const autoGenerateSmartKeys = () => {
+    if (!skuModalGame || !skuModalGame.modalSkus) return;
+    const newKeys = { ...skuShortKeysInput };
+    
+    skuModalGame.modalSkus.forEach((sku: any) => {
+      const skuId = String(skuModalGame.isTpn ? sku.sku : sku.sku_id);
+      const name = String(skuModalGame.isTpn ? sku.name : (sku.sku_name || '')).trim();
+      const lowerName = name.toLowerCase();
+
+      // Only auto-generate if currently empty
+      if (!newKeys[skuId]) {
+        if (/weekly.*diamond.*pass|wdp/i.test(lowerName)) {
+          newKeys[skuId] = 'wdp';
+        } else if (/weekly.*pass/i.test(lowerName)) {
+          newKeys[skuId] = 'wp';
+        } else if (/twilight/i.test(lowerName)) {
+          newKeys[skuId] = 'tp';
+        } else if (/monthly.*pass|monthly.*card/i.test(lowerName)) {
+          newKeys[skuId] = 'monthly';
+        } else if (/starlight.*plus/i.test(lowerName)) {
+          newKeys[skuId] = 'slp';
+        } else if (/starlight/i.test(lowerName)) {
+          newKeys[skuId] = 'starlight';
+        } else if (/battle.*pass/i.test(lowerName)) {
+          newKeys[skuId] = 'bp';
+        } else {
+          // Extract leading or isolated number
+          const numMatch = name.match(/(\d+)/);
+          if (numMatch) {
+            newKeys[skuId] = numMatch[1];
+          }
+        }
+      }
+    });
+
+    setSkuShortKeysInput(newKeys);
   };
 
   const handleSaveSkuShortKeys = async () => {
     if (!skuModalGame) return;
     setSavingSkuKeys(true);
+    setSkuModalSuccessMsg('');
     try {
+      // Clean keys (lowercase, trim, letters/numbers/hyphen/underscore only)
+      const cleanKeys: Record<string, string> = {};
+      Object.entries(skuShortKeysInput).forEach(([k, v]) => {
+        const cleaned = String(v || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+        if (cleaned) {
+          cleanKeys[k] = cleaned;
+        }
+      });
+
       if (skuModalGame.isTpn) {
         const res = await fetch(`/api/topupnation/products/${skuModalGame.productId}/sku-shortkeys`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ skuShortKeys: skuShortKeysInput })
+          body: JSON.stringify({ skuShortKeys: cleanKeys })
         });
         if (res.ok) {
           fetchTpnProducts();
-          setSkuModalGame(null);
+          setSkuModalSuccessMsg('Saved successfully! Package short keys are now active.');
+          setTimeout(() => {
+            setSkuModalGame(null);
+          }, 1000);
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          alert('Error saving: ' + (errData.error || 'Unknown error'));
         }
       } else {
         const res = await fetch(`/api/saved-games/${skuModalGame.gameId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ skuShortKeys: skuShortKeysInput })
+          body: JSON.stringify({ skuShortKeys: cleanKeys })
         });
         if (res.ok) {
           fetchSavedGames();
-          setSkuModalGame(null);
+          setSkuModalSuccessMsg('Saved successfully! Package short keys are now active.');
+          setTimeout(() => {
+            setSkuModalGame(null);
+          }, 1000);
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          alert('Error saving: ' + (errData.error || 'Unknown error'));
         }
       }
     } catch (err: any) {
@@ -913,6 +1008,241 @@ export default function App() {
                 {isLoggingIn ? 'Verifying...' : 'Login & Save Credentials'}
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Product / SKU Short Keys Management Modal */}
+      {skuModalGame && (
+        <div className="fixed inset-0 bg-neutral-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden border border-neutral-200 animate-in fade-in zoom-in-95 duration-150">
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-neutral-100 flex items-center justify-between bg-neutral-50/80">
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-lg ${
+                  skuModalGame.isTpn 
+                    ? 'bg-indigo-100 text-indigo-700' 
+                    : 'bg-emerald-100 text-emerald-700'
+                }`}>
+                  {skuModalGame.isTpn ? '🌐' : '🎮'}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-lg font-bold text-neutral-900">{skuModalGame.name}</h2>
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                      skuModalGame.isTpn 
+                        ? 'bg-indigo-100 text-indigo-800' 
+                        : 'bg-emerald-100 text-emerald-800'
+                    }`}>
+                      {skuModalGame.isTpn ? 'TopupNation' : 'LootBar'}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-xs text-neutral-500 font-mono">
+                      Game Short Key: <strong className="text-neutral-800 font-bold">.{skuModalGame.shortKey || (skuModalGame.isTpn ? `t${skuModalGame.productId.slice(0, 4)}` : skuModalGame.gameId)}</strong>
+                    </span>
+                    <span className="text-neutral-300">•</span>
+                    <span className="text-xs text-neutral-500">
+                      ID: {skuModalGame.isTpn ? skuModalGame.productId : skuModalGame.gameId}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <button 
+                onClick={() => setSkuModalGame(null)} 
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-neutral-400 hover:text-neutral-700 hover:bg-neutral-200/60 transition-colors font-bold text-lg"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Instruction Banner & Search/Actions */}
+            <div className="px-6 py-3.5 bg-neutral-50 border-b border-neutral-200/70 space-y-3">
+              <div className="flex items-start gap-2.5 text-xs text-neutral-600 bg-white p-3 rounded-xl border border-neutral-200">
+                <span className="text-base">💡</span>
+                <div className="flex-1">
+                  <p className="font-semibold text-neutral-800 mb-0.5">
+                    Package Short Key သတ်မှတ်ထားပါက Telegram Bot တွင် လျင်မြန်စွာ order တင်နိုင်ပါသည်။
+                  </p>
+                  <p className="text-neutral-500">
+                    Order Format: <code className="bg-neutral-100 px-1.5 py-0.5 rounded text-neutral-900 font-mono font-bold">.{skuModalGame.shortKey || 'game'} &lt;UID&gt; &lt;PackageKey&gt;</code> (ဥပမာ: <code className="bg-neutral-100 px-1.5 py-0.5 rounded text-neutral-900 font-mono">.{skuModalGame.shortKey || 'game'} 12345678 86</code>)
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
+                <div className="relative flex-1">
+                  <input 
+                    type="text"
+                    placeholder="Search package by name, SKU ID, or key..."
+                    value={skuSearchFilter}
+                    onChange={(e) => setSkuSearchFilter(e.target.value)}
+                    className="w-full pl-8 pr-3 py-1.5 text-xs border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                  />
+                  <span className="absolute left-2.5 top-2 text-neutral-400 text-xs">🔍</span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={autoGenerateSmartKeys}
+                    className="px-3 py-1.5 text-xs font-semibold bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-lg transition-colors flex items-center gap-1.5 shadow-xs"
+                    title="Auto-fill numbers / pass aliases from package names"
+                  >
+                    <span>⚡</span> Auto-Generate Smart Keys
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (confirm('Clear all package short keys for this game?')) {
+                        setSkuShortKeysInput({});
+                      }
+                    }}
+                    className="px-2.5 py-1.5 text-xs text-neutral-500 hover:text-neutral-700 hover:bg-neutral-200/60 rounded-lg transition-colors"
+                  >
+                    Clear All
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Content List */}
+            <div className="p-6 overflow-y-auto flex-1 space-y-3 bg-neutral-100/40">
+              {loadingModalSkus ? (
+                <div className="py-12 text-center">
+                  <div className="w-8 h-8 border-3 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
+                  <p className="text-sm text-neutral-600 font-medium">Fetching packages from API...</p>
+                </div>
+              ) : (!skuModalGame.modalSkus || skuModalGame.modalSkus.length === 0) ? (
+                <div className="py-12 text-center bg-white rounded-xl border border-neutral-200 p-8">
+                  <p className="text-neutral-500 text-sm">No packages found for this game or API response was empty.</p>
+                </div>
+              ) : (
+                (() => {
+                  const filteredSkus = (skuModalGame.modalSkus || []).filter((sku: any) => {
+                    if (!skuSearchFilter.trim()) return true;
+                    const query = skuSearchFilter.toLowerCase().trim();
+                    const name = String(skuModalGame.isTpn ? sku.name : (sku.sku_name || '')).toLowerCase();
+                    const id = String(skuModalGame.isTpn ? sku.sku : sku.sku_id).toLowerCase();
+                    const currentKey = String(skuShortKeysInput[id] || '').toLowerCase();
+                    return name.includes(query) || id.includes(query) || currentKey.includes(query);
+                  });
+
+                  if (filteredSkus.length === 0) {
+                    return (
+                      <div className="py-8 text-center bg-white rounded-xl border border-neutral-200 p-4">
+                        <p className="text-neutral-500 text-xs">No packages match &quot;{skuSearchFilter}&quot;</p>
+                      </div>
+                    );
+                  }
+
+                  const activeGameKey = skuModalGame.shortKey || (skuModalGame.isTpn ? `t${skuModalGame.productId.slice(0, 4)}` : skuModalGame.gameId);
+
+                  return filteredSkus.map((sku: any) => {
+                    const skuId = String(skuModalGame.isTpn ? sku.sku : sku.sku_id);
+                    const name = skuModalGame.isTpn ? sku.name : (sku.sku_name || `Package #${skuId}`);
+                    const price = skuModalGame.isTpn 
+                      ? `${sku.price} ${sku.currency || 'USD'}` 
+                      : `$${sku.reseller_price || sku.price || '0.00'}`;
+                    const currentKey = skuShortKeysInput[skuId] || '';
+
+                    return (
+                      <div 
+                        key={skuId} 
+                        className={`p-4 bg-white rounded-xl border transition-all shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
+                          currentKey ? 'border-indigo-300 ring-1 ring-indigo-200' : 'border-neutral-200 hover:border-neutral-300'
+                        }`}
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-sm text-neutral-900 truncate">{name}</span>
+                            {currentKey && (
+                              <span className="text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-200 px-2 py-0.5 rounded font-mono font-bold">
+                                Key: .{currentKey}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-3 mt-1 text-xs text-neutral-500 font-mono">
+                            <span>Price: <strong className="text-neutral-800">{price}</strong></span>
+                            <span>•</span>
+                            <span>SKU ID: {skuId}</span>
+                          </div>
+                        </div>
+
+                        <div className="w-full sm:w-60 flex flex-col items-end gap-1">
+                          <div className="flex items-center w-full">
+                            <span className="bg-neutral-100 text-neutral-500 font-mono font-bold text-sm px-2.5 py-1.5 border border-r-0 border-neutral-300 rounded-l-lg select-none">
+                              .
+                            </span>
+                            <input 
+                              type="text"
+                              placeholder="e.g. 86, wp, pass"
+                              value={currentKey}
+                              onChange={(e) => {
+                                const val = e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+                                setSkuShortKeysInput(prev => ({ ...prev, [skuId]: val }));
+                              }}
+                              className="flex-1 px-3 py-1.5 text-xs font-mono font-bold text-neutral-900 border border-neutral-300 rounded-r-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-neutral-50/30"
+                            />
+                          </div>
+                          {currentKey ? (
+                            <span className="text-[10px] text-neutral-500 font-mono">
+                              Bot: <code className="text-indigo-600 font-bold">.{activeGameKey} &lt;UID&gt; {currentKey}</code>
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-neutral-400 font-mono">
+                              No short key (matches by name/ID)
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  });
+                })()
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-neutral-200 bg-white flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="text-xs text-neutral-500 font-medium">
+                {skuModalSuccessMsg ? (
+                  <span className="text-emerald-600 font-bold flex items-center gap-1.5">
+                    <span>✓</span> {skuModalSuccessMsg}
+                  </span>
+                ) : (
+                  <span>
+                    🎯 <strong>{Object.values(skuShortKeysInput).filter(Boolean).length}</strong> package short keys configured
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                <button 
+                  type="button"
+                  onClick={() => setSkuModalGame(null)} 
+                  className="px-4 py-2 text-xs font-medium text-neutral-600 hover:bg-neutral-100 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button 
+                  type="button"
+                  onClick={handleSaveSkuShortKeys} 
+                  disabled={savingSkuKeys} 
+                  className="px-5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-neutral-400 rounded-lg transition-colors flex items-center gap-2 shadow-sm"
+                >
+                  {savingSkuKeys ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      <span>Saving Keys...</span>
+                    </>
+                  ) : (
+                    <span>Save Package Short Keys</span>
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1347,6 +1677,7 @@ export default function App() {
               {savedGames.map((saved, i) => {
                 const currentKey = shortKeyInputs[saved.gameId] !== undefined ? shortKeyInputs[saved.gameId] : (saved.shortKey || '');
                 const isDirty = currentKey !== (saved.shortKey || '');
+                const skuKeyCount = saved.skuShortKeys ? Object.values(saved.skuShortKeys).filter(Boolean).length : 0;
 
                 return (
                   <div key={`lb-${i}`} className="p-5 bg-emerald-50/30 border border-emerald-200 shadow-sm rounded-2xl flex flex-col justify-between">
@@ -1362,11 +1693,24 @@ export default function App() {
                         </span>
                       </div>
 
-                      <button onClick={() => openSkuModal(saved, false)} className="w-full mb-3 px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>Manage Package Short Keys</button>
+                      {/* Package Short Keys Button */}
+                      <button 
+                        onClick={() => openSkuModal(saved, false)} 
+                        className="w-full mb-3 px-3.5 py-2 bg-emerald-100/70 hover:bg-emerald-200/70 text-emerald-900 border border-emerald-300 rounded-xl text-xs font-bold flex items-center justify-between transition-colors shadow-xs"
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <span>🏷️</span>
+                          <span>Package Short Keys</span>
+                        </div>
+                        <span className="bg-emerald-200/80 text-emerald-900 px-2 py-0.5 rounded-full text-[11px] font-mono font-bold">
+                          {skuKeyCount} set
+                        </span>
+                      </button>
+
                       {/* Custom Short Key Input */}
                       <div className="mt-3 p-3 bg-white rounded-xl border border-neutral-200 space-y-2">
                         <label className="block text-xs font-semibold text-neutral-700">
-                          Owner-Defined Short Key:
+                          Game Short Key (Command Prefix):
                         </label>
                         <div className="flex items-center gap-2">
                           <span className="font-mono text-sm font-bold text-neutral-400">.</span>
@@ -1409,6 +1753,7 @@ export default function App() {
                 const activeKey = p.shortKey || '';
                 const currentInput = tpnShortKeyInput[p.productId] !== undefined ? tpnShortKeyInput[p.productId] : activeKey;
                 const isModified = currentInput !== activeKey;
+                const tpnSkuKeyCount = p.skuShortKeys ? Object.values(p.skuShortKeys).filter(Boolean).length : 0;
 
                 return (
                   <div key={`tpn-${i}`} className="p-5 bg-indigo-50/30 border border-indigo-200 shadow-sm rounded-2xl flex flex-col justify-between">
@@ -1424,11 +1769,24 @@ export default function App() {
                         </span>
                       </div>
 
-                      <button onClick={() => openSkuModal(p, true)} className="w-full mb-3 px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>Manage Package Short Keys</button>
+                      {/* Package Short Keys Button */}
+                      <button 
+                        onClick={() => openSkuModal(p, true)} 
+                        className="w-full mb-3 px-3.5 py-2 bg-indigo-100/70 hover:bg-indigo-200/70 text-indigo-900 border border-indigo-300 rounded-xl text-xs font-bold flex items-center justify-between transition-colors shadow-xs"
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <span>🏷️</span>
+                          <span>Package Short Keys</span>
+                        </div>
+                        <span className="bg-indigo-200/80 text-indigo-900 px-2 py-0.5 rounded-full text-[11px] font-mono font-bold">
+                          {tpnSkuKeyCount} set
+                        </span>
+                      </button>
+
                       {/* Custom Short Key Input */}
                       <div className="mt-3 p-3 bg-white rounded-xl border border-neutral-200 space-y-2">
                         <label className="block text-xs font-semibold text-neutral-700">
-                          Owner-Defined Short Key:
+                          Game Short Key (Command Prefix):
                         </label>
                         <div className="flex items-center gap-2">
                           <span className="font-mono text-sm font-bold text-neutral-400">.</span>
