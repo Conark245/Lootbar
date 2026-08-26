@@ -423,8 +423,8 @@ export function setupBot(
         const name = sku.sku_name || `Product #${sku.sku_id}`;
         const price = sku.reseller_price || sku.price || '0.00';
         const customKey = skuKeys[String(sku.sku_id)];
-        const keyInfo = customKey ? ` ➔ \`.${shortKey} ... ${customKey}\`` : '';
-        msg += `▫️ *${name}*${keyInfo} — \`$${Number(price).toFixed(2)} USD\`\n`;
+        const shortKeyTag = customKey ? ` (Key: \`${customKey}\`)` : '';
+        msg += `▫️ *${name}* — \`$${Number(price).toFixed(2)} USD\`${shortKeyTag}\n`;
       });
 
       msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
@@ -612,8 +612,8 @@ export function setupBot(
         const name = sku.name || `Package #${sku.sku}`;
         const price = sku.price || '0.00';
         const customKey = skuKeys[String(sku.sku || sku.sku_id)];
-        const keyInfo = customKey ? ` ➔ \`.${shortKey} ... ${customKey}\`` : '';
-        msg += `▫️ *${name}*${keyInfo} — \`$${Number(price).toFixed(2)} USD\`\n`;
+        const shortKeyTag = customKey ? ` (Key: \`${customKey}\`)` : '';
+        msg += `▫️ *${name}* — \`$${Number(price).toFixed(2)} USD\`${shortKeyTag}\n`;
       });
 
       msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
