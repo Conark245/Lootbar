@@ -230,7 +230,7 @@ export function setupBot(
         if (fromUsername && user.username !== fromUsername) updateData.username = fromUsername;
         if (fromFirstName && user.firstName !== fromFirstName) updateData.firstName = fromFirstName;
         if (Object.keys(updateData).length > 0) {
-          user = await User.findOneAndUpdate({ telegramChatId: chatId }, updateData, { new: true });
+          user = await User.findOneAndUpdate({ telegramChatId: chatId }, updateData, { returnDocument: 'after' });
         }
       }
     } else {
@@ -246,7 +246,7 @@ export function setupBot(
         user = await User.findOneAndUpdate(
           { telegramChatId: chatId }, 
           { username: fromUsername, firstName: fromFirstName }, 
-          { new: true }
+          { returnDocument: 'after' }
         );
       }
     }
@@ -351,7 +351,7 @@ export function setupBot(
               await SavedGame.findOneAndUpdate(
                 { gameId: gId },
                 { name: gName, shortKey, isEnabled: true },
-                { upsert: true, new: true }
+                { upsert: true, returnDocument: 'after' }
               );
             }
             savedGames = await SavedGame.find({ isEnabled: { $ne: false } }).sort({ savedAt: -1 });
@@ -1022,35 +1022,16 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     }
 
     try {
-      // Find matching game by shortKey
-      let savedGames = await SavedGame.find({});
+      // Find matching game by shortKey strictly in Enabled SavedGames
+      let savedGames = await SavedGame.find({ isEnabled: { $ne: false } });
       let matchedGame = savedGames.find((g: any) => {
         const k = (g.shortKey || getGameDefaultShortKey(g.name, g.gameId)).toLowerCase();
         return k === inputKey || String(g.gameId) === inputKey;
       });
 
       if (!matchedGame) {
-        // Try fallback to LootBar API games if not found
-        const response = await lootbar.getGames();
-        const allGames = response?.data?.items || [];
-        const fallback = allGames.find((g: any) => {
-          const gId = String(g.id || g.game_id);
-          const gName = g.name || g.game_name || '';
-          return getGameDefaultShortKey(gName, gId) === inputKey || gId === inputKey;
-        });
-        if (fallback) {
-          matchedGame = {
-            gameId: String(fallback.id || fallback.game_id),
-            name: fallback.name || fallback.game_name,
-            shortKey: inputKey,
-            isEnabled: true
-          } as any;
-        }
-      }
-
-      if (!matchedGame) {
         // Try matching TopupNation products by shortKey
-        const tpnProducts = await TopupNationProduct.find({});
+        const tpnProducts = await TopupNationProduct.find({ isEnabled: { $ne: false } });
         const matchedTpn = tpnProducts.find((p: any) => {
           const k = (p.shortKey || '').toLowerCase();
           return k === inputKey || String(p.productId).toLowerCase() === inputKey;
@@ -1069,7 +1050,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
           }
         }
 
-        return next(); // Not a game short key, pass along
+        return next(); // Not an enabled game short key, pass along
       }
 
       if (matchedGame.isEnabled === false) {
@@ -1284,7 +1265,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     const targetId = parts[1];
     const amount = Number(parts[2]);
     if (!targetId || isNaN(amount)) return ctx.reply('Usage: /addbalance <chatId> <amount>');
-    const user = await User.findOneAndUpdate({ telegramChatId: Number(targetId) }, { $inc: { balance: amount } }, { new: true, upsert: true });
+    const user = await User.findOneAndUpdate({ telegramChatId: Number(targetId) }, { $inc: { balance: amount } }, { returnDocument: 'after', upsert: true });
     return ctx.reply(`✅ Added ${amount} to user ${targetId}. New balance: ${user?.balance}`);
   });
 
@@ -1345,7 +1326,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
     const updatedUser = await User.findOneAndUpdate(
       { telegramChatId: topupReq.telegramChatId },
       { $inc: { balance: topupReq.amount } },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     await ctx.answerCbQuery('✅ Top-up approved & balance added!');

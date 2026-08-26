@@ -6,6 +6,7 @@ import { LootBarClient } from "./server/lootbar";
 import { TopupNationClient } from "./server/providers/topupnation/TopupNationClient";
 import { TopupNationService } from "./server/providers/topupnation/TopupNationService";
 import { setupBot } from "./server/bot";
+import { PricePoller } from "./server/pricePoller";
 import { connectDB } from "./server/db";
 import { SavedGame } from "./server/models/SavedGame";
 import { Order } from "./server/models/Order";
@@ -55,6 +56,7 @@ const topupNationClient = new TopupNationClient({
   webhookSecret: TOPUPNATION_WEBHOOK_SECRET
 });
 const topupNationService = new TopupNationService(topupNationClient);
+const pricePoller = new PricePoller(lootbarClient, topupNationService);
 
 // Initialize Telegram Bot State
 let telegramBot: ReturnType<typeof setupBot> | undefined;
@@ -83,6 +85,7 @@ async function initOrRestartTelegramBot(token: string, adminChatId: string) {
 
     // Provide Telegram instance to TopupNationService for order status notifications
     topupNationService.setTelegram(telegramBot.telegram, adminChatId);
+    pricePoller.setTelegram(telegramBot);
   } else {
     console.warn("TELEGRAM_BOT_TOKEN is missing or invalid. Bot will not start.");
   }
@@ -140,7 +143,19 @@ setInterval(() => {
   topupNationService.pollActiveOrders().catch((err) => {
     console.error("Error in TopupNation background poller:", err);
   });
-}, 45000);
+}, 15000); // 15 seconds
+
+// Periodic background poller for price updates (every 30 minutes)
+setInterval(() => {
+  pricePoller.pollPrices().catch((err) => {
+    console.error("Error in PricePoller:", err);
+  });
+}, 30 * 60 * 1000);
+
+// Run an initial price check a few seconds after startup
+setTimeout(() => {
+  pricePoller.pollPrices().catch(console.error);
+}, 10000);
 
 // ---------------------------------------------------------
 // REST Endpoints
@@ -165,7 +180,7 @@ app.post("/api/settings/lootbar", async (req, res) => {
     await AppConfig.findOneAndUpdate(
       { key: 'lootbar_credentials' },
       { value: { email, password, nickname } },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
 
     res.json({ success: true });
@@ -217,14 +232,14 @@ app.post("/api/settings/admin", async (req, res) => {
     await AppConfig.findOneAndUpdate(
       { key: 'admin_chat_id' },
       { value: String(adminChatId) },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
     
     if (telegramBotToken !== undefined) {
       await AppConfig.findOneAndUpdate(
         { key: 'telegram_bot_token' },
         { value: String(telegramBotToken) },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: 'after' }
       );
       
       // Attempt to restart/reinitialize bot if the token changed
@@ -246,7 +261,7 @@ app.post("/api/telegram-users/balance", async (req, res) => {
     const user = await User.findOneAndUpdate(
       { telegramChatId: Number(chatId) },
       { $inc: { balance: amount } },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
     
     // Notify the user via Telegram Bot
@@ -283,7 +298,7 @@ app.post("/api/telegram-users/auth", async (req, res) => {
     const user = await User.findOneAndUpdate(
       { telegramChatId: Number(chatId) },
       { isAuthorized: true },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
     
     // Notify the user via Telegram Bot
@@ -308,7 +323,7 @@ app.post("/api/telegram-users/unauth", async (req, res) => {
     const user = await User.findOneAndUpdate(
       { telegramChatId: Number(chatId) },
       { isAuthorized: false },
-      { new: true }
+      { returnDocument: 'after' }
     );
     res.json({ success: true, data: user });
   } catch (err: any) {
@@ -330,7 +345,7 @@ app.post("/api/telegram-users/toggle-api-balance", async (req, res) => {
         balanceMode: isApiBalance ? 'api' : 'wallet',
         apiProvider: selectedProvider
       },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
     
     // Notify the user via Telegram Bot
@@ -383,7 +398,7 @@ app.post("/api/telegram-users/update-notes", async (req, res) => {
     const user = await User.findOneAndUpdate(
       { telegramChatId: Number(chatId) },
       { notes: String(notes || '') },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
     res.json({ success: true, data: user });
   } catch (err: any) {
@@ -409,7 +424,7 @@ app.post("/api/telegram-users/toggle-notifications", async (req, res) => {
     const user = await User.findOneAndUpdate(
       { telegramChatId: Number(chatId) },
       { receivesNotifications: !!receivesNotifications },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
     res.json({ success: true, data: user });
   } catch (err: any) {
@@ -443,7 +458,7 @@ app.post("/api/topup-requests/:requestId/approve", async (req, res) => {
     const user = await User.findOneAndUpdate(
       { telegramChatId: request.telegramChatId },
       { $inc: { balance: request.amount } },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (telegramBot) {
@@ -827,7 +842,7 @@ app.post("/api/saved-games", async (req, res) => {
     const saved = await SavedGame.findOneAndUpdate(
       { gameId },
       { name, shortKey: cleanShortKey },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
     res.json({ data: saved });
   } catch (err: any) {
@@ -850,7 +865,7 @@ app.patch("/api/saved-games/:gameId", async (req, res) => {
     const saved = await SavedGame.findOneAndUpdate(
       { gameId: req.params.gameId },
       updateData,
-      { new: true }
+      { returnDocument: 'after' }
     );
     res.json({ data: saved });
   } catch (err: any) {
@@ -922,7 +937,7 @@ app.post("/api/settings/topupnation", async (req, res) => {
     await AppConfig.findOneAndUpdate(
       { key: 'topupnation_credentials' },
       { value: { apiKey, apiSecret, webhookSecret, baseUrl: baseUrl || "https://topupnation.io" } },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
 
     res.json({ success: true, message: "TopupNation credentials saved and verified successfully." });
@@ -1087,7 +1102,7 @@ app.post("/notify", async (req: any, res) => {
     const order = await Order.findOneAndUpdate(
       { referenceId: reference_id },
       { orderId: order_id, state },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (order && telegramBot) {
@@ -1151,3 +1166,4 @@ if (!process.env.VERCEL) {
 
 export default app;
 export { app, startServer };
+

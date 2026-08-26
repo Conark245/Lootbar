@@ -35,7 +35,7 @@ export class TopupNationService {
     return TopupNationProduct.findOneAndUpdate(
       { productId },
       { shortKey: cleanKey },
-      { new: true }
+      { returnDocument: 'after' }
     );
   }
 
@@ -114,7 +114,7 @@ export class TopupNationService {
             $setOnInsert: { shortKey },
             lastSyncedAt: new Date()
           },
-          { upsert: true, new: true }
+          { upsert: true, returnDocument: 'after' }
         );
         synced++;
       } catch (err: any) {
@@ -152,7 +152,7 @@ export class TopupNationService {
         product = await TopupNationProduct.findOneAndUpdate(
           { productId: live.productId },
           { ...live, lastSyncedAt: new Date() },
-          { upsert: true, new: true }
+          { upsert: true, returnDocument: 'after' }
         );
       } catch (e) {
         // Fallback
