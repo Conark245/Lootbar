@@ -93,7 +93,16 @@ export default function App() {
   const [games, setGames] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [savedGames, setSavedGames] = useState<any[]>([]);
+
+  const [skuModalGame, setSkuModalGame] = useState<any>(null);
+  const [skuShortKeysInput, setSkuShortKeysInput] = useState<Record<string, string>>({});
+  const [savingSkuKeys, setSavingSkuKeys] = useState(false);
+
   const [loadingSaved, setLoadingSaved] = useState(true);
+  const [showTpnGames, setShowTpnGames] = useState(false);
+  const [showLootbarGames, setShowLootbarGames] = useState(false);
+  const [orderPage, setOrderPage] = useState(1);
+
   
   // Telegram Users State
   const [telegramUsers, setTelegramUsers] = useState<any[]>([]);
@@ -602,6 +611,44 @@ export default function App() {
       .catch(err => console.error(err));
   };
 
+  
+  const openSkuModal = (game: any, isTpn: boolean) => {
+    setSkuModalGame({ ...game, isTpn });
+    setSkuShortKeysInput(game.skuShortKeys || {});
+  };
+
+  const handleSaveSkuShortKeys = async () => {
+    if (!skuModalGame) return;
+    setSavingSkuKeys(true);
+    try {
+      if (skuModalGame.isTpn) {
+        const res = await fetch(`/api/topupnation/products/${skuModalGame.productId}/sku-shortkeys`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ skuShortKeys: skuShortKeysInput })
+        });
+        if (res.ok) {
+          fetchTpnProducts();
+          setSkuModalGame(null);
+        }
+      } else {
+        const res = await fetch(`/api/saved-games/${skuModalGame.gameId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ skuShortKeys: skuShortKeysInput })
+        });
+        if (res.ok) {
+          fetchSavedGames();
+          setSkuModalGame(null);
+        }
+      }
+    } catch (err: any) {
+      alert('Error saving SKU keys: ' + err.message);
+    } finally {
+      setSavingSkuKeys(false);
+    }
+  };
+
   const fetchSavedGames = () => {
     setLoadingSaved(true);
     fetch('/api/saved-games')
@@ -1008,8 +1055,14 @@ export default function App() {
         {/* TopupNation Products Management */}
         <div className="bg-white p-8 rounded-xl shadow-sm border border-neutral-200">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-2">
-            <h2 className="text-xl font-bold text-neutral-900 flex items-center gap-2">
+            <h2 
+              className="text-xl font-bold text-neutral-900 flex items-center gap-2 cursor-pointer select-none hover:text-indigo-700 transition-colors"
+              onClick={() => setShowTpnGames(!showTpnGames)}
+            >
               <span>🌐</span> TopUpNation Products Catalog
+              <svg className={`w-5 h-5 text-neutral-400 transition-transform ${showTpnGames ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+              </svg>
             </h2>
             <div className="flex items-center gap-2">
               <button 
@@ -1027,6 +1080,8 @@ export default function App() {
           <p className="text-sm text-neutral-500 mb-6">
             Synced products from TopupNation. Set custom Short Keys for rapid ordering in Telegram (e.g. <span className="font-mono font-semibold text-neutral-800">.tp</span> or <span className="font-mono font-semibold text-neutral-800">.tml</span>).
           </p>
+          {showTpnGames && (
+            <div className="mt-4">
 
           {!tpnConfigured ? (
             <div className="text-center py-10 bg-neutral-50 rounded-lg border border-neutral-200 border-dashed">
@@ -1136,13 +1191,21 @@ export default function App() {
               })}
             </div>
           )}
+          </div>
+          )}
         </div>
 
         {/* Telegram Bot Games Management */}
         <div className="bg-white p-8 rounded-xl shadow-sm border border-neutral-200">
           <div className="flex justify-between items-center mb-2">
-            <h2 className="text-xl font-bold text-neutral-900 flex items-center gap-2">
-              <span>🎮</span> Select Games for Telegram Bot
+            <h2 
+              className="text-xl font-bold text-neutral-900 flex items-center gap-2 cursor-pointer select-none hover:text-emerald-700 transition-colors"
+              onClick={() => setShowLootbarGames(!showLootbarGames)}
+            >
+              <span>🎮</span> Select Games for Telegram Bot (LootBar)
+              <svg className={`w-5 h-5 text-neutral-400 transition-transform ${showLootbarGames ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+              </svg>
             </h2>
             {isConfigured && (
               <button 
@@ -1157,6 +1220,8 @@ export default function App() {
           <p className="text-sm text-neutral-500 mb-6">
             Choose which games from LootBar API should appear in your Telegram Bot. Only enabled games will be displayed in the bot's <span className="font-semibold text-neutral-700">🎮 Game List</span>.
           </p>
+          {showLootbarGames && (
+            <div className="mt-4">
 
           {isConfigured === null ? (
             <p className="text-neutral-500 py-4 text-center">Checking API connection...</p>
@@ -1256,6 +1321,8 @@ export default function App() {
               })}
             </div>
           )}
+          </div>
+          )}
         </div>
 
         {/* Active Games in Telegram Bot & Short Key Settings */}
@@ -1295,6 +1362,7 @@ export default function App() {
                         </span>
                       </div>
 
+                      <button onClick={() => openSkuModal(saved, false)} className="w-full mb-3 px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>Manage Package Short Keys</button>
                       {/* Custom Short Key Input */}
                       <div className="mt-3 p-3 bg-white rounded-xl border border-neutral-200 space-y-2">
                         <label className="block text-xs font-semibold text-neutral-700">
@@ -1356,6 +1424,7 @@ export default function App() {
                         </span>
                       </div>
 
+                      <button onClick={() => openSkuModal(p, true)} className="w-full mb-3 px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>Manage Package Short Keys</button>
                       {/* Custom Short Key Input */}
                       <div className="mt-3 p-3 bg-white rounded-xl border border-neutral-200 space-y-2">
                         <label className="block text-xs font-semibold text-neutral-700">
@@ -1372,7 +1441,7 @@ export default function App() {
                           />
                           <button
                             disabled={!isModified}
-                            onClick={() => updateTpnProduct(p.productId, { shortKey: currentInput })}
+                            onClick={() => handleSaveTpnShortKey(p.productId)}
                             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
                               isModified
                                 ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm'
@@ -1387,7 +1456,7 @@ export default function App() {
 
                     <div className="mt-4 pt-3 border-t border-indigo-100 flex justify-end">
                       <button 
-                        onClick={() => toggleTpnProduct(p.productId, false)}
+                        onClick={() => handleToggleTpnProduct(p.productId, true)}
                         className="text-red-600 hover:text-red-700 text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-red-50 transition-colors border border-red-200"
                       >
                         Disable (Remove from Bot)
@@ -1764,6 +1833,22 @@ export default function App() {
               <p className="text-sm text-neutral-500 mt-1">
                 Real-time tracking of top-ups syncing automatically with LootBar & Game APIs
               </p>
+            </div>
+
+            {/* LIVE API BALANCES IN ORDER HISTORY */}
+            <div className="flex gap-4">
+              {lootbarBalance && (
+                <div className="flex flex-col px-4 py-2 bg-emerald-50 border border-emerald-200 rounded-lg">
+                  <span className="text-[10px] uppercase font-bold text-emerald-700 tracking-wider">LootBar Balance</span>
+                  <span className="text-lg font-mono font-extrabold text-emerald-900">${lootbarBalance.total_amount || lootbarBalance.balance || '0.00'}</span>
+                </div>
+              )}
+              {tpnBalance && (
+                <div className="flex flex-col px-4 py-2 bg-indigo-50 border border-indigo-200 rounded-lg">
+                  <span className="text-[10px] uppercase font-bold text-indigo-700 tracking-wider">TopupNation Balance</span>
+                  <span className="text-lg font-mono font-extrabold text-indigo-900">${Number(tpnBalance.balance || 0).toFixed(2)}</span>
+                </div>
+              )}
             </div>
 
             <div className="flex flex-wrap items-center gap-2.5">

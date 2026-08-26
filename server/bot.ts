@@ -9,135 +9,10 @@ import { Session } from './models/Session';
 import { AppConfig } from './models/AppConfig';
 import { SavedGame } from './models/SavedGame';
 import { TopupRequest } from './models/TopupRequest';
+import { escapeMd, escapeCode, formatMyanmarDateTime, formatMyanmarTimeOnly, safeReply, safeSendMessage, safeEditMessageText, safeSendPhoto, safeEditMessageCaption,parseCommandArgs } from './bot/helpers';
+import { findLootBarSkuMatch, findTopupNationSkuMatch } from './bot/matching';
 
 // Helper to escape text for Telegram Markdown v1
-export function escapeMd(str: any): string {
-  if (str === null || str === undefined) return '';
-  return String(str).replace(/[_*[\]`]/g, '\\$&');
-}
-
-// Helper to sanitize code block content (prevent breaking out of backticks)
-export function escapeCode(str: any): string {
-  if (str === null || str === undefined) return '';
-  return String(str).replace(/[`\\]/g, '');
-}
-
-// Helper to format Date/Timestamp in Myanmar Time (GMT+6:30 / Asia/Yangon)
-export function formatMyanmarDateTime(date: Date | string | number | undefined = new Date()): string {
-  try {
-    const d = date ? new Date(date) : new Date();
-    if (isNaN(d.getTime())) return 'N/A';
-    return d.toLocaleString('en-GB', {
-      timeZone: 'Asia/Yangon',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: true
-    });
-  } catch (e) {
-    return new Date().toLocaleString();
-  }
-}
-
-export function formatMyanmarTimeOnly(date: Date | string | number | undefined = new Date()): string {
-  try {
-    const d = date ? new Date(date) : new Date();
-    if (isNaN(d.getTime())) return 'N/A';
-    return d.toLocaleTimeString('en-US', {
-      timeZone: 'Asia/Yangon',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: true
-    });
-  } catch (e) {
-    return new Date().toLocaleTimeString();
-  }
-}
-
-// Safe reply with fallback to plain text if Markdown parsing fails
-export async function safeReply(ctx: Context, text: string, extra: any = {}) {
-  try {
-    return await ctx.reply(text, { parse_mode: 'Markdown', ...extra });
-  } catch (err: any) {
-    if (err?.message?.includes('can\'t parse entities') || err?.response?.error_code === 400) {
-      const plainText = text.replace(/[*_`\[\]]/g, '');
-      return await ctx.reply(plainText, extra);
-    }
-    console.error('Error in safeReply:', err?.message || err);
-    try {
-      return await ctx.reply(text.replace(/[*_`\[\]]/g, ''));
-    } catch {}
-  }
-}
-
-// Safe sendMessage with fallback to plain text if Markdown parsing fails
-export async function safeSendMessage(telegram: any, chatId: number | string, text: string, extra: any = {}) {
-  try {
-    return await telegram.sendMessage(chatId, text, { parse_mode: 'Markdown', ...extra });
-  } catch (err: any) {
-    if (err?.message?.includes('can\'t parse entities') || err?.response?.error_code === 400) {
-      const plainText = text.replace(/[*_`\[\]]/g, '');
-      return await telegram.sendMessage(chatId, plainText, extra);
-    }
-    console.error(`Error in safeSendMessage to ${chatId}:`, err?.message || err);
-    try {
-      return await telegram.sendMessage(chatId, text.replace(/[*_`\[\]]/g, ''));
-    } catch {}
-  }
-}
-
-// Safe editMessageText with fallback to plain text
-export async function safeEditMessageText(ctx: Context, text: string, extra: any = {}) {
-  try {
-    return await ctx.editMessageText(text, { parse_mode: 'Markdown', ...extra });
-  } catch (err: any) {
-    if (err?.message?.includes('message is not modified')) {
-      return;
-    }
-    if (err?.message?.includes('can\'t parse entities') || err?.response?.error_code === 400) {
-      const plainText = text.replace(/[*_`\[\]]/g, '');
-      return await ctx.editMessageText(plainText, extra);
-    }
-    console.error('Error in safeEditMessageText:', err?.message || err);
-  }
-}
-
-// Safe sendPhoto with fallback to plain caption if Markdown parsing fails
-export async function safeSendPhoto(telegram: any, chatId: number | string, photo: string, extra: any = {}) {
-  try {
-    return await telegram.sendPhoto(chatId, photo, { parse_mode: 'Markdown', ...extra });
-  } catch (err: any) {
-    if (err?.message?.includes('can\'t parse entities') || err?.response?.error_code === 400) {
-      const caption = extra.caption ? extra.caption.replace(/[*_`\[\]]/g, '') : undefined;
-      return await telegram.sendPhoto(chatId, photo, { ...extra, caption, parse_mode: undefined });
-    }
-    console.error(`Error in safeSendPhoto to ${chatId}:`, err?.message || err);
-  }
-}
-
-// Safe editMessageCaption with fallback to plain caption
-export async function safeEditMessageCaption(ctx: Context, caption: string, extra: any = {}) {
-  try {
-    return await ctx.editMessageCaption(caption, { parse_mode: 'Markdown', ...extra });
-  } catch (err: any) {
-    if (err?.message?.includes('message is not modified')) {
-      return;
-    }
-    if (err?.message?.includes('can\'t parse entities') || err?.response?.error_code === 400) {
-      const plainCaption = caption.replace(/[*_`\[\]]/g, '');
-      return await ctx.editMessageCaption(plainCaption, extra);
-    }
-    try {
-      return await safeEditMessageText(ctx, caption, extra);
-    } catch {}
-    console.error('Error in safeEditMessageCaption:', err?.message || err);
-  }
-}
-
 async function getAdminChatId(defaultId: string | undefined): Promise<string | undefined> {
   try {
     const config = await AppConfig.findOne({ key: 'admin_chat_id' });
@@ -555,95 +430,19 @@ export function setupBot(
   }
 
 // Helper to cleanly parse command arguments respecting parentheses, brackets, and commas
-function parseCommandArgs(rawText: string): string[] {
-  if (!rawText) return [];
-  // Handles formatting like: "1235988728 (13997)wp", "1235988728(13997)14", "1235988728, 13997, wp", "1235988728 (13997) 14"
-  const cleaned = rawText
-    .replace(/[()[\],]/g, ' ')
-    .trim();
-  return cleaned.split(/\s+/).filter(Boolean);
-}
-
-// Smart SKU matching helpers for products with long or complex names
-function findLootBarSkuMatch(skus: any[], rawQuery: string): any {
+function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: Record<string, string>): any {
   if (!rawQuery || !skus || skus.length === 0) return null;
   const query = rawQuery.trim().toLowerCase();
-  const cleanQuery = query.replace(/uc|diamond|diamonds|dm|gem|gems|credits|cp/g, '').trim();
-
-  // 1. Exact SKU ID match
-  const exactId = skus.find((s: any) => String(s.sku_id).toLowerCase() === query);
-  if (exactId) return exactId;
-
-  // 2. Exact name match
-  const exactName = skus.find((s: any) => (s.sku_name || '').toLowerCase().trim() === query);
-  if (exactName) return exactName;
-
-  // 3. Exact alias mappings
-  if (query === 'wp' || query === 'wdp' || query === 'weekly' || query === 'pass' || query === 'weekly pass' || query === 'weeklypass') {
-    const wdp = skus.find((s: any) => /weekly/i.test(s.sku_name || '') || /wdp/i.test(s.sku_name || '') || /pass/i.test(s.sku_name || ''));
-    if (wdp) return wdp;
-  }
-  if (query === 'tp' || query === 'twilight' || query === 'twilight pass' || query === 'twilightpass') {
-    const tp = skus.find((s: any) => /twilight/i.test(s.sku_name || ''));
-    if (tp) return tp;
-  }
-  if (query === 'monthly' || query === 'monthly pass' || query === 'monthlypass') {
-    const monthly = skus.find((s: any) => /monthly/i.test(s.sku_name || ''));
-    if (monthly) return monthly;
+  
+  if (skuShortKeys) {
+    for (const [skuId, shortKey] of Object.entries(skuShortKeys)) {
+      if (shortKey.toLowerCase() === query) {
+        const match = skus.find(s => String(s.sku) === skuId);
+        if (match) return match;
+      }
+    }
   }
 
-  // 4. Number match (e.g. user typed "60" or "86" or "100" or "14")
-  const queryNumbers = cleanQuery.match(/\d+/g) || query.match(/\d+/g);
-  if (queryNumbers && queryNumbers.length > 0) {
-    const targetNum = queryNumbers[0];
-    
-    // 4.1 Prioritize item starting with target number (e.g. "14 Diamonds" or "14 Diamonds (13+1)")
-    const leadingNumMatch = skus.find((s: any) => {
-      const name = (s.sku_name || '').toLowerCase().trim();
-      return name.startsWith(targetNum + ' ') || name.startsWith(targetNum + 'd') || name.startsWith(targetNum + '(');
-    });
-    if (leadingNumMatch) return leadingNumMatch;
-
-    // 4.2 Exact word boundary
-    const exactWordNum = skus.find((s: any) => {
-      const name = (s.sku_name || '').toLowerCase();
-      const numRegex = new RegExp(`\\b${targetNum}\\b`);
-      return numRegex.test(name);
-    });
-    if (exactWordNum) return exactWordNum;
-
-    // 4.3 Any numeric match
-    const anyNumMatch = skus.find((s: any) => {
-      const name = (s.sku_name || '').toLowerCase();
-      const nameNumbers = name.match(/\d+/g);
-      return nameNumbers && nameNumbers.includes(targetNum);
-    });
-    if (anyNumMatch) return anyNumMatch;
-  }
-
-  // 5. Multi-word tokens match (all words in user query appear in sku_name)
-  const tokens = query.split(/\s+/).filter(t => t.length > 0);
-  if (tokens.length > 1) {
-    const tokenMatch = skus.find((s: any) => {
-      const name = (s.sku_name || '').toLowerCase();
-      return tokens.every(t => name.includes(t));
-    });
-    if (tokenMatch) return tokenMatch;
-  }
-
-  // 6. Substring match
-  const subMatch = skus.find((s: any) => 
-    (s.sku_name || '').toLowerCase().includes(query) || 
-    (cleanQuery && (s.sku_name || '').toLowerCase().includes(cleanQuery))
-  );
-  if (subMatch) return subMatch;
-
-  return null;
-}
-
-function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
-  if (!rawQuery || !skus || skus.length === 0) return null;
-  const query = rawQuery.trim().toLowerCase();
   const cleanQuery = query.replace(/uc|diamond|diamonds|dm|gem|gems|credits|cp/g, '').trim();
 
   // 1. Exact SKU ID match
@@ -656,12 +455,12 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
 
   // 3. Exact alias mappings (Weekly Pass, Twilight Pass, Monthly)
   if (query === 'wp' || query === 'wdp' || query === 'weekly' || query === 'pass' || query === 'weekly pass' || query === 'weeklypass') {
-    const wdp = skus.find((s: any) => /weekly/i.test(s.name || '') || /wdp/i.test(s.name || '') || /pass/i.test(s.name || ''));
-    if (wdp) return wdp;
+    const weekly = skus.find((s: any) => /weekly/i.test(s.name || ''));
+    if (weekly) return weekly;
   }
   if (query === 'tp' || query === 'twilight' || query === 'twilight pass' || query === 'twilightpass') {
-    const tp = skus.find((s: any) => /twilight/i.test(s.name || ''));
-    if (tp) return tp;
+    const twilight = skus.find((s: any) => /twilight/i.test(s.name || ''));
+    if (twilight) return twilight;
   }
   if (query === 'monthly' || query === 'monthly pass' || query === 'monthlypass') {
     const monthly = skus.find((s: any) => /monthly/i.test(s.name || ''));
@@ -717,7 +516,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string): any {
   return null;
 }
 
-  // Direct order placement using Owner-defined Short Key
+// Direct order placement using Owner-defined Short Key
   async function handleGameDirectOrder(ctx: MyContext, game: any, shortKey: string, args: string[]) {
     try {
       const gameId = String(game.gameId || game.game_id);

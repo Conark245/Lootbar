@@ -12,6 +12,7 @@ export interface ITopupNationProduct extends Document {
   fields: TopupNationFieldDefinition[];
   skus: TopupNationSku[];
   shortKey?: string;
+  skuShortKeys?: Record<string, string>;
   lastSyncedAt: Date;
 }
 
@@ -26,6 +27,7 @@ const topupNationProductSchema = new mongoose.Schema({
   fields: { type: Array, default: [] },
   skus: { type: Array, default: [] },
   shortKey: { type: String, trim: true, lowercase: true },
+  skuShortKeys: { type: Map, of: String, default: {} },
   lastSyncedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 

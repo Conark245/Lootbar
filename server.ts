@@ -855,12 +855,13 @@ app.patch("/api/saved-games/:gameId", async (req, res) => {
     if (!process.env.MONGODB_URI) {
       return res.status(400).json({ error: "Database not configured" });
     }
-    const { shortKey, name } = req.body;
+    const { shortKey, name, skuShortKeys } = req.body;
     const updateData: any = {};
     if (shortKey !== undefined) {
       updateData.shortKey = String(shortKey).toLowerCase().replace(/^[./]+/, '').trim();
     }
     if (name) updateData.name = name;
+    if (skuShortKeys !== undefined) updateData.skuShortKeys = skuShortKeys;
 
     const saved = await SavedGame.findOneAndUpdate(
       { gameId: req.params.gameId },
@@ -989,6 +990,21 @@ app.post("/api/topupnation/products/sync", async (req, res) => {
     const syncResult = await topupNationService.syncProducts();
     const allProducts = await topupNationService.getProducts();
     res.json({ success: true, count: syncResult.synced, total: syncResult.total, data: allProducts });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+
+app.post("/api/topupnation/products/:productId/sku-shortkeys", async (req, res) => {
+  try {
+    const { skuShortKeys } = req.body;
+    const product = await TopupNationProduct.findOneAndUpdate(
+      { productId: req.params.productId },
+      { skuShortKeys: skuShortKeys },
+      { new: true }
+    );
+    res.json({ success: true, data: product });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

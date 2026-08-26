@@ -6,6 +6,7 @@ export interface ISavedGame extends Document {
   shortKey?: string;
   isEnabled: boolean;
   savedAt: Date;  lastKnownSkus?: any[];
+  skuShortKeys?: Record<string, string>;
 }
 
 const savedGameSchema = new mongoose.Schema({
@@ -13,7 +14,8 @@ const savedGameSchema = new mongoose.Schema({
   name: { type: String, required: true },
   shortKey: { type: String, trim: true, lowercase: true },
   isEnabled: { type: Boolean, default: true, index: true },
-  savedAt: { type: Date, default: Date.now },  lastKnownSkus: { type: Array, default: [] }
+  savedAt: { type: Date, default: Date.now },  lastKnownSkus: { type: Array, default: [] },
+  skuShortKeys: { type: Map, of: String, default: {} }
 });
 
 export const SavedGame: Model<ISavedGame> = (mongoose.models.SavedGame as Model<ISavedGame>) || mongoose.model<ISavedGame>('SavedGame', savedGameSchema);
