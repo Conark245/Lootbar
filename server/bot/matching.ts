@@ -169,3 +169,73 @@ export function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortK
 
   return null;
 }
+
+export interface ParsedSkuResult {
+  sku: any | null;
+  quantity: number;
+  productQuery: string;
+}
+
+export function parseSkuWithQuantity(
+  skus: any[],
+  rawQuery: string,
+  skuShortKeys?: Record<string, string>,
+  isTopupNation: boolean = false
+): ParsedSkuResult {
+  if (!rawQuery || !skus || skus.length === 0) {
+    return { sku: null, quantity: 1, productQuery: '' };
+  }
+
+  let cleanedQuery = rawQuery.trim();
+  let quantity = 1;
+
+  // 1. Check for explicit multipliers/quantity markers at the end of the query:
+  // e.g., "x5", "x 5", "*5", "* 5", "5x", "5 x", "qty:5", "qty 5", "count:5", "count 5", "5pcs", "5 pcs", "5 times"
+  const explicitQtyRegex = /(?:(?:\*|x|qty:?|count:?)\s*(\d+)|\b(\d+)\s*(?:x|pcs|times))\s*$/i;
+  const explicitMatch = cleanedQuery.match(explicitQtyRegex);
+
+  if (explicitMatch) {
+    const matchedQty = explicitMatch[1] || explicitMatch[2];
+    quantity = parseInt(matchedQty, 10) || 1;
+    cleanedQuery = cleanedQuery.replace(explicitQtyRegex, '').trim();
+  } else {
+    // 2. Check for trailing standalone number when query has multiple tokens
+    // e.g. user typed ".ml 12345 2001 86 5" -> query is "86 5"
+    // e.g. ".mc 1169626707 13731 one time 3" -> query is "one time 3"
+    // e.g. ".ml 12345 2001 wp 2" -> query is "wp 2"
+    const tokens = cleanedQuery.split(/\s+/);
+    if (tokens.length >= 2) {
+      const lastToken = tokens[tokens.length - 1];
+      if (/^\d+$/.test(lastToken)) {
+        const potentialQty = parseInt(lastToken, 10);
+        if (potentialQty >= 1 && potentialQty <= 100) {
+          const prefixQuery = tokens.slice(0, -1).join(' ').trim();
+          const matchWithPrefix = isTopupNation 
+            ? findTopupNationSkuMatch(skus, prefixQuery, skuShortKeys)
+            : findLootBarSkuMatch(skus, prefixQuery, skuShortKeys);
+          
+          if (matchWithPrefix) {
+            return {
+              sku: matchWithPrefix,
+              quantity: Math.max(1, Math.min(100, potentialQty)),
+              productQuery: prefixQuery
+            };
+          }
+        }
+      }
+    }
+  }
+
+  quantity = Math.max(1, Math.min(100, quantity));
+
+  const matchedSku = isTopupNation
+    ? findTopupNationSkuMatch(skus, cleanedQuery, skuShortKeys)
+    : findLootBarSkuMatch(skus, cleanedQuery, skuShortKeys);
+
+  return {
+    sku: matchedSku,
+    quantity,
+    productQuery: cleanedQuery
+  };
+}
+

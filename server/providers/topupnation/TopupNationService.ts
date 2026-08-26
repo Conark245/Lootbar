@@ -452,29 +452,49 @@ export class TopupNationService {
       return { success: true };
     }
 
-    let newState = order.state;
+        // Process state change
+    let newState = 1; // Default processing
     if (status === 'SUCCESS') {
       newState = 2; // Completed
     } else if (status === 'FAILED' || status === 'REFUNDED') {
       newState = 3; // Failed
-      
-      // Auto-Refund if user paid via wallet
+    } else if (status === 'PROCESSING') {
+      newState = 1;
+    }
+
+    // Atomic update to prevent duplicate notifications from concurrent webhook/polling
+    const updatedOrder = await Order.findOneAndUpdate(
+      {
+        _id: order._id,
+        state: { $ne: newState } // Only update if the state is actually different
+      },
+      { 
+        $set: { 
+          state: newState, 
+          statusText: status,
+          ...(orderData.receiptNumber ? { providerReceiptNumber: orderData.receiptNumber } : {})
+        } 
+      },
+      { new: true }
+    );
+
+    if (!updatedOrder) {
+      // It means either order not found, OR state was already updated. 
+      // We can just exit gracefully without sending duplicate notifications.
+      return { success: true };
+    }
+
+    // Handle refunds if it just transitioned to Failed
+    if (newState === 3) {
       const isApiLinked = order.extraInfo?.paymentSource === 'api_balance';
-      if (!isApiLinked && order.price > 0 && order.state !== 3) {
+      if (!isApiLinked && order.price > 0) {
         const user = await User.findOne({ telegramChatId: order.telegramChatId });
         if (user) {
           user.balance += order.price;
           await user.save();
         }
       }
-    } else if (status === 'PROCESSING') {
-      newState = 1;
     }
-
-    order.state = newState;
-    order.statusText = status;
-    if (orderData.receiptNumber) order.providerReceiptNumber = orderData.receiptNumber;
-    await order.save();
 
     // Trigger Notification
     if (this.telegramNotifier) {
@@ -535,9 +555,23 @@ export class TopupNationService {
 
             if (newState !== order.state) {
               console.log(`[TopupNation Poller] Order ${order.referenceId} state change: ${order.state} -> ${newState}`);
-              order.state = newState;
-              order.statusText = statusUpper;
-              if (res.receiptNumber) order.providerReceiptNumber = res.receiptNumber;
+              
+              // Use atomic update to prevent duplicate notifications
+              const updatedOrder = await Order.findOneAndUpdate(
+                { _id: order._id, state: { $ne: newState } },
+                { 
+                  $set: { 
+                    state: newState, 
+                    statusText: statusUpper,
+                    ...(res.receiptNumber ? { providerReceiptNumber: res.receiptNumber } : {})
+                  } 
+                },
+                { new: true }
+              );
+
+              if (!updatedOrder) {
+                 continue; // State was already updated by webhook or another poller
+              }
 
               if (newState === 3) {
                 const isApiLinked = order.extraInfo?.paymentSource === 'api_balance';
@@ -549,8 +583,6 @@ export class TopupNationService {
                   }
                 }
               }
-
-              await order.save();
 
               // Send Notification
               if (this.telegramNotifier) {

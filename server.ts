@@ -1116,7 +1116,7 @@ app.post("/notify", async (req: any, res) => {
 
   try {
     const order = await Order.findOneAndUpdate(
-      { referenceId: reference_id },
+      { referenceId: reference_id, state: { $ne: state } },
       { orderId: order_id, state },
       { returnDocument: 'after' }
     );

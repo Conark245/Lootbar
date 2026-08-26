@@ -10,7 +10,7 @@ import { AppConfig } from './models/AppConfig';
 import { SavedGame } from './models/SavedGame';
 import { TopupRequest } from './models/TopupRequest';
 import { escapeMd, escapeCode, formatMyanmarDateTime, formatMyanmarTimeOnly, safeReply, safeSendMessage, safeEditMessageText, safeSendPhoto, safeEditMessageCaption,parseCommandArgs } from './bot/helpers';
-import { findLootBarSkuMatch, findTopupNationSkuMatch } from './bot/matching';
+import { findLootBarSkuMatch, findTopupNationSkuMatch, parseSkuWithQuantity } from './bot/matching';
 
 // Helper to escape text for Telegram Markdown v1
 async function getAdminChatId(defaultId: string | undefined): Promise<string | undefined> {
@@ -31,6 +31,7 @@ interface SessionData {
   skuId?: string;
   skuName?: string;
   skuPrice?: number;
+  quantity?: number;
   playerName?: string;
   requiredFields?: any[];
   currentFieldIndex?: number;
@@ -533,11 +534,11 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
       const minFields = requiredFields.length > 0 ? requiredFields.length : 1;
 
       if (args.length < minFields) {
-        let formatHelp = `.${shortKey} <UID> <Product>`;
-        let exampleHelp = `.${shortKey} 5123456789 60`;
+        let formatHelp = `.${shortKey} <UID> <Product> [xQty]`;
+        let exampleHelp = `.${shortKey} 5123456789 60\n.${shortKey} 5123456789 60 x5`;
         if (requiredFields.length === 2) {
-          formatHelp = `.${shortKey} <${requiredFields[0].title || 'UID'}> <${requiredFields[1].title || 'ZoneID'}> <Product>`;
-          exampleHelp = `.${shortKey} 12345678 2001 86`;
+          formatHelp = `.${shortKey} <${requiredFields[0].title || 'UID'}> <${requiredFields[1].title || 'ZoneID'}> <Product> [xQty]`;
+          exampleHelp = `.${shortKey} 12345678 2001 86\n.${shortKey} 12345678 2001 86 x3`;
         }
         return ctx.reply(
           `⚡ *${gameName} Quick Top-Up Command*\n\n` +
@@ -589,15 +590,26 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
 
       const rawProductQuery = args.slice(minFields).join(' ').trim();
 
+      // Get short keys safely
+      let skuKeys = {};
+      if (game.skuShortKeys) {
+        skuKeys = typeof game.skuShortKeys.get === 'function' 
+          ? Object.fromEntries(game.skuShortKeys) 
+          : game.skuShortKeys;
+      }
+      
+      // Smart parse SKU and quantity (e.g. "86", "86 x5", "86 3", "one time 2", "wp * 5")
+      const parsedResult = parseSkuWithQuantity(skus, rawProductQuery, skuKeys, false);
+      const matchedSku = parsedResult.sku;
+      const quantity = parsedResult.quantity;
+
       ctx.session = {};
+      ctx.session.quantity = quantity;
       ctx.session.provider = 'lootbar';
       ctx.session.gameId = gameId;
       ctx.session.gameName = gameName;
       ctx.session.extraInfo = extraInfo;
       ctx.session.skus = skus;
-
-      // Match SKU using smart matcher
-      const matchedSku = findLootBarSkuMatch(skus, rawProductQuery);
 
       if (!matchedSku) {
         // Show available packages for quick selection
@@ -610,10 +622,12 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
 
         let infoDesc = Object.entries(extraInfo).map(([k, v]) => `• ${k.toUpperCase()}: \`${v}\``).join('\n');
 
+        let promptMsg = `⚠️ Package matching \`${rawProductQuery}\` not found.\n\n`;
+        if (!rawProductQuery) promptMsg = '';
         return ctx.reply(
-          `⚠️ Package matching \`${rawProductQuery}\` not found.\n\n` +
+          promptMsg +
           `🎮 *${gameName}*\n${infoDesc}\n\n` +
-          `Please select from the available packages below:`,
+          `👇 ဝယ်ယူလိုသော Package ကို အောက်ပါ Button များမှ ရွေးချယ်နှိပ်ပါ:`,
           {
             parse_mode: 'Markdown',
             ...Markup.inlineKeyboard(buttons)
@@ -697,11 +711,11 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
       const minFields = requiredFields.length > 0 ? requiredFields.length : 1;
 
       if (args.length < minFields) {
-        let formatHelp = `.${shortKey} <Account> <Package>`;
-        let exampleHelp = `.${shortKey} 123456789 100`;
+        let formatHelp = `.${shortKey} <Account> <Package> [xQty]`;
+        let exampleHelp = `.${shortKey} 123456789 100\n.${shortKey} 123456789 100 x2`;
         if (requiredFields.length === 2) {
-          formatHelp = `.${shortKey} <${requiredFields[0].title || 'Account'}> <${requiredFields[1].title || 'Server'}> <Package>`;
-          exampleHelp = `.${shortKey} 12345678 2001 100`;
+          formatHelp = `.${shortKey} <${requiredFields[0].title || 'Account'}> <${requiredFields[1].title || 'Server'}> <Package> [xQty]`;
+          exampleHelp = `.${shortKey} 12345678 2001 100\n.${shortKey} 12345678 2001 100 x3`;
         }
         return ctx.reply(
           `⚡ *${productName} (TopupNation) Quick Order*\n\n` +
@@ -760,15 +774,26 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
 
       const rawProductQuery = args.slice(minFields).join(' ').trim();
 
+      // Get short keys safely
+      let skuKeys = {};
+      if (product.skuShortKeys) {
+        skuKeys = typeof product.skuShortKeys.get === 'function' 
+          ? Object.fromEntries(product.skuShortKeys) 
+          : product.skuShortKeys;
+      }
+
+      // Smart parse SKU and quantity (e.g. "86", "86 x5", "86 3", "one time 2", "wp * 5")
+      const parsedResult = parseSkuWithQuantity(skus, rawProductQuery, skuKeys, true);
+      const matchedSku = parsedResult.sku;
+      const quantity = parsedResult.quantity;
+
       ctx.session = {};
+      ctx.session.quantity = quantity;
       ctx.session.provider = 'topupnation';
       ctx.session.gameId = productId;
       ctx.session.gameName = productName;
       ctx.session.extraInfo = extraInfo;
       ctx.session.skus = skus;
-
-      // Match SKU using smart matcher
-      const matchedSku = findTopupNationSkuMatch(skus, rawProductQuery);
 
       if (!matchedSku) {
         const buttons = skus.map((sku: any, idx: number) => {
@@ -780,10 +805,12 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
 
         let infoDesc = Object.entries(extraInfo).map(([k, v]) => `• ${k.toUpperCase()}: \`${v}\``).join('\n');
 
+        let promptMsg = `⚠️ Package matching \`${rawProductQuery}\` not found.\n\n`;
+        if (!rawProductQuery) promptMsg = '';
         return ctx.reply(
-          `⚠️ Package matching \`${rawProductQuery}\` not found.\n\n` +
+          promptMsg +
           `🌐 *${productName} (TopupNation)*\n${infoDesc}\n\n` +
-          `Please select from the available packages below:`,
+          `👇 ဝယ်ယူလိုသော Package ကို အောက်ပါ Button များမှ ရွေးချယ်နှိပ်ပါ:`,
           {
             parse_mode: 'Markdown',
             ...Markup.inlineKeyboard(buttons)
@@ -2393,6 +2420,17 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
       );
     }
 
+    // Order flow: User inputting custom quantity/count
+    if (ctx.session?.step === 'INPUT_QUANTITY') {
+      const parsedQty = parseInt(userInput.trim(), 10);
+      if (isNaN(parsedQty) || parsedQty < 1 || parsedQty > 100) {
+        return ctx.reply('⚠️ ကျေးဇူးပြု၍ မှန်ကန်သော အကြိမ်အရေအတွက် (Quantity) ကို 1 မှ 100 အတွင်း ဂဏန်းဖြင့်သာ ရိုက်ထည့်ပေးပါ (ဥပမာ- 5 သို့မဟုတ် 10):\n\n_သို့မဟုတ် /cancel ဖြင့် ဖျက်သိမ်းနိုင်ပါသည်။_');
+      }
+      ctx.session.quantity = parsedQty;
+      ctx.session.step = 'CONFIRM_ORDER';
+      return await showOrderConfirmation(ctx);
+    }
+
     // Order flow: Required extra info input
     if (ctx.session?.step === 'INPUT_EXTRA_INFO') {
       const requiredFields = ctx.session.requiredFields || [];
@@ -2424,7 +2462,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
     return next();
   });
 
-  async function showOrderConfirmation(ctx: MyContext) {
+  async function showOrderConfirmation(ctx: MyContext, editMessage: boolean = false) {
     ctx.session.step = 'CONFIRM_ORDER';
     const userDoc = await User.findOne({ telegramChatId: ctx.chat!.id });
     const isApiLinked = !!(userDoc?.useDirectApiBalance || userDoc?.balanceMode === 'api');
@@ -2433,7 +2471,10 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
     const gameId = ctx.session.gameId;
     const gameName = ctx.session.gameName || 'Game';
     const skuName = ctx.session.skuName || 'Product';
-    const price = ctx.session.skuPrice || 0;
+    const quantity = Math.max(1, Math.min(100, ctx.session.quantity || 1));
+    ctx.session.quantity = quantity;
+    const unitPrice = ctx.session.skuPrice || 0;
+    const price = unitPrice * quantity;
     let playerName = ctx.session.playerName;
     const extraInfo = ctx.session.extraInfo || {};
 
@@ -2471,22 +2512,44 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
 
     const balanceAfter = userBalance - price;
 
+    const failKeyboard = Markup.inlineKeyboard([
+      [
+        Markup.button.callback('➖ 1', 'qty_dec'),
+        Markup.button.callback(`🔢 Qty: ${quantity}`, 'qty_prompt'),
+        Markup.button.callback('➕ 1', 'qty_inc'),
+      ],
+      [
+        Markup.button.callback('x1', 'qty_set_1'),
+        Markup.button.callback('x2', 'qty_set_2'),
+        Markup.button.callback('x3', 'qty_set_3'),
+        Markup.button.callback('x5', 'qty_set_5'),
+        Markup.button.callback('x10', 'qty_set_10'),
+      ],
+      [Markup.button.callback('💰 Top Up Balance', 'topup_flow_start')],
+      [Markup.button.callback('❌ Cancel', 'cancel_order')]
+    ]);
+
     if (!isApiLinked && userBalance < price) {
       const needed = (price - userBalance).toFixed(2);
       const failMsg = `⚠️ *Insufficient Balance!*\n═════════════════════════\n` +
         `├── 🎮 Game: *${escapeMd(gameName)}*\n` +
         `├── 📦 Package: *${escapeMd(skuName)}*\n` +
+        `├── 🔢 Quantity / Count: *${quantity}x*\n` +
         `├── 💰 Required: \`$${price.toFixed(3)}\`\n` +
         `└── 💳 Your Balance: \`$${userBalance.toFixed(3)}\`\n` +
         `═════════════════════════\n` +
         `_You need $${needed} USD more to place this order._`;
 
+      if (editMessage) {
+        try {
+          return await ctx.editMessageText(failMsg, { parse_mode: 'Markdown', ...failKeyboard });
+        } catch {
+          // fallback
+        }
+      }
       return ctx.reply(failMsg, {
         parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('💰 Top Up Balance', 'topup_flow_start')],
-          [Markup.button.callback('❌ Cancel', 'cancel_order')]
-        ])
+        ...failKeyboard
       });
     }
 
@@ -2495,6 +2558,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
     lines.push(`═════════════════════════`);
     lines.push(`├── 🎮 Game: *${escapeMd(gameName)}*`);
     lines.push(`├── 📦 Package: *${escapeMd(skuName)}*`);
+    lines.push(`├── 🔢 Count / Quantity: *${quantity}x*`);
     if (isValidValue(playerName)) {
       lines.push(`├── 👤 Player: \`${escapeCode(playerName)}\``);
     }
@@ -2509,7 +2573,12 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
         lines.push(`├── ▫️ ${escapeMd(item.key)}: \`${escapeCode(item.val)}\``);
       }
     }
-    lines.push(`├── 💰 Price: \`$${price.toFixed(3)}\``);
+    if (quantity > 1) {
+      lines.push(`├── 🏷 Unit Price: \`$${unitPrice.toFixed(3)}\``);
+      lines.push(`├── 💰 Total Price: \`$${price.toFixed(3)}\``);
+    } else {
+      lines.push(`├── 💰 Price: \`$${price.toFixed(3)}\``);
+    }
     if (isApiLinked) {
       lines.push(`└── 💳 Payment: \`⚡ Direct API Balance Linked\``);
     } else {
@@ -2518,14 +2587,82 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
     }
     lines.push(`═════════════════════════`);
 
+    const keyboard = Markup.inlineKeyboard([
+      [
+        Markup.button.callback('➖ 1', 'qty_dec'),
+        Markup.button.callback(`🔢 Qty: ${quantity}`, 'qty_prompt'),
+        Markup.button.callback('➕ 1', 'qty_inc'),
+      ],
+      [
+        Markup.button.callback('x1', 'qty_set_1'),
+        Markup.button.callback('x2', 'qty_set_2'),
+        Markup.button.callback('x3', 'qty_set_3'),
+        Markup.button.callback('x5', 'qty_set_5'),
+        Markup.button.callback('x10', 'qty_set_10'),
+      ],
+      [Markup.button.callback('✏️ Custom Count / အကြိမ်ရေ ရိုက်ထည့်ရန်', 'qty_prompt')],
+      [Markup.button.callback(`✅ Confirm & Pay ($${price.toFixed(2)})`, 'confirm_place_order')],
+      [Markup.button.callback('❌ Cancel Order', 'cancel_order')]
+    ]);
+
+    if (editMessage) {
+      try {
+        return await ctx.editMessageText(lines.join('\n'), {
+          parse_mode: 'Markdown',
+          ...keyboard
+        });
+      } catch {
+        // fallback
+      }
+    }
+
     return ctx.reply(lines.join('\n'), {
       parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback(`✅ Confirm & Pay ($${price.toFixed(2)})`, 'confirm_place_order')],
-        [Markup.button.callback('❌ Cancel Order', 'cancel_order')]
-      ])
+      ...keyboard
     });
   }
+
+  bot.action('qty_inc', async (ctx) => {
+    await ctx.answerCbQuery();
+    ctx.session.quantity = Math.min(100, (ctx.session.quantity || 1) + 1);
+    await showOrderConfirmation(ctx, true);
+  });
+
+  bot.action('qty_dec', async (ctx) => {
+    await ctx.answerCbQuery();
+    ctx.session.quantity = Math.max(1, (ctx.session.quantity || 1) - 1);
+    await showOrderConfirmation(ctx, true);
+  });
+
+  bot.action(/^qty_set_(\d+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const qty = parseInt(ctx.match[1], 10) || 1;
+    ctx.session.quantity = Math.max(1, Math.min(100, qty));
+    await showOrderConfirmation(ctx, true);
+  });
+
+  bot.action('qty_prompt', async (ctx) => {
+    await ctx.answerCbQuery();
+    ctx.session.step = 'INPUT_QUANTITY';
+    return ctx.reply(
+      `🔢 *အကြိမ်အရေအတွက် (Quantity / Count) သတ်မှတ်ရန်*\n\n` +
+      `ဝယ်ယူလိုသော Package အကြိမ်အရေအတွက်ကို 1 မှ 100 အတွင်း ဂဏန်းဖြင့် ရိုက်ထည့်ပေးပါ (ဥပမာ- \`5\` သို့မဟုတ် \`10\`):\n\n` +
+      `_သို့မဟုတ် မပြောင်းလဲလိုပါက အောက်ပါ Button ကို နှိပ်ပါ:_`,
+      {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('🔙 Back to Confirmation', 'qty_back')],
+          [Markup.button.callback('❌ Cancel Order', 'cancel_order')]
+        ])
+      }
+    );
+  });
+
+  bot.action('qty_back', async (ctx) => {
+    await ctx.answerCbQuery();
+    ctx.session.step = 'CONFIRM_ORDER';
+    await showOrderConfirmation(ctx);
+  });
 
   bot.action('confirm_place_order', async (ctx) => {
     await ctx.answerCbQuery();
@@ -2542,6 +2679,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
     const skuId = ctx.session.skuId!;
     const gameName = ctx.session.gameName || 'Game';
     const skuName = ctx.session.skuName || 'Product';
+    const quantity = ctx.session.quantity || 1;
     let playerName = ctx.session.playerName || undefined;
     const extraInfo = ctx.session.extraInfo || {};
     
@@ -2555,7 +2693,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
     const currentTelegramLastName = ctx.from?.last_name || (ctx.chat as any)?.last_name || undefined;
     
     const isApiLinked = !!(userDoc.useDirectApiBalance || userDoc.balanceMode === 'api');
-    let orderCost = ctx.session.skuPrice || 1;
+    let orderCost = (ctx.session.skuPrice || 1) * quantity;
 
     if (isTopupNation && topupNation) {
       // Execute through TopupNation Service
@@ -2567,7 +2705,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
         productId: gameId,
         sku: skuId,
         fields: extraInfo,
-        quantity: 1
+        quantity: quantity
       });
 
       if (!result.success || !result.order) {
@@ -2649,7 +2787,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
     }
 
     try {
-      const orderResponse = await lootbar.createOrder(referenceId, gameId, skuId, 1, extraInfo);
+      const orderResponse = await lootbar.createOrder(referenceId, gameId, skuId, quantity, extraInfo);
       
       if (orderResponse?.status === 'ok' && orderResponse?.data?.order_id) {
         const orderId = orderResponse.data.order_id;
@@ -2670,6 +2808,7 @@ function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: R
             price: orderCost,
             extraInfo: {
               ...extraInfo,
+              quantity,
               paymentSource: isApiLinked ? 'api_balance' : 'wallet_balance'
             },
             state: 1, // 1 = In transaction

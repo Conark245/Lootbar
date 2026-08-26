@@ -122,8 +122,8 @@ export class PricePoller {
           for (const newSku of liveMatch.skus) {
             const oldSku = (p.skus || []).find((s: any) => String(s.sku) === String(newSku.sku));
             if (oldSku) {
-              const oldPrice = parseFloat(oldSku.price || '0');
-              const newPrice = parseFloat(newSku.price || '0');
+              const oldPrice = parseFloat(String(oldSku.price || '0'));
+              const newPrice = parseFloat(String(newSku.price || '0'));
               
               if (oldPrice !== newPrice) {
                 const name = (newSku.name || 'Package').replace(/[*_`\[\]]/g, '');
