@@ -84,7 +84,7 @@ export class PricePoller {
                 
                 if (oldPrice !== newPrice) {
                   const name = (newSku.sku_name || newSku.name || 'Package').replace(/[*_`\[\]]/g, '');
-                  const indicator = newPrice > oldPrice ? '🔺' : '🔻';
+                  const indicator = newPrice > oldPrice ? '🔴 🔺' : '🟢 🔻';
                   changes.push(`• ${name}: \`$${oldPrice.toFixed(2)}\` ➔ \`$${newPrice.toFixed(2)}\` ${indicator}`);
                 }
               }
@@ -127,7 +127,7 @@ export class PricePoller {
               
               if (oldPrice !== newPrice) {
                 const name = (newSku.name || 'Package').replace(/[*_`\[\]]/g, '');
-                const indicator = newPrice > oldPrice ? '🔺' : '🔻';
+                const indicator = newPrice > oldPrice ? '🔴 🔺' : '🟢 🔻';
                 changes.push(`• ${name}: \`$${oldPrice.toFixed(2)}\` ➔ \`$${newPrice.toFixed(2)}\` ${indicator}`);
               }
             }

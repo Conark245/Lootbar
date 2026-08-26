@@ -1262,31 +1262,33 @@ export default function App() {
         <div className="bg-white p-8 rounded-xl shadow-sm border border-neutral-200">
           <div className="flex justify-between items-center mb-4">
             <div>
-              <h2 className="text-lg font-bold text-neutral-900">Current Active Games & Short Keys ({savedGames.length})</h2>
-              <p className="text-sm text-neutral-500 mt-1">Set custom Short Keys so users can lookup products and order via <span className="font-mono text-neutral-700">.&lt;shortKey&gt;</span> in the Telegram Bot</p>
+              <h2 className="text-lg font-bold text-neutral-900">Current Active Games in Bot ({savedGames.length + tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length})</h2>
+              <p className="text-sm text-neutral-500 mt-1">Set custom Short Keys so users can lookup products and order via <span className="font-mono text-neutral-700">.&lt;shortKey&gt;</span></p>
             </div>
           </div>
           
           {loadingSaved ? (
             <p className="text-neutral-500 py-4 text-center">Loading active games...</p>
-          ) : savedGames.length === 0 ? (
+          ) : (savedGames.length === 0 && tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length === 0) ? (
             <div className="text-center py-10 bg-amber-50 rounded-xl border border-amber-200">
-              <p className="text-amber-800 font-medium">No games specifically selected yet.</p>
-              <p className="text-xs text-amber-600 mt-1">Click "Enable for Bot" on any game above to show it in the bot.</p>
+              <p className="text-amber-800 font-medium">No games currently active.</p>
+              <p className="text-xs text-amber-600 mt-1">Enable games from the catalogs above/below to show them in the bot.</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* LootBar Enabled Games */}
               {savedGames.map((saved, i) => {
                 const currentKey = shortKeyInputs[saved.gameId] !== undefined ? shortKeyInputs[saved.gameId] : (saved.shortKey || '');
                 const isDirty = currentKey !== (saved.shortKey || '');
 
                 return (
-                  <div key={i} className="p-5 bg-emerald-50/30 border border-emerald-200 shadow-sm rounded-2xl flex flex-col justify-between">
+                  <div key={`lb-${i}`} className="p-5 bg-emerald-50/30 border border-emerald-200 shadow-sm rounded-2xl flex flex-col justify-between">
                     <div>
                       <div className="flex justify-between items-start mb-3">
                         <div className="flex items-center gap-2">
                           <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
                           <span className="font-bold text-neutral-900 text-base">{saved.name}</span>
+                          <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded font-semibold">LootBar</span>
                         </div>
                         <span className="text-[11px] font-mono font-medium text-neutral-500 bg-white border border-neutral-200 px-2 py-0.5 rounded">
                           ID: {saved.gameId}
@@ -1316,18 +1318,8 @@ export default function App() {
                                 : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'
                             }`}
                           >
-                            {savingKeyId === saved.gameId ? 'Saving...' : 'Save Key'}
+                            {savingKeyId === saved.gameId ? 'Saving...' : 'Save'}
                           </button>
-                        </div>
-
-                        {/* Live Telegram Bot Commands Preview */}
-                        <div className="pt-2 mt-2 border-t border-neutral-100 text-[11px] text-neutral-600 space-y-1 font-mono">
-                          <div>
-                            <span className="text-neutral-400">View packages:</span> <span className="font-bold text-blue-600">.{currentKey || 'key'}</span>
-                          </div>
-                          <div>
-                            <span className="text-neutral-400">Direct order:</span> <span className="font-bold text-emerald-700">.{currentKey || 'key'} &lt;UID&gt; &lt;Product&gt;</span>
-                          </div>
                         </div>
                       </div>
                     </div>
@@ -1337,7 +1329,68 @@ export default function App() {
                         onClick={() => deleteSavedGame(saved.gameId)}
                         className="text-red-600 hover:text-red-700 text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-red-50 transition-colors border border-red-200"
                       >
-                        Remove from Bot
+                        Disable (Remove from Bot)
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* TopupNation Enabled Games */}
+              {tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').map((p, i) => {
+                const activeKey = p.shortKey || '';
+                const currentInput = tpnShortKeyInput[p.productId] !== undefined ? tpnShortKeyInput[p.productId] : activeKey;
+                const isModified = currentInput !== activeKey;
+
+                return (
+                  <div key={`tpn-${i}`} className="p-5 bg-indigo-50/30 border border-indigo-200 shadow-sm rounded-2xl flex flex-col justify-between">
+                    <div>
+                      <div className="flex justify-between items-start mb-3">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
+                          <span className="font-bold text-neutral-900 text-base">{p.name}</span>
+                          <span className="text-[10px] bg-indigo-100 text-indigo-800 px-1.5 py-0.5 rounded font-semibold">TopupNation</span>
+                        </div>
+                        <span className="text-[11px] font-mono font-medium text-neutral-500 bg-white border border-neutral-200 px-2 py-0.5 rounded">
+                          ID: {p.productId}
+                        </span>
+                      </div>
+
+                      {/* Custom Short Key Input */}
+                      <div className="mt-3 p-3 bg-white rounded-xl border border-neutral-200 space-y-2">
+                        <label className="block text-xs font-semibold text-neutral-700">
+                          Owner-Defined Short Key:
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-sm font-bold text-neutral-400">.</span>
+                          <input 
+                            type="text"
+                            value={currentInput}
+                            onChange={(e) => setTpnShortKeyInput(prev => ({ ...prev, [p.productId]: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '') }))}
+                            placeholder={`e.g. t${p.productId.slice(0, 4)}`}
+                            className="flex-1 px-3 py-1.5 border border-neutral-300 rounded-lg text-sm font-mono font-bold text-neutral-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          />
+                          <button
+                            disabled={!isModified}
+                            onClick={() => updateTpnProduct(p.productId, { shortKey: currentInput })}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                              isModified
+                                ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm'
+                                : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'
+                            }`}
+                          >
+                            Save
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 pt-3 border-t border-indigo-100 flex justify-end">
+                      <button 
+                        onClick={() => toggleTpnProduct(p.productId, false)}
+                        className="text-red-600 hover:text-red-700 text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-red-50 transition-colors border border-red-200"
+                      >
+                        Disable (Remove from Bot)
                       </button>
                     </div>
                   </div>
