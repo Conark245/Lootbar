@@ -183,6 +183,23 @@ export default function App() {
   const [isSavingTpn, setIsSavingTpn] = useState(false);
   const [copiedWebhook, setCopiedWebhook] = useState(false);
 
+  // FZR Cards API State
+  const [fzrConfigured, setFzrConfigured] = useState<boolean | null>(null);
+  const [fzrApiKey, setFzrApiKey] = useState('');
+  const [fzrApiSecret, setFzrApiSecret] = useState('');
+  const [fzrWebhookSecret, setFzrWebhookSecret] = useState('');
+  const [fzrBaseUrl, setFzrBaseUrl] = useState('https://api.fzr.cards');
+  const [fzrWebhookUrl, setFzrWebhookUrl] = useState('');
+  const [fzrBalance, setFzrBalance] = useState<any>(null);
+  const [fzrProducts, setFzrProducts] = useState<any[]>([]);
+  const [loadingFzrProducts, setLoadingFzrProducts] = useState(false);
+  const [isSyncingFzr, setIsSyncingFzr] = useState(false);
+  const [fzrShortKeyInput, setFzrShortKeyInput] = useState<Record<string, string>>({});
+  const [showFzrModal, setShowFzrModal] = useState(false);
+  const [fzrError, setFzrError] = useState('');
+  const [isSavingFzr, setIsSavingFzr] = useState(false);
+  const [showFzrGames, setShowFzrGames] = useState(false);
+
   const fetchTpnStatus = async () => {
     try {
       const data = await safeFetchJson('/api/settings/topupnation/status');
@@ -305,6 +322,137 @@ export default function App() {
       const data = await res.json();
       if (data?.success) {
         setTpnProducts(prev => prev.map(p => p.productId === productId ? { ...p, isEnabled: !currentEnabled, status: !currentEnabled ? 'ACTIVE' : 'DISABLED' } : p));
+      } else {
+        alert(data?.error || 'Failed to toggle product status');
+      }
+    } catch (err: any) {
+      alert(`Error toggling product: ${err.message}`);
+    }
+  };
+
+  // FZR Cards Functions
+  const fetchFzrStatus = async () => {
+    try {
+      const data = await safeFetchJson('/api/settings/fzrcards/status');
+      if (data) {
+        setFzrConfigured(!!data.isConfigured);
+        if (data.baseUrl) setFzrBaseUrl(data.baseUrl);
+        if (data.webhookUrl) {
+          setFzrWebhookUrl(data.webhookUrl);
+        } else {
+          setFzrWebhookUrl(`${window.location.origin}/api/webhooks/fzrcards`);
+        }
+        if (data.isConfigured) {
+          fetchFzrBalance();
+          fetchFzrProducts();
+        }
+      } else {
+        setFzrConfigured(false);
+        setFzrWebhookUrl(`${window.location.origin}/api/webhooks/fzrcards`);
+      }
+    } catch {
+      setFzrConfigured(false);
+    }
+  };
+
+  const fetchFzrBalance = async () => {
+    const data = await safeFetchJson('/api/fzrcards/balance');
+    if (data?.success && data?.data) {
+      setFzrBalance(data.data);
+    }
+  };
+
+  const fetchFzrProducts = async () => {
+    setLoadingFzrProducts(true);
+    try {
+      const data = await safeFetchJson('/api/fzrcards/products');
+      if (data?.success && Array.isArray(data.data || data.products)) {
+        setFzrProducts(data.data || data.products || []);
+      }
+    } finally {
+      setLoadingFzrProducts(false);
+    }
+  };
+
+  const handleSyncFzrProducts = async () => {
+    setIsSyncingFzr(true);
+    try {
+      const res = await fetch('/api/fzrcards/products/sync', { method: 'POST' });
+      const data = await res.json();
+      if (data?.success) {
+        fetchFzrProducts();
+      } else {
+        alert(`Failed to sync: ${data?.error || 'Unknown error'}`);
+      }
+    } catch (err: any) {
+      alert(`Error syncing products: ${err.message}`);
+    } finally {
+      setIsSyncingFzr(false);
+    }
+  };
+
+  const handleSaveFzrCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFzrError('');
+    setIsSavingFzr(true);
+    try {
+      const res = await fetch('/api/settings/fzrcards', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          apiKey: fzrApiKey,
+          apiSecret: fzrApiSecret,
+          webhookSecret: fzrWebhookSecret,
+          baseUrl: fzrBaseUrl
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setFzrError(data.error || 'Failed to authenticate with FZR Cards');
+      } else {
+        setShowFzrModal(false);
+        setFzrConfigured(true);
+        fetchFzrStatus();
+        fetchFzrBalance();
+        handleSyncFzrProducts();
+      }
+    } catch (err: any) {
+      setFzrError(err.message || 'Connection error');
+    } finally {
+      setIsSavingFzr(false);
+    }
+  };
+
+  const handleSaveFzrShortKey = async (productId: string) => {
+    const key = fzrShortKeyInput[productId];
+    if (key === undefined) return;
+    try {
+      const res = await fetch(`/api/fzrcards/products/${productId}/shortkey`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shortKey: key })
+      });
+      const data = await res.json();
+      if (data?.success) {
+        fetchFzrProducts();
+      } else {
+        alert(data?.error || 'Failed to update shortKey');
+      }
+    } catch (err: any) {
+      alert(`Error updating shortKey: ${err.message}`);
+    }
+  };
+
+  const handleToggleFzrProduct = async (productId: string, currentEnabled: boolean) => {
+    try {
+      const res = await fetch(`/api/fzrcards/products/${productId}/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isEnabled: !currentEnabled })
+      });
+      const data = await res.json();
+      if (data?.success) {
+        setFzrProducts(prev => prev.map(p => p.productId === productId ? { ...p, isEnabled: !currentEnabled, status: !currentEnabled ? 'ACTIVE' : 'DISABLED' } : p));
       } else {
         alert(data?.error || 'Failed to toggle product status');
       }
@@ -550,6 +698,8 @@ export default function App() {
     fetchOrders();
     fetchTpnStatus();
     fetchTpnProducts();
+    fetchFzrStatus();
+    fetchFzrProducts();
   }, []);
 
   useEffect(() => {
@@ -666,7 +816,7 @@ export default function App() {
       .catch(err => console.error(err));
   };
 
-  const handleToggleApiBalance = (chatId: string, currentIsApi: boolean, apiProvider: 'both' | 'lootbar' | 'topupnation' = 'both') => {
+  const handleToggleApiBalance = (chatId: string, currentIsApi: boolean, apiProvider: 'all' | 'both' | 'lootbar' | 'topupnation' | 'fzrcards' = 'all') => {
     setTogglingApiUser(chatId);
     fetch('/api/telegram-users/toggle-api-balance', {
       method: 'POST',
@@ -724,7 +874,7 @@ export default function App() {
   };
 
   
-  const openSkuModal = async (game: any, isTpn: boolean) => {
+  const openSkuModal = async (game: any, provider: 'lootbar' | 'topupnation' | 'fzrcards' | boolean) => {
     setSkuModalSuccessMsg('');
     setSkuSearchFilter('');
     
@@ -739,11 +889,16 @@ export default function App() {
     }
     setSkuShortKeysInput(existingKeys);
 
-    if (isTpn) {
-      setSkuModalGame({ ...game, isTpn: true, modalSkus: game.skus || [] });
+    const isTpn = provider === true || provider === 'topupnation';
+    const isFzr = provider === 'fzrcards';
+
+    if (isFzr) {
+      setSkuModalGame({ ...game, isFzr: true, isTpn: false, modalSkus: game.skus || [] });
+    } else if (isTpn) {
+      setSkuModalGame({ ...game, isTpn: true, isFzr: false, modalSkus: game.skus || [] });
     } else {
       const localSkus = game.lastKnownSkus || [];
-      setSkuModalGame({ ...game, isTpn: false, modalSkus: localSkus });
+      setSkuModalGame({ ...game, isTpn: false, isFzr: false, modalSkus: localSkus });
       
       // Fetch fresh SKUs from server
       setLoadingModalSkus(true);
@@ -766,8 +921,8 @@ export default function App() {
     const newKeys = { ...skuShortKeysInput };
     
     skuModalGame.modalSkus.forEach((sku: any) => {
-      const skuId = String(skuModalGame.isTpn ? sku.sku : sku.sku_id);
-      const name = String(skuModalGame.isTpn ? sku.name : (sku.sku_name || '')).trim();
+      const skuId = String(skuModalGame.isTpn || skuModalGame.isFzr ? sku.sku : sku.sku_id);
+      const name = String(skuModalGame.isTpn || skuModalGame.isFzr ? sku.name : (sku.sku_name || '')).trim();
       const lowerName = name.toLowerCase();
 
       // Only auto-generate if currently empty
@@ -813,7 +968,23 @@ export default function App() {
         }
       });
 
-      if (skuModalGame.isTpn) {
+      if (skuModalGame.isFzr) {
+        const res = await fetch(`/api/fzrcards/products/${skuModalGame.productId}/sku-shortkeys`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ skuShortKeys: cleanKeys })
+        });
+        if (res.ok) {
+          fetchFzrProducts();
+          setSkuModalSuccessMsg('Saved successfully! Package short keys are now active.');
+          setTimeout(() => {
+            setSkuModalGame(null);
+          }, 1000);
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          alert('Error saving: ' + (errData.error || 'Unknown error'));
+        }
+      } else if (skuModalGame.isTpn) {
         const res = await fetch(`/api/topupnation/products/${skuModalGame.productId}/sku-shortkeys`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1047,6 +1218,111 @@ export default function App() {
                 className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-neutral-400 text-white font-medium rounded-lg transition-colors mt-4"
               >
                 {isSavingTpn ? 'Verifying & Connecting...' : 'Save & Verify TopupNation API'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* FZR Cards Settings Modal */}
+      {showFzrModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white p-8 rounded-2xl shadow-sm border border-neutral-200 w-full max-w-lg relative">
+            <button 
+              onClick={() => setShowFzrModal(false)}
+              className="absolute top-4 right-4 text-neutral-400 hover:text-neutral-600 font-bold text-lg"
+            >
+              ✕
+            </button>
+            <div className="text-center mb-6">
+              <div className="w-12 h-12 bg-sky-50 text-sky-600 rounded-xl flex items-center justify-center mx-auto mb-3 font-bold text-xl">
+                💎
+              </div>
+              <h1 className="text-2xl font-bold text-neutral-900 tracking-tight">FZR Cards Reseller API</h1>
+              <p className="text-neutral-500 mt-1 text-sm">Configure your FZR Cards API credentials and webhook integration</p>
+            </div>
+
+            <form onSubmit={handleSaveFzrCredentials} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 mb-1">API Key</label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="e.g. fzr_live_..."
+                  value={fzrApiKey}
+                  onChange={e => setFzrApiKey(e.target.value)}
+                  className="w-full px-4 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none font-mono text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 mb-1">API Secret</label>
+                <input 
+                  type="password" 
+                  required
+                  placeholder="••••••••••••••••"
+                  value={fzrApiSecret}
+                  onChange={e => setFzrApiSecret(e.target.value)}
+                  className="w-full px-4 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none font-mono text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 mb-1">Webhook Secret (Optional)</label>
+                <input 
+                  type="password" 
+                  placeholder="Webhook signing secret"
+                  value={fzrWebhookSecret}
+                  onChange={e => setFzrWebhookSecret(e.target.value)}
+                  className="w-full px-4 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none font-mono text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 mb-1">API Base URL</label>
+                <input 
+                  type="text" 
+                  placeholder="https://api.fzr.cards"
+                  value={fzrBaseUrl}
+                  onChange={e => setFzrBaseUrl(e.target.value)}
+                  className="w-full px-4 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none font-mono text-sm text-neutral-600"
+                />
+              </div>
+
+              {fzrWebhookUrl && (
+                <div className="p-3 bg-sky-50 border border-sky-100 rounded-lg text-xs">
+                  <span className="font-semibold text-sky-900 block mb-1">📌 Your Webhook Callback URL:</span>
+                  <div className="flex items-center gap-2">
+                    <code className="bg-white px-2 py-1 rounded border border-sky-200 text-sky-700 flex-1 truncate font-mono">
+                      {fzrWebhookUrl}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(fzrWebhookUrl);
+                        alert('Copied webhook URL!');
+                      }}
+                      className="px-2.5 py-1 bg-sky-600 text-white rounded font-medium hover:bg-sky-700 transition-colors"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                  <p className="text-sky-600 mt-1 text-[11px]">Set this URL in FZR Cards Portal to receive instant webhook order status callbacks.</p>
+                </div>
+              )}
+
+              {fzrError && (
+                <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm border border-red-100">
+                  {fzrError}
+                </div>
+              )}
+
+              <button 
+                type="submit" 
+                disabled={isSavingFzr}
+                className="w-full py-2.5 bg-sky-600 hover:bg-sky-700 disabled:bg-neutral-400 text-white font-medium rounded-lg transition-colors mt-4"
+              >
+                {isSavingFzr ? 'Verifying & Connecting...' : 'Save & Verify FZR Cards API'}
               </button>
             </form>
           </div>
@@ -1962,7 +2238,7 @@ export default function App() {
                 <span className="text-xs bg-neutral-100 text-neutral-700 font-semibold px-2 py-0.5 rounded-full">Multi-Provider</span>
               </div>
               <p className="text-neutral-500 text-sm mt-0.5">
-                Manage integrated providers: LootBar API & TopUpNation API
+                Manage integrated providers: LootBar API, TopUpNation API & FZR Cards API
               </p>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
@@ -2001,6 +2277,18 @@ export default function App() {
                 <span className={`w-2 h-2 rounded-full ${tpnConfigured ? 'bg-indigo-500' : 'bg-neutral-400'}`}></span>
                 TopupNation API: {tpnConfigured ? 'Connected' : 'Setup'}
               </button>
+
+              <button 
+                onClick={() => setShowFzrModal(true)}
+                className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors flex items-center gap-1.5 ${
+                  fzrConfigured 
+                    ? 'bg-sky-50 text-sky-700 border-sky-200 hover:bg-sky-100' 
+                    : 'bg-neutral-100 text-neutral-700 border-neutral-200 hover:bg-neutral-200'
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${fzrConfigured ? 'bg-sky-500' : 'bg-neutral-400'}`}></span>
+                FZR Cards API: {fzrConfigured ? 'Connected' : 'Setup'}
+              </button>
             </div>
           </div>
         </div>
@@ -2009,20 +2297,20 @@ export default function App() {
         <div className="bg-white p-8 rounded-xl shadow-sm border border-neutral-200">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
             {/* Owner settings */}
-            <div className="lg:col-span-5 flex flex-col justify-between">
+            <div className="lg:col-span-3 flex flex-col justify-between">
               <div>
-                <h2 className="text-lg font-bold text-neutral-900 mb-1">Telegram Bot Settings</h2>
-                <p className="text-xs text-neutral-500 mb-4">Configure your bot token and admin chat ID</p>
+                <h2 className="text-lg font-bold text-neutral-900 mb-1">Bot Settings</h2>
+                <p className="text-xs text-neutral-500 mb-3">Telegram bot token and admin ID</p>
                 
-                <div className="space-y-3 mb-4">
+                <div className="space-y-2 mb-3">
                   <div className="flex flex-col">
                     <label className="text-xs font-semibold text-neutral-600 mb-1">Bot Token</label>
                     <input 
                       type="password" 
-                      placeholder="123456789:ABCdefGHIjklMNO..."
+                      placeholder="Bot Token"
                       value={telegramBotToken}
                       onChange={e => setTelegramBotToken(e.target.value)}
-                      className="w-full px-3.5 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm"
+                      className="w-full px-3 py-1.5 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-xs"
                     />
                   </div>
                   <div className="flex flex-col">
@@ -2032,7 +2320,7 @@ export default function App() {
                       placeholder="Owner Chat ID"
                       value={adminChatId}
                       onChange={e => setAdminChatId(e.target.value)}
-                      className="w-full px-3.5 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm"
+                      className="w-full px-3 py-1.5 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-xs"
                     />
                   </div>
                 </div>
@@ -2040,7 +2328,7 @@ export default function App() {
                 <div className="flex justify-end">
                   <button 
                     onClick={handleSaveAdmin}
-                    className="px-4 py-2 bg-neutral-900 hover:bg-neutral-800 text-white text-sm font-medium rounded-lg transition-colors whitespace-nowrap w-full"
+                    className="px-3 py-1.5 bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-medium rounded-lg transition-colors whitespace-nowrap w-full"
                   >
                     Save Bot Settings
                   </button>
@@ -2049,7 +2337,7 @@ export default function App() {
             </div>
             
             {/* LootBar Balance Card */}
-            <div className="lg:col-span-3.5 bg-gradient-to-br from-emerald-600 to-teal-700 rounded-xl p-5 shadow-md border border-emerald-500 flex flex-col justify-between text-white relative overflow-hidden">
+            <div className="lg:col-span-3 bg-gradient-to-br from-emerald-600 to-teal-700 rounded-xl p-4 shadow-md border border-emerald-500 flex flex-col justify-between text-white relative overflow-hidden">
               <div className="flex items-center justify-between w-full relative z-10 mb-2">
                 <span className="text-[11px] font-bold text-emerald-100 uppercase tracking-wider">LootBar Balance</span>
                 <button 
@@ -2072,9 +2360,9 @@ export default function App() {
             </div>
 
             {/* TopupNation Balance Card */}
-            <div className="lg:col-span-3.5 bg-gradient-to-br from-indigo-600 to-violet-700 rounded-xl p-5 shadow-md border border-indigo-500 flex flex-col justify-between text-white relative overflow-hidden">
+            <div className="lg:col-span-3 bg-gradient-to-br from-indigo-600 to-violet-700 rounded-xl p-4 shadow-md border border-indigo-500 flex flex-col justify-between text-white relative overflow-hidden">
               <div className="flex items-center justify-between w-full relative z-10 mb-2">
-                <span className="text-[11px] font-bold text-indigo-100 uppercase tracking-wider">TopupNation Balance</span>
+                <span className="text-[11px] font-bold text-indigo-100 uppercase tracking-wider">TopupNation</span>
                 <button 
                   onClick={fetchTpnStatus}
                   title="Refresh Balance"
@@ -2092,6 +2380,31 @@ export default function App() {
               ) : (
                 <div className="text-xs text-indigo-200 relative z-10 italic">
                   {tpnConfigured ? 'Loading...' : 'Not connected'}
+                </div>
+              )}
+            </div>
+
+            {/* FZR Cards Balance Card */}
+            <div className="lg:col-span-3 bg-gradient-to-br from-sky-600 to-cyan-700 rounded-xl p-4 shadow-md border border-sky-500 flex flex-col justify-between text-white relative overflow-hidden">
+              <div className="flex items-center justify-between w-full relative z-10 mb-2">
+                <span className="text-[11px] font-bold text-sky-100 uppercase tracking-wider">FZR Cards</span>
+                <button 
+                  onClick={fetchFzrStatus}
+                  title="Refresh Balance"
+                  className="p-1 hover:bg-white/20 rounded transition-colors text-sky-100"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+                </button>
+              </div>
+
+              {fzrBalance ? (
+                <div className="text-2xl font-extrabold relative z-10 flex items-baseline gap-1">
+                  ${Number(fzrBalance.balance || fzrBalance.balance_usd || 0).toFixed(2)} 
+                  <span className="text-xs text-sky-200 font-semibold">{fzrBalance.currency || 'USD'}</span>
+                </div>
+              ) : (
+                <div className="text-xs text-sky-200 relative z-10 italic">
+                  {fzrConfigured ? 'Loading...' : 'Not connected'}
                 </div>
               )}
             </div>
@@ -2197,6 +2510,20 @@ export default function App() {
                         </div>
                       </div>
 
+                      {/* Package Short Keys Button */}
+                      <button 
+                        onClick={() => openSkuModal(p, 'topupnation')} 
+                        className="w-full mb-3 px-3.5 py-2 bg-indigo-100/70 hover:bg-indigo-200/70 text-indigo-900 border border-indigo-300 rounded-xl text-xs font-bold flex items-center justify-between transition-colors shadow-xs"
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <span>🏷️</span>
+                          <span>Package Short Keys</span>
+                        </div>
+                        <span className="text-[11px] bg-indigo-200/80 px-2 py-0.5 rounded font-mono">
+                          {p.skuShortKeys ? Object.keys(p.skuShortKeys).length : 0} configured
+                        </span>
+                      </button>
+
                       <div className="flex items-center gap-2">
                         <div className="flex items-center gap-1 flex-1">
                           <span className="text-xs font-bold text-neutral-400">.</span>
@@ -2228,6 +2555,163 @@ export default function App() {
                         isEnabled
                           ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200'
                           : 'bg-indigo-600 hover:bg-indigo-700 text-white border-transparent'
+                      }`}
+                    >
+                      {isEnabled ? 'Disable from Bot' : '✓ Enable for Bot'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          </div>
+          )}
+        </div>
+
+        {/* FZR Cards Products Management */}
+        <div className="bg-white p-8 rounded-xl shadow-sm border border-neutral-200">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-2">
+            <h2 
+              className="text-xl font-bold text-neutral-900 flex items-center gap-2 cursor-pointer select-none hover:text-sky-700 transition-colors"
+              onClick={() => setShowFzrGames(!showFzrGames)}
+            >
+              <span>💎</span> FZR Cards Products Catalog
+              <svg className={`w-5 h-5 text-neutral-400 transition-transform ${showFzrGames ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </h2>
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={handleSyncFzrProducts}
+                disabled={isSyncingFzr || !fzrConfigured}
+                className="px-3.5 py-1.5 bg-sky-600 hover:bg-sky-700 disabled:bg-neutral-300 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5"
+              >
+                <svg className={`w-3.5 h-3.5 ${isSyncingFzr ? 'animate-spin' : ''}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                {isSyncingFzr ? 'Syncing Catalog...' : 'Sync FZR Cards Catalog'}
+              </button>
+            </div>
+          </div>
+          <p className="text-sm text-neutral-500 mb-6">
+            Synced products from FZR Cards. Set custom Short Keys for rapid ordering in Telegram (e.g. <span className="font-mono font-semibold text-neutral-800">.fml</span> or <span className="font-mono font-semibold text-neutral-800">.fff</span>).
+          </p>
+          {showFzrGames && (
+            <div className="mt-4">
+
+          {!fzrConfigured ? (
+            <div className="text-center py-10 bg-neutral-50 rounded-lg border border-neutral-200 border-dashed">
+              <p className="text-neutral-500 mb-3 text-sm">FZR Cards API is not connected.</p>
+              <button 
+                onClick={() => setShowFzrModal(true)}
+                className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white text-sm font-medium rounded-lg transition-colors"
+              >
+                Connect FZR Cards API
+              </button>
+            </div>
+          ) : loadingFzrProducts ? (
+            <p className="text-neutral-500 py-6 text-center text-sm">Loading FZR Cards products...</p>
+          ) : fzrProducts.length === 0 ? (
+            <div className="text-center py-8 bg-neutral-50 rounded-lg border border-neutral-200 text-sm text-neutral-500">
+              No products synced yet. Click <span className="font-semibold text-sky-600">"Sync FZR Cards Catalog"</span> to import products.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {fzrProducts.map((p) => {
+                const activeKey = p.shortKey || '';
+                const currentInput = fzrShortKeyInput[p.productId] !== undefined ? fzrShortKeyInput[p.productId] : activeKey;
+                const isModified = currentInput !== activeKey;
+                const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+
+                return (
+                  <div 
+                    key={p.productId} 
+                    className={`p-5 bg-white border-2 rounded-2xl transition-all flex flex-col justify-between ${
+                      isEnabled 
+                        ? 'border-sky-500 shadow-md ring-1 ring-sky-500/20' 
+                        : 'border-neutral-200 hover:border-neutral-300 shadow-sm opacity-75'
+                    }`}
+                  >
+                    <div className="mb-3">
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-extrabold text-base text-neutral-900 leading-tight">{p.name}</span>
+                            <span className="text-[10px] bg-sky-50 text-sky-700 font-semibold px-1.5 py-0.5 rounded border border-sky-100">FZR Cards</span>
+                          </div>
+                          <p className="text-xs text-neutral-400 font-mono mt-0.5">ID: {p.productId} • {p.skus?.length || 0} packages</p>
+                        </div>
+                        {isEnabled ? (
+                          <span className="text-[11px] font-bold text-sky-700 bg-sky-50 border border-sky-200 px-2 py-0.5 rounded-full whitespace-nowrap">
+                            ✓ Bot Active
+                          </span>
+                        ) : (
+                          <span className="text-[11px] font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full whitespace-nowrap">
+                            Disabled
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 text-xs text-neutral-700 space-y-1 mb-3">
+                        <div className="flex justify-between items-center">
+                          <span className="font-medium text-neutral-500">Short Key:</span>
+                          <span className="font-mono font-bold text-neutral-900">.{activeKey || `f${p.productId.slice(0, 4)}`}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="font-medium text-neutral-500">View Products:</span>
+                          <span className="font-mono text-neutral-700">.{activeKey || `f${p.productId.slice(0, 4)}`}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="font-medium text-neutral-500">Order Format:</span>
+                          <span className="font-mono text-neutral-700">.{activeKey || `f${p.productId.slice(0, 4)}`} &lt;PlayerID&gt; &lt;Product&gt;</span>
+                        </div>
+                      </div>
+
+                      {/* Package Short Keys Button */}
+                      <button 
+                        onClick={() => openSkuModal(p, 'fzrcards')} 
+                        className="w-full mb-3 px-3.5 py-2 bg-sky-100/70 hover:bg-sky-200/70 text-sky-900 border border-sky-300 rounded-xl text-xs font-bold flex items-center justify-between transition-colors shadow-xs"
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <span>🏷️</span>
+                          <span>Package Short Keys</span>
+                        </div>
+                        <span className="text-[11px] bg-sky-200/80 px-2 py-0.5 rounded font-mono">
+                          {p.skuShortKeys ? Object.keys(p.skuShortKeys).length : 0} configured
+                        </span>
+                      </button>
+
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1 flex-1">
+                          <span className="text-xs font-bold text-neutral-400">.</span>
+                          <input
+                            type="text"
+                            placeholder="Custom Short Key (e.g. fml)"
+                            value={currentInput}
+                            onChange={(e) => {
+                              const val = e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+                              setFzrShortKeyInput(prev => ({ ...prev, [p.productId]: val }));
+                            }}
+                            className="w-full text-xs font-mono px-2 py-1 border border-neutral-300 rounded focus:ring-1 focus:ring-sky-500 outline-none"
+                          />
+                        </div>
+                        {isModified && (
+                          <button
+                            onClick={() => handleSaveFzrShortKey(p.productId)}
+                            className="px-2.5 py-1 bg-sky-600 hover:bg-sky-700 text-white text-xs font-medium rounded transition-colors"
+                          >
+                            Save Key
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => handleToggleFzrProduct(p.productId, isEnabled)}
+                      className={`w-full py-2 text-xs font-bold rounded-xl transition-colors border flex justify-center items-center gap-1.5 ${
+                        isEnabled
+                          ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200'
+                          : 'bg-sky-600 hover:bg-sky-700 text-white border-transparent'
                       }`}
                     >
                       {isEnabled ? 'Disable from Bot' : '✓ Enable for Bot'}
@@ -2487,7 +2971,7 @@ export default function App() {
 
                       {/* Package Short Keys Button */}
                       <button 
-                        onClick={() => openSkuModal(p, true)} 
+                        onClick={() => openSkuModal(p, 'topupnation')} 
                         className="w-full mb-3 px-3.5 py-2 bg-indigo-100/70 hover:bg-indigo-200/70 text-indigo-900 border border-indigo-300 rounded-xl text-xs font-bold flex items-center justify-between transition-colors shadow-xs"
                       >
                         <div className="flex items-center gap-1.5">
@@ -2531,6 +3015,82 @@ export default function App() {
                     <div className="mt-4 pt-3 border-t border-indigo-100 flex justify-end">
                       <button 
                         onClick={() => handleToggleTpnProduct(p.productId, true)}
+                        className="text-red-600 hover:text-red-700 text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-red-50 transition-colors border border-red-200"
+                      >
+                        Disable (Remove from Bot)
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* FZR Cards Enabled Games */}
+              {fzrProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').map((p, i) => {
+                const activeKey = p.shortKey || '';
+                const currentInput = fzrShortKeyInput[p.productId] !== undefined ? fzrShortKeyInput[p.productId] : activeKey;
+                const isModified = currentInput !== activeKey;
+                const fzrSkuKeyCount = p.skuShortKeys ? Object.values(p.skuShortKeys).filter(Boolean).length : 0;
+
+                return (
+                  <div key={`fzr-${i}`} className="p-5 bg-sky-50/30 border border-sky-200 shadow-sm rounded-2xl flex flex-col justify-between">
+                    <div>
+                      <div className="flex justify-between items-start mb-3">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-sky-500"></span>
+                          <span className="font-bold text-neutral-900 text-base">{p.name}</span>
+                          <span className="text-[10px] bg-sky-100 text-sky-800 px-1.5 py-0.5 rounded font-semibold">FZR Cards</span>
+                        </div>
+                        <span className="text-[11px] font-mono font-medium text-neutral-500 bg-white border border-neutral-200 px-2 py-0.5 rounded">
+                          ID: {p.productId}
+                        </span>
+                      </div>
+
+                      {/* Package Short Keys Button */}
+                      <button 
+                        onClick={() => openSkuModal(p, 'fzrcards')} 
+                        className="w-full mb-3 px-3.5 py-2 bg-sky-100/70 hover:bg-sky-200/70 text-sky-900 border border-sky-300 rounded-xl text-xs font-bold flex items-center justify-between transition-colors shadow-xs"
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <span>🏷️</span>
+                          <span>Package Short Keys</span>
+                        </div>
+                        <span className="bg-sky-200/80 text-sky-900 px-2 py-0.5 rounded-full text-[11px] font-mono font-bold">
+                          {fzrSkuKeyCount} set
+                        </span>
+                      </button>
+
+                      {/* Custom Short Key Input */}
+                      <div className="mt-3 p-3 bg-white rounded-xl border border-neutral-200 space-y-2">
+                        <label className="block text-xs font-semibold text-neutral-700">
+                          Game Short Key (Command Prefix):
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-sm font-bold text-neutral-400">.</span>
+                          <input 
+                            type="text"
+                            value={currentInput}
+                            onChange={(e) => setFzrShortKeyInput(prev => ({ ...prev, [p.productId]: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '') }))}
+                            placeholder={`e.g. f${p.productId.slice(0, 4)}`}
+                            className="flex-1 px-3 py-1.5 border border-neutral-300 rounded-lg text-sm font-mono font-bold text-neutral-900 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                          />
+                          <button
+                            disabled={!isModified}
+                            onClick={() => handleSaveFzrShortKey(p.productId)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                              isModified
+                                ? 'bg-sky-600 hover:bg-sky-700 text-white shadow-sm'
+                                : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'
+                            }`}
+                          >
+                            Save
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 pt-3 border-t border-sky-100 flex justify-end">
+                      <button 
+                        onClick={() => handleToggleFzrProduct(p.productId, true)}
                         className="text-red-600 hover:text-red-700 text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-red-50 transition-colors border border-red-200"
                       >
                         Disable (Remove from Bot)
@@ -2784,12 +3344,14 @@ export default function App() {
                             {isApiLinked ? (
                               <div className="flex items-center gap-1">
                                 <select
-                                  value={user.apiProvider || 'both'}
+                                  value={user.apiProvider || 'all'}
                                   onChange={(e) => handleToggleApiBalance(user.telegramChatId, false, e.target.value as any)}
                                   className="text-xs font-semibold px-2 py-1.5 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 outline-none cursor-pointer"
                                   title="Change linked API provider"
                                 >
-                                  <option value="both">🌐 Both APIs (Dual)</option>
+                                  <option value="all">🌐 All APIs (LootBar, TopupNation, FZR)</option>
+                                  <option value="both">⚡ Dual (LootBar & TopupNation)</option>
+                                  <option value="fzrcards">💎 FZR Cards Only</option>
                                   <option value="lootbar">🎮 LootBar Only</option>
                                   <option value="topupnation">🌐 TopupNation Only</option>
                                 </select>
@@ -2805,10 +3367,10 @@ export default function App() {
                             ) : (
                               <div className="flex items-center gap-1">
                                 <button
-                                  onClick={() => handleToggleApiBalance(user.telegramChatId, false, 'both')}
+                                  onClick={() => handleToggleApiBalance(user.telegramChatId, false, 'all')}
                                   disabled={togglingApiUser === user.telegramChatId}
                                   className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 transition-all flex items-center gap-1.5 shadow-xs disabled:opacity-50"
-                                  title="Connect this user directly to Dual Live API balance"
+                                  title="Connect this user directly to live API balances"
                                 >
                                   <span>⚡ Link API Balance</span>
                                 </button>
@@ -2910,17 +3472,23 @@ export default function App() {
             </div>
 
             {/* LIVE API BALANCES IN ORDER HISTORY */}
-            <div className="flex gap-4">
+            <div className="flex flex-wrap gap-3">
               {lootbarBalance && (
-                <div className="flex flex-col px-4 py-2 bg-emerald-50 border border-emerald-200 rounded-lg">
-                  <span className="text-[10px] uppercase font-bold text-emerald-700 tracking-wider">LootBar Balance</span>
-                  <span className="text-lg font-mono font-extrabold text-emerald-900">${lootbarBalance.total_amount || lootbarBalance.balance || '0.00'}</span>
+                <div className="flex flex-col px-3.5 py-1.5 bg-emerald-50 border border-emerald-200 rounded-lg">
+                  <span className="text-[10px] uppercase font-bold text-emerald-700 tracking-wider">LootBar</span>
+                  <span className="text-base font-mono font-extrabold text-emerald-900">${lootbarBalance.total_amount || lootbarBalance.balance || '0.00'}</span>
                 </div>
               )}
               {tpnBalance && (
-                <div className="flex flex-col px-4 py-2 bg-indigo-50 border border-indigo-200 rounded-lg">
-                  <span className="text-[10px] uppercase font-bold text-indigo-700 tracking-wider">TopupNation Balance</span>
-                  <span className="text-lg font-mono font-extrabold text-indigo-900">${Number(tpnBalance.balance || 0).toFixed(2)}</span>
+                <div className="flex flex-col px-3.5 py-1.5 bg-indigo-50 border border-indigo-200 rounded-lg">
+                  <span className="text-[10px] uppercase font-bold text-indigo-700 tracking-wider">TopupNation</span>
+                  <span className="text-base font-mono font-extrabold text-indigo-900">${Number(tpnBalance.balance || 0).toFixed(2)}</span>
+                </div>
+              )}
+              {fzrBalance && (
+                <div className="flex flex-col px-3.5 py-1.5 bg-sky-50 border border-sky-200 rounded-lg">
+                  <span className="text-[10px] uppercase font-bold text-sky-700 tracking-wider">FZR Cards</span>
+                  <span className="text-base font-mono font-extrabold text-sky-900">${Number(fzrBalance.balance || fzrBalance.balance_usd || 0).toFixed(2)}</span>
                 </div>
               )}
             </div>
@@ -2958,37 +3526,44 @@ export default function App() {
             const active = orders.filter(o => o.state === 0 || o.state === 1 || o.state === 4).length;
             const completed = orders.filter(o => o.state === 2).length;
             const totalVol = orders.reduce((sum, o) => sum + (o.price || 0), 0);
-            const lbCount = orders.filter(o => o.provider !== 'topupnation' && o.extraInfo?.provider !== 'topupnation').length;
+            const lbCount = orders.filter(o => o.provider !== 'topupnation' && o.provider !== 'fzrcards' && o.extraInfo?.provider !== 'topupnation' && o.extraInfo?.provider !== 'fzrcards').length;
             const tpnCount = orders.filter(o => o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation').length;
+            const fzrCount = orders.filter(o => o.provider === 'fzrcards' || o.extraInfo?.provider === 'fzrcards').length;
 
             return (
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 my-5">
-                <div className="bg-neutral-50 p-3.5 rounded-xl border border-neutral-200">
-                  <div className="text-xs text-neutral-500 font-medium">Total Orders</div>
-                  <div className="text-xl font-bold text-neutral-900 mt-0.5">{total}</div>
+              <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 my-5">
+                <div className="bg-neutral-50 p-3 rounded-xl border border-neutral-200">
+                  <div className="text-[11px] text-neutral-500 font-medium">Total Orders</div>
+                  <div className="text-lg font-bold text-neutral-900 mt-0.5">{total}</div>
                 </div>
-                <div className="bg-emerald-50/70 p-3.5 rounded-xl border border-emerald-200">
-                  <div className="text-xs text-emerald-800 font-medium flex items-center gap-1">
-                    <span>🎮</span> LootBar Orders
+                <div className="bg-emerald-50/70 p-3 rounded-xl border border-emerald-200">
+                  <div className="text-[11px] text-emerald-800 font-medium flex items-center gap-1">
+                    <span>🎮</span> LootBar
                   </div>
-                  <div className="text-xl font-bold text-emerald-900 mt-0.5">{lbCount}</div>
+                  <div className="text-lg font-bold text-emerald-900 mt-0.5">{lbCount}</div>
                 </div>
-                <div className="bg-indigo-50/70 p-3.5 rounded-xl border border-indigo-200">
-                  <div className="text-xs text-indigo-800 font-medium flex items-center gap-1">
-                    <span>⚡</span> TopupNation Orders
+                <div className="bg-indigo-50/70 p-3 rounded-xl border border-indigo-200">
+                  <div className="text-[11px] text-indigo-800 font-medium flex items-center gap-1">
+                    <span>⚡</span> TopupNation
                   </div>
-                  <div className="text-xl font-bold text-indigo-900 mt-0.5">{tpnCount}</div>
+                  <div className="text-lg font-bold text-indigo-900 mt-0.5">{tpnCount}</div>
                 </div>
-                <div className="bg-blue-50/60 p-3.5 rounded-xl border border-blue-100">
-                  <div className="text-xs text-blue-700 font-medium flex items-center gap-1">
+                <div className="bg-sky-50/70 p-3 rounded-xl border border-sky-200">
+                  <div className="text-[11px] text-sky-800 font-medium flex items-center gap-1">
+                    <span>💎</span> FZR Cards
+                  </div>
+                  <div className="text-lg font-bold text-sky-900 mt-0.5">{fzrCount}</div>
+                </div>
+                <div className="bg-blue-50/60 p-3 rounded-xl border border-blue-100">
+                  <div className="text-[11px] text-blue-700 font-medium flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-ping"></span>
-                    Processing & Active
+                    Active
                   </div>
-                  <div className="text-xl font-bold text-blue-900 mt-0.5">{active}</div>
+                  <div className="text-lg font-bold text-blue-900 mt-0.5">{active}</div>
                 </div>
-                <div className="bg-purple-50/60 p-3.5 rounded-xl border border-purple-100">
-                  <div className="text-xs text-purple-700 font-medium">Total Order Volume</div>
-                  <div className="text-xl font-bold text-purple-900 mt-0.5 font-mono">${totalVol.toFixed(2)}</div>
+                <div className="bg-purple-50/60 p-3 rounded-xl border border-purple-100">
+                  <div className="text-[11px] text-purple-700 font-medium">Total Volume</div>
+                  <div className="text-lg font-bold text-purple-900 mt-0.5 font-mono">${totalVol.toFixed(2)}</div>
                 </div>
               </div>
             );
@@ -3003,33 +3578,43 @@ export default function App() {
                 <span className="text-[11px] font-bold text-neutral-400 px-2 uppercase tracking-wider">API:</span>
                 <button
                   onClick={() => setOrderProviderFilter('ALL')}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
+                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all ${
                     orderProviderFilter === 'ALL'
                       ? 'bg-neutral-900 text-white shadow-xs font-semibold'
                       : 'text-neutral-600 hover:text-neutral-900'
                   }`}
                 >
-                  🌐 All APIs ({orders.length})
+                  🌐 All ({orders.length})
                 </button>
                 <button
                   onClick={() => setOrderProviderFilter('LOOTBAR')}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1 ${
+                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1 ${
                     orderProviderFilter === 'LOOTBAR'
                       ? 'bg-emerald-700 text-white shadow-xs font-semibold'
                       : 'text-emerald-700 hover:bg-emerald-50'
                   }`}
                 >
-                  🎮 LootBar ({orders.filter(o => o.provider !== 'topupnation' && o.extraInfo?.provider !== 'topupnation').length})
+                  🎮 LootBar ({orders.filter(o => o.provider !== 'topupnation' && o.provider !== 'fzrcards' && o.extraInfo?.provider !== 'topupnation' && o.extraInfo?.provider !== 'fzrcards').length})
                 </button>
                 <button
                   onClick={() => setOrderProviderFilter('TOPUPNATION')}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1 ${
+                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1 ${
                     orderProviderFilter === 'TOPUPNATION'
                       ? 'bg-indigo-700 text-white shadow-xs font-semibold'
                       : 'text-indigo-700 hover:bg-indigo-50'
                   }`}
                 >
                   ⚡ TopupNation ({orders.filter(o => o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation').length})
+                </button>
+                <button
+                  onClick={() => setOrderProviderFilter('FZRCARDS' as any)}
+                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1 ${
+                    (orderProviderFilter as string) === 'FZRCARDS'
+                      ? 'bg-sky-700 text-white shadow-xs font-semibold'
+                      : 'text-sky-700 hover:bg-sky-50'
+                  }`}
+                >
+                  💎 FZR Cards ({orders.filter(o => o.provider === 'fzrcards' || o.extraInfo?.provider === 'fzrcards').length})
                 </button>
               </div>
 
@@ -3099,8 +3684,10 @@ export default function App() {
             const filteredOrders = orders.filter(o => {
               // Provider Filter
               const isTpn = o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation';
-              if (orderProviderFilter === 'LOOTBAR' && isTpn) return false;
+              const isFzr = o.provider === 'fzrcards' || o.extraInfo?.provider === 'fzrcards';
+              if (orderProviderFilter === 'LOOTBAR' && (isTpn || isFzr)) return false;
               if (orderProviderFilter === 'TOPUPNATION' && !isTpn) return false;
+              if ((orderProviderFilter as string) === 'FZRCARDS' && !isFzr) return false;
 
               // Status Filter
               if (orderFilter === 'ACTIVE' && !(o.state === 0 || o.state === 1 || o.state === 4)) return false;
@@ -3163,7 +3750,7 @@ export default function App() {
                       {paginatedOrders.map((o) => {
                         const status = getOrderStateDetails(o.state);
                         const isSyncingThis = syncingRefId === o.referenceId;
-                        const provider = o.provider || 'lootbar';
+                        const provider = o.provider || o.extraInfo?.provider || 'lootbar';
 
                         return (
                           <tr key={o.referenceId} className="hover:bg-neutral-50/70 transition-colors">
@@ -3175,7 +3762,11 @@ export default function App() {
 
                             {/* Provider */}
                             <td className="py-3.5 px-4 whitespace-nowrap">
-                              {provider === 'topupnation' ? (
+                              {provider === 'fzrcards' ? (
+                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-sky-700 bg-sky-50 border border-sky-200 px-2 py-0.5 rounded-md">
+                                  💎 FZR Cards
+                                </span>
+                              ) : provider === 'topupnation' ? (
                                 <span className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md">
                                   🌐 TopupNation
                                 </span>

@@ -3,6 +3,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { LootBarClient } from './lootbar';
 import { TopupNationService } from './providers/topupnation/TopupNationService';
 import { TopupNationProduct } from './models/TopupNationProduct';
+import { FzrCardsService } from './providers/fzrcards/FzrCardsService';
+import { FzrCardsProduct } from './models/FzrCardsProduct';
 import { Order } from './models/Order';
 import { User } from './models/User';
 import { Session } from './models/Session';
@@ -10,7 +12,7 @@ import { AppConfig } from './models/AppConfig';
 import { SavedGame } from './models/SavedGame';
 import { TopupRequest } from './models/TopupRequest';
 import { escapeMd, escapeCode, formatMyanmarDateTime, formatMyanmarTimeOnly, safeReply, safeSendMessage, safeEditMessageText, safeSendPhoto, safeEditMessageCaption,parseCommandArgs } from './bot/helpers';
-import { findLootBarSkuMatch, findTopupNationSkuMatch, parseSkuWithQuantity } from './bot/matching';
+import { findLootBarSkuMatch, findTopupNationSkuMatch, findFzrCardsSkuMatch, parseSkuWithQuantity } from './bot/matching';
 import { BulkOrderService, BulkOrderItem } from './bulkOrderService';
 
 // Helper to escape text for Telegram Markdown v1
@@ -24,7 +26,7 @@ async function getAdminChatId(defaultId: string | undefined): Promise<string | u
 
 // We augment the session context to keep track of conversation state
 interface SessionData {
-  provider?: 'lootbar' | 'topupnation';
+  provider?: 'lootbar' | 'topupnation' | 'fzrcards';
   step?: string;
   gameId?: string;
   gameName?: string;
@@ -54,7 +56,8 @@ export function setupBot(
   adminChatId: string | undefined, 
   lootbar: LootBarClient,
   options: { isServerless?: boolean; webhookUrl?: string } = {},
-  topupNation?: TopupNationService
+  topupNation?: TopupNationService,
+  fzrCards?: FzrCardsService
 ) {
   const bot = new Telegraf<MyContext>(botToken);
   
@@ -771,6 +774,203 @@ export function setupBot(
     }
   }
 
+  // Display packages & prices for FZR Cards product
+  async function handleFzrCardsPackageList(ctx: MyContext, product: any, shortKey: string) {
+    try {
+      const productName = product.name || 'Game';
+      const skus = (product.skus || []).filter((s: any) => s.available !== false && s.availability !== false);
+
+      if (!skus || skus.length === 0) {
+        return ctx.reply(`⚠️ No packages available for *${productName}* from FZR Cards.`, { parse_mode: 'Markdown' });
+      }
+
+      const requiredFields = (product.fields || []).filter((f: any) => f.required);
+      let orderFormatDesc = `.${shortKey} <PlayerID> <Package>`;
+      let exampleDesc = `.${shortKey} 123456789 100`;
+
+      if (requiredFields.length === 1) {
+        const fName = requiredFields[0].title || requiredFields[0].name || 'PlayerID';
+        orderFormatDesc = `.${shortKey} <${fName}> <Package>`;
+        exampleDesc = `.${shortKey} 12345678 100`;
+      } else if (requiredFields.length >= 2) {
+        const f1 = requiredFields[0].title || requiredFields[0].name || 'UserAccount';
+        const f2 = requiredFields[1].title || requiredFields[1].name || 'Server';
+        orderFormatDesc = `.${shortKey} <${f1}> <${f2}> <Package>`;
+        exampleDesc = `.${shortKey} 12345678 2001 100`;
+      }
+
+      // Extract SKU short keys if defined
+      let skuKeys: Record<string, string> = {};
+      if (product.skuShortKeys) {
+        skuKeys = typeof product.skuShortKeys.get === 'function' 
+          ? Object.fromEntries(product.skuShortKeys) 
+          : (product.skuShortKeys || {});
+      }
+
+      let msg = `⚡ *${productName} (FZR Cards) — Packages & Prices*\n\n` +
+        `📦 *ရရှိနိုင်သော Products စာရင်း:*\n`;
+
+      skus.forEach((sku: any) => {
+        const name = sku.name || `Package #${sku.sku}`;
+        const price = sku.price || '0.00';
+        const customKey = skuKeys[String(sku.sku || sku.sku_id)];
+        const shortKeyTag = customKey ? ` (Key: \`${customKey}\`)` : '';
+        msg += `▫️ *${name}* — \`$${Number(price).toFixed(2)} USD\`${shortKeyTag}\n`;
+      });
+
+      msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
+        `🛒 *Order တင်ရန် Command Format:*\n` +
+        `\`${orderFormatDesc}\`\n\n` +
+        `👉 *ဥပမာ:* \`${exampleDesc}\`\n` +
+        `━━━━━━━━━━━━━━━━━━━━`;
+
+      return ctx.reply(msg, { parse_mode: 'Markdown' });
+    } catch (err: any) {
+      console.error('Error fetching FZR Cards package list:', err);
+      return ctx.reply(`❌ Error fetching package list: ${err.message}`);
+    }
+  }
+
+  // Direct order placement for FZR Cards
+  async function handleFzrCardsDirectOrder(ctx: MyContext, product: any, shortKey: string, args: string[]) {
+    try {
+      const productId = String(product.productId);
+      const productName = product.name || 'Game';
+      const skus = product.skus || [];
+
+      if (!skus || skus.length === 0) {
+        return ctx.reply(`⚠️ No packages available for *${productName}*.`, { parse_mode: 'Markdown' });
+      }
+
+      const requiredFields = (product.fields || []).filter((f: any) => f.required);
+      const minFields = requiredFields.length > 0 ? requiredFields.length : 1;
+
+      if (args.length < minFields) {
+        let formatHelp = `.${shortKey} <Account> <Package> [xQty]`;
+        let exampleHelp = `.${shortKey} 123456789 100\n.${shortKey} 123456789 100 x2`;
+        if (requiredFields.length === 2) {
+          formatHelp = `.${shortKey} <${requiredFields[0].title || 'Account'}> <${requiredFields[1].title || 'Server'}> <Package> [xQty]`;
+          exampleHelp = `.${shortKey} 12345678 2001 100\n.${shortKey} 12345678 2001 100 x3`;
+        }
+        return ctx.reply(
+          `⚡ *${productName} (FZR Cards) Quick Order*\n\n` +
+          `📌 *Format:* \`${formatHelp}\`\n` +
+          `💡 *Example:* \`${exampleHelp}\`\n\n` +
+          `To view all packages & prices, send: \`.${shortKey}\``,
+          { parse_mode: 'Markdown' }
+        );
+      }
+
+      // Parse fields
+      const extraInfo: Record<string, any> = {};
+      if (requiredFields.length === 0) {
+        extraInfo['player_id'] = args[0];
+        extraInfo['userAccount'] = args[0];
+        extraInfo['uid'] = args[0];
+      } else {
+        for (let i = 0; i < requiredFields.length; i++) {
+          const field = requiredFields[i];
+          extraInfo[field.name] = args[i];
+        }
+        if (!extraInfo['player_id'] && args[0]) {
+          extraInfo['player_id'] = args[0];
+        }
+        if (!extraInfo['userAccount'] && args[0]) {
+          extraInfo['userAccount'] = args[0];
+        }
+        if (!extraInfo['server'] && args[1] && requiredFields.length > 1) {
+          extraInfo['server'] = args[1];
+        }
+      }
+
+      // If user provided account details without a product name, show 1-click buttons!
+      if (args.length === minFields) {
+        ctx.session = {};
+        ctx.session.provider = 'fzrcards';
+        ctx.session.gameId = productId;
+        ctx.session.gameName = productName;
+        ctx.session.extraInfo = extraInfo;
+        ctx.session.skus = skus;
+
+        const buttons = skus.map((sku: any, idx: number) => {
+          const name = sku.name || 'Unknown Item';
+          const price = sku.price ? ` ($${sku.price})` : '';
+          return [Markup.button.callback(`${name}${price}`, `fzr_s_${idx}`)];
+        });
+        buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
+
+        let infoDesc = Object.entries(extraInfo).map(([k, v]) => `• ${k.toUpperCase()}: \`${v}\``).join('\n');
+
+        return ctx.reply(
+          `⚡ *${productName} (FZR Cards)*\n${infoDesc}\n\n` +
+          `👇 ဝယ်ယူလိုသော Package ကို အောက်ပါ Button များမှ ရွေးချယ်နှိပ်ပါ:`,
+          {
+            parse_mode: 'Markdown',
+            ...Markup.inlineKeyboard(buttons)
+          }
+        );
+      }
+
+      const rawProductQuery = args.slice(minFields).join(' ').trim();
+
+      // Get short keys safely
+      let skuKeys = {};
+      if (product.skuShortKeys) {
+        skuKeys = typeof product.skuShortKeys.get === 'function' 
+          ? Object.fromEntries(product.skuShortKeys) 
+          : product.skuShortKeys;
+      }
+
+      // Smart parse SKU and quantity
+      const parsedResult = parseSkuWithQuantity(skus, rawProductQuery, skuKeys, true);
+      const matchedSku = parsedResult.sku;
+      const quantity = parsedResult.quantity;
+
+      ctx.session = {};
+      ctx.session.quantity = quantity;
+      ctx.session.provider = 'fzrcards';
+      ctx.session.gameId = productId;
+      ctx.session.gameName = productName;
+      ctx.session.extraInfo = extraInfo;
+      ctx.session.skus = skus;
+
+      if (!matchedSku) {
+        const buttons = skus.map((sku: any, idx: number) => {
+          const name = sku.name || 'Unknown Item';
+          const price = sku.price ? ` ($${sku.price})` : '';
+          return [Markup.button.callback(`${name}${price}`, `fzr_s_${idx}`)];
+        });
+        buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
+
+        let infoDesc = Object.entries(extraInfo).map(([k, v]) => `• ${k.toUpperCase()}: \`${v}\``).join('\n');
+
+        let promptMsg = `⚠️ Package matching \`${rawProductQuery}\` not found.\n\n`;
+        if (!rawProductQuery) promptMsg = '';
+        return ctx.reply(
+          promptMsg +
+          `⚡ *${productName} (FZR Cards)*\n${infoDesc}\n\n` +
+          `👇 ဝယ်ယူလိုသော Package ကို အောက်ပါ Button များမှ ရွေးချယ်နှိပ်ပါ:`,
+          {
+            parse_mode: 'Markdown',
+            ...Markup.inlineKeyboard(buttons)
+          }
+        );
+      }
+
+      // SKU matched!
+      ctx.session.skuId = String(matchedSku.sku);
+      ctx.session.skuName = matchedSku.name || `${productName} Package`;
+      ctx.session.skuPrice = typeof matchedSku.price === 'number' ? matchedSku.price : parseFloat(String(matchedSku.price || '0'));
+
+      // Directly proceed to confirmation
+      await showOrderConfirmation(ctx);
+
+    } catch (err: any) {
+      console.error('FZR Cards direct order error:', err);
+      return ctx.reply(`❌ Error processing order: ${err.message}`);
+    }
+  }
+
   // Multi-line / Bulk Order Flow Handler
   async function handleBulkOrderFlow(ctx: MyContext, text: string) {
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
@@ -932,8 +1132,8 @@ export function setupBot(
       return await handleBulkOrderFlow(ctx, text);
     }
 
-    // Skip reserved commands like /start, /cancel, /auth, /unauth, /users, /addbalance, /orders, /balance, /games, /account, /profile, /wallet, /topup, /deposit, /lootbar, /tpn, /bulk
-    const reservedCommands = ['start', 'cancel', 'auth', 'unauth', 'users', 'addbalance', 'orders', 'balance', 'games', 'gamelist', 'help', 'account', 'profile', 'wallet', 'myaccount', 'mywallet', 'mybalance', 'topup', 'deposit', 'requesttopup', 'requestbalance', 'addmoney', 'lootbar', 'lb', 'tpn', 'topupnation', 'bulk', 'bulkorder'];
+    // Skip reserved commands like /start, /cancel, /auth, /unauth, /users, /addbalance, /orders, /balance, /games, /account, /profile, /wallet, /topup, /deposit, /lootbar, /tpn, /bulk, /fzr
+    const reservedCommands = ['start', 'cancel', 'auth', 'unauth', 'users', 'addbalance', 'orders', 'balance', 'games', 'gamelist', 'help', 'account', 'profile', 'wallet', 'myaccount', 'mywallet', 'mybalance', 'topup', 'deposit', 'requesttopup', 'requestbalance', 'addmoney', 'lootbar', 'lb', 'tpn', 'topupnation', 'fzr', 'fzrcards', 'bulk', 'bulkorder', 'bulkhistory'];
     if (reservedCommands.includes(inputKey)) {
       return next();
     }
@@ -964,6 +1164,26 @@ export function setupBot(
             return await handleTopupNationPackageList(ctx, matchedTpn, activeShortKey);
           } else {
             return await handleTopupNationDirectOrder(ctx, matchedTpn, activeShortKey, rawArgs);
+          }
+        }
+
+        // Try matching FZR Cards products by shortKey
+        const fzrProducts = await FzrCardsProduct.find({ isEnabled: { $ne: false } });
+        const matchedFzr = fzrProducts.find((p: any) => {
+          const k = (p.shortKey || '').toLowerCase();
+          return k === inputKey || String(p.productId).toLowerCase() === inputKey;
+        });
+
+        if (matchedFzr) {
+          if (matchedFzr.isEnabled === false || matchedFzr.status === 'DISABLED') {
+            return ctx.reply(`⚠️ *${matchedFzr.name}* is currently disabled by Admin.`, { parse_mode: 'Markdown' });
+          }
+
+          const activeShortKey = (matchedFzr.shortKey || inputKey).toLowerCase();
+          if (rawArgs.length === 0) {
+            return await handleFzrCardsPackageList(ctx, matchedFzr, activeShortKey);
+          } else {
+            return await handleFzrCardsDirectOrder(ctx, matchedFzr, activeShortKey, rawArgs);
           }
         }
 
@@ -1082,6 +1302,84 @@ export function setupBot(
       await showOrderConfirmation(ctx);
     } catch (err: any) {
       return ctx.reply(`❌ Error: ${err.message}`);
+    }
+  });
+
+  bot.action(/^fzr_s_(\d+)$/, async (ctx) => {
+    const idx = parseInt(ctx.match[1], 10);
+    await ctx.answerCbQuery();
+    try {
+      const skus = ctx.session.skus || [];
+      const sku = skus[idx];
+      if (!sku) {
+        return ctx.reply('⚠️ Session expired. Please type the command again.');
+      }
+      ctx.session.provider = 'fzrcards';
+      ctx.session.skuId = String(sku.sku);
+      ctx.session.skuName = sku.name || 'Package';
+      ctx.session.skuPrice = typeof sku.price === 'number' ? sku.price : parseFloat(String(sku.price || '0'));
+      await showOrderConfirmation(ctx);
+    } catch (err: any) {
+      return ctx.reply(`❌ Error: ${err.message}`);
+    }
+  });
+
+  bot.action(/^fzr_q_order_(.+?)_(.+)$/, async (ctx) => {
+    const productId = ctx.match[1];
+    const skuId = ctx.match[2];
+    await ctx.answerCbQuery();
+
+    try {
+      const product = await FzrCardsProduct.findOne({ productId });
+      if (!product) {
+        return ctx.reply('⚠️ FZR Cards product not found.');
+      }
+
+      const sku = (product.skus || []).find((s: any) => String(s.sku) === String(skuId));
+      if (!sku) {
+        return ctx.reply('⚠️ Selected SKU not found in FZR Cards catalog.');
+      }
+
+      ctx.session.provider = 'fzrcards';
+      ctx.session.gameId = productId;
+      ctx.session.gameName = product.name;
+      ctx.session.skuId = String(sku.sku);
+      ctx.session.skuName = sku.name || 'Package';
+      ctx.session.skuPrice = typeof sku.price === 'number' ? sku.price : parseFloat(String(sku.price || '0'));
+
+      await showOrderConfirmation(ctx);
+    } catch (err: any) {
+      return ctx.reply(`❌ Error: ${err.message}`);
+    }
+  });
+
+  // FZR Cards Games & Products Catalog Command
+  bot.command(['fzr', 'fzrcards'], async (ctx) => {
+    try {
+      const products = await FzrCardsProduct.find({}).sort({ name: 1 });
+      if (products.length === 0) {
+        return ctx.reply(
+          `⚡ *FZR Cards Provider Catalog*\n\n` +
+          `No FZR Cards products are currently synced. Please sync products in the Admin Panel.`,
+          { parse_mode: 'Markdown' }
+        );
+      }
+
+      let msg = `⚡ *FZR Cards Games & Products*\n\n` +
+        `ရရှိနိုင်သော Games များကိုကြည့်ရန် သက်ဆိုင်ရာ Short Key ကို ပို့ပေးပါ:\n\n`;
+
+      products.forEach((p: any) => {
+        const sk = p.shortKey || `f${p.productId.slice(0, 4)}`;
+        msg += `🎮 *${p.name}* ➔ \`.${sk}\`\n`;
+      });
+
+      msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
+        `💡 *ဥပမာ:* \`.${products[0]?.shortKey || 'fml'}\` ပို့ပြီး Package စာရင်းနှင့် ဈေးနှုန်းကြည့်နိုင်ပါသည်။\n` +
+        `━━━━━━━━━━━━━━━━━━━━`;
+
+      return ctx.reply(msg, { parse_mode: 'Markdown' });
+    } catch (err: any) {
+      return ctx.reply(`❌ Error fetching FZR Cards list: ${err.message}`);
     }
   });
 
@@ -1356,7 +1654,26 @@ export function setupBot(
     }
   }
 
-  async function renderDualApiBalance(ctx: MyContext, viewMode: 'both' | 'lootbar' | 'topupnation' = 'both', isEdit: boolean = false) {
+  async function getFzrCardsLiveBalance(): Promise<{ success: boolean; balance: string; available: string; currency: string; error?: string }> {
+    try {
+      if (!fzrCards || !fzrCards.getClient()?.isConfigured()) {
+        return { success: false, balance: '0.00', available: '0.00', currency: 'USD', error: 'Credentials not configured' };
+      }
+      const data = await fzrCards.getWalletBalance();
+      const bal = typeof data?.balance === 'number' ? data.balance : parseFloat(data?.balance || '0');
+      const avail = typeof data?.availableBalance === 'number' ? data.availableBalance : (data?.availableBalance ? parseFloat(data.availableBalance) : bal);
+      return {
+        success: true,
+        balance: bal.toFixed(2),
+        available: avail.toFixed(2),
+        currency: data?.currency || 'USD'
+      };
+    } catch (e: any) {
+      return { success: false, balance: '0.00', available: '0.00', currency: 'USD', error: e.message || 'Connection error' };
+    }
+  }
+
+  async function renderDualApiBalance(ctx: MyContext, viewMode: 'both' | 'all' | 'lootbar' | 'topupnation' | 'fzrcards' = 'both', isEdit: boolean = false) {
     const user = await User.findOne({ telegramChatId: ctx.chat!.id });
     const currentAdminId = await getAdminChatId(adminChatId);
     const isOwner = String(ctx.chat!.id) === currentAdminId;
@@ -1397,10 +1714,11 @@ export function setupBot(
       const keyboard = Markup.inlineKeyboard([
         [
           Markup.button.callback('🔄 Refresh LootBar', 'api_bal_lootbar'),
-          Markup.button.callback('🌐 Switch to TopupNation', 'api_bal_topupnation')
+          Markup.button.callback('🌐 TopupNation', 'api_bal_topupnation'),
+          Markup.button.callback('⚡ FZR Cards', 'api_bal_fzrcards')
         ],
         [
-          Markup.button.callback('📊 View Both APIs', 'api_bal_both'),
+          Markup.button.callback('📊 View All APIs', 'api_bal_both'),
           Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')
         ],
         [
@@ -1430,11 +1748,12 @@ export function setupBot(
 
       const keyboard = Markup.inlineKeyboard([
         [
+          Markup.button.callback('🎮 LootBar', 'api_bal_lootbar'),
           Markup.button.callback('🔄 Refresh TopupNation', 'api_bal_topupnation'),
-          Markup.button.callback('🎮 Switch to LootBar', 'api_bal_lootbar')
+          Markup.button.callback('⚡ FZR Cards', 'api_bal_fzrcards')
         ],
         [
-          Markup.button.callback('📊 View Both APIs', 'api_bal_both'),
+          Markup.button.callback('📊 View All APIs', 'api_bal_both'),
           Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')
         ],
         [
@@ -1449,13 +1768,49 @@ export function setupBot(
       }
     }
 
-    // Default: Both APIs
-    const [lbRes, tpnRes] = await Promise.all([
+    if (viewMode === 'fzrcards') {
+      const fzrRes = await getFzrCardsLiveBalance();
+      const msg = `⚡ *FZR Cards API Live Wallet Balance*\n` +
+        `═════════════════════════\n` +
+        `├── 🌐 Provider: \`FZR Cards Reseller API\`\n` +
+        `├── 💰 Total Balance: \`$${fzrRes.balance} ${fzrRes.currency}\`\n` +
+        `├── 💵 Available Balance: \`$${fzrRes.available} ${fzrRes.currency}\`\n` +
+        `├── 📊 Connection Status: \`${fzrRes.success ? '✅ Live Connected' : '⚠️ Offline'}\`\n` +
+        (!fzrRes.success && fzrRes.error ? `├── ⚠️ Note: \`${escapeMd(fzrRes.error)}\`\n` : '') +
+        `└── 🕒 Synced At: \`${formatMyanmarDateTime(new Date())}\`\n` +
+        `═════════════════════════\n` +
+        `✨ _FZR Cards Reseller API Wallet မှ လက်ကျန်ငွေ ဖြစ်ပါသည်။_`;
+
+      const keyboard = Markup.inlineKeyboard([
+        [
+          Markup.button.callback('🎮 LootBar', 'api_bal_lootbar'),
+          Markup.button.callback('🌐 TopupNation', 'api_bal_topupnation'),
+          Markup.button.callback('🔄 Refresh FZR Cards', 'api_bal_fzrcards')
+        ],
+        [
+          Markup.button.callback('📊 View All APIs', 'api_bal_both'),
+          Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')
+        ],
+        [
+          Markup.button.callback('👤 My Account Profile', 'view_my_profile')
+        ]
+      ]);
+
+      if (isEdit) {
+        return await safeEditMessageText(ctx, msg, keyboard);
+      } else {
+        return await safeReply(ctx, msg, keyboard);
+      }
+    }
+
+    // Default: All APIs
+    const [lbRes, tpnRes, fzrRes] = await Promise.all([
       getLootBarLiveBalance(),
-      getTopupNationLiveBalance()
+      getTopupNationLiveBalance(),
+      getFzrCardsLiveBalance()
     ]);
 
-    const msg = `⚡ *API Live Balance Overview (API နှစ်ခုလုံး လက်ကျန်ငွေ)*\n` +
+    const msg = `⚡ *API Live Balance Overview (Providers လက်ကျန်ငွေ စာရင်း)*\n` +
       `═════════════════════════\n` +
       `🎮 *1. LootBar API:*\n` +
       `├── 💰 Total Asset: \`$${lbRes.balance} USD\`\n` +
@@ -1463,17 +1818,22 @@ export function setupBot(
       `🌐 *2. TopupNation API:*\n` +
       `├── 💰 Total Balance: \`$${tpnRes.balance} ${tpnRes.currency}\`\n` +
       `├── 💵 Available: \`$${tpnRes.available} ${tpnRes.currency}\`\n` +
-      `└── 📊 Status: \`${tpnRes.success ? '✅ Live Connected' : `⚠️ Offline (${escapeMd(tpnRes.error)})`}\`\n` +
+      `└── 📊 Status: \`${tpnRes.success ? '✅ Live Connected' : `⚠️ Offline (${escapeMd(tpnRes.error)})`}\`\n\n` +
+      `⚡ *3. FZR Cards API:*\n` +
+      `├── 💰 Total Balance: \`$${fzrRes.balance} ${fzrRes.currency}\`\n` +
+      `├── 💵 Available: \`$${fzrRes.available} ${fzrRes.currency}\`\n` +
+      `└── 📊 Status: \`${fzrRes.success ? '✅ Live Connected' : `⚠️ Offline (${escapeMd(fzrRes.error)})`}\`\n` +
       `═════════════════════════\n` +
       `💡 _အောက်ပါ ခလုတ်များဖြင့် API တစ်ခုချင်းစီ သီးသန့် ရွေးချယ်စစ်ဆေးနိုင်ပါသည်:_`;
 
     const keyboard = Markup.inlineKeyboard([
       [
-        Markup.button.callback('🎮 LootBar Balance', 'api_bal_lootbar'),
-        Markup.button.callback('🌐 TopupNation Balance', 'api_bal_topupnation')
+        Markup.button.callback('🎮 LootBar', 'api_bal_lootbar'),
+        Markup.button.callback('🌐 TopupNation', 'api_bal_topupnation'),
+        Markup.button.callback('⚡ FZR Cards', 'api_bal_fzrcards')
       ],
       [
-        Markup.button.callback('🔄 Refresh Both APIs', 'api_bal_both'),
+        Markup.button.callback('🔄 Refresh All APIs', 'api_bal_both'),
         Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')
       ],
       [
@@ -1689,6 +2049,20 @@ export function setupBot(
     return await renderDualApiBalance(ctx, 'topupnation', true);
   });
 
+  bot.action('api_bal_fzrcards', async (ctx) => {
+    const user = await User.findOne({ telegramChatId: ctx.chat!.id });
+    const currentAdminId = await getAdminChatId(adminChatId);
+    const isOwner = String(ctx.chat!.id) === currentAdminId;
+    const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
+
+    if (!isApiLinked && !isOwner) {
+      return await ctx.answerCbQuery('⚠️ API balance access is only for API-linked VIP members.', { show_alert: true });
+    }
+
+    await ctx.answerCbQuery('Checking FZR Cards API balance...');
+    return await renderDualApiBalance(ctx, 'fzrcards', true);
+  });
+
   bot.action('view_my_balance', async (ctx) => {
     await ctx.answerCbQuery();
     return await renderBalance(ctx, true);
@@ -1725,7 +2099,8 @@ export function setupBot(
   bot.command([
     'balance', 'wallet', 'mybalance', 'mywallet', 'checkbalance',
     'apibalance', 'apibal', 'apis', 'api', 'adminbalance',
-    'lootbarbalance', 'lbbalance', 'tpnbalance', 'topupnationbalance'
+    'lootbarbalance', 'lbbalance', 'tpnbalance', 'topupnationbalance',
+    'fzrbalance', 'fzrcardsbalance'
   ], async (ctx) => {
     const user = await User.findOne({ telegramChatId: ctx.chat!.id });
     const currentAdminId = await getAdminChatId(adminChatId);
@@ -1747,11 +2122,17 @@ export function setupBot(
       }
       return await renderDualApiBalance(ctx, 'topupnation');
     }
+    if (text.includes('fzr') || text.includes('fzrcards')) {
+      if (!isApiLinked && !isOwner) {
+        return await renderBalance(ctx);
+      }
+      return await renderDualApiBalance(ctx, 'fzrcards');
+    }
     if (text.includes('apibalance') || text.includes('apis') || text.startsWith('/api')) {
       if (!isApiLinked && !isOwner) {
         return await renderBalance(ctx);
       }
-      return await renderDualApiBalance(ctx, 'both');
+      return await renderDualApiBalance(ctx, 'all');
     }
     return await renderBalance(ctx);
   });
@@ -2892,8 +3273,10 @@ export function setupBot(
 
   async function finalizeOrder(ctx: MyContext) {
     const isTopupNation = ctx.session.provider === 'topupnation';
+    const isFzrCards = ctx.session.provider === 'fzrcards';
+    const providerName = isFzrCards ? 'FZR Cards' : isTopupNation ? 'TopupNation' : 'LootBar';
     ctx.session.step = 'DONE';
-    await ctx.reply(`⏳ Processing your top-up order with ${isTopupNation ? 'TopupNation' : 'LootBar'} API, please wait...`);
+    await ctx.reply(`⏳ Processing your top-up order with ${providerName} API, please wait...`);
     
     const referenceId = uuidv4().replace(/-/g, '').substring(0, 32);
     const gameId = ctx.session.gameId!;
@@ -2982,6 +3365,87 @@ export function setupBot(
         `═════════════════════════\n` +
         `├── 👤 User: \`${ctx.chat!.id}\` (${safeFromUser})\n` +
         `├── 🌐 Provider: \`TopupNation\`\n` +
+        `├── 🎮 Game: *${safeGame}*\n` +
+        `├── 📦 Package: *${safeSku}*\n` +
+        `├── 💰 Price: \`$${orderCost.toFixed(2)} USD\`\n` +
+        (order.playerName ? `├── 🎯 Player/Account: \`${escapeCode(order.playerName)}\`\n` : '') +
+        `├── 💳 Payment: \`${isApiLinked ? 'Direct API Linked' : 'Wallet Balance'}\`\n` +
+        `├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
+        `└── 🆔 Order ID: \`${orderId}\`\n` +
+        `═════════════════════════`;
+
+      if (currentAdminIdForNotify) {
+        await safeSendMessage(bot.telegram, currentAdminIdForNotify, adminOrderNotificationMsg);
+      }
+      return;
+    }
+
+    if (isFzrCards && fzrCards) {
+      // Execute through FZR Cards Service
+      const result = await fzrCards.placeOrder({
+        telegramChatId: ctx.chat!.id,
+        telegramUsername: currentTelegramUsername,
+        telegramFirstName: currentTelegramFirstName,
+        telegramLastName: currentTelegramLastName,
+        productId: gameId,
+        sku: skuId,
+        fields: extraInfo,
+        quantity: quantity
+      });
+
+      if (!result.success || !result.order) {
+        return ctx.reply(`❌ Order failed: ${result.error || 'FZR Cards rejected order'}`, mainMenu);
+      }
+
+      const order = result.order;
+      const orderId = order.providerOrderId || order.orderId;
+      const statusKeyboard = Markup.inlineKeyboard([
+        [
+          Markup.button.callback('🔄 Check Live Status', `track_order_${order.referenceId}`),
+          Markup.button.callback('📜 Order History', 'view_orders_action')
+        ]
+      ]);
+
+      const safeGame = escapeMd(gameName);
+      const safeSku = escapeMd(skuName);
+
+      const lines: string[] = [];
+      lines.push(`✅ *Top-Up Order Submitted!*`);
+      lines.push(`═════════════════════════`);
+      lines.push(`├── 🆔 Order ID: \`${orderId}\``);
+      lines.push(`├── 🌐 Provider: *FZR Cards*`);
+      lines.push(`├── 🎮 Game: *${safeGame}*`);
+      lines.push(`├── 📦 Package: *${safeSku}*`);
+      if (order.playerName) {
+        lines.push(`├── 👤 Player/Account: \`${escapeCode(order.playerName)}\``);
+      }
+      lines.push(`├── 🔄 Status: *PROCESSING*`);
+      lines.push(`├── 💬 Message: _Order accepted by FZR Cards API_`);
+      lines.push(`├── 💰 Price: \`$${orderCost.toFixed(3)}\``);
+      lines.push(`├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\``);
+      if (!isApiLinked) {
+        const updatedUser = await User.findOne({ telegramChatId: ctx.chat!.id });
+        lines.push(`└── 💳 Remaining Balance: \`$${(updatedUser?.balance || 0).toFixed(2)}\``);
+      } else {
+        lines.push(`└── 💳 Payment: \`⚡ Direct API Balance Linked\``);
+      }
+      lines.push(`═════════════════════════`);
+
+      await safeReply(ctx, lines.join('\n'), statusKeyboard);
+
+      // Notify Owner ONLY
+      const currentAdminIdForNotify = await getAdminChatId(adminChatId);
+      const fromUser = ctx.from?.username 
+        ? `@${ctx.from.username}` 
+        : (ctx.chat as any)?.username 
+          ? `@${(ctx.chat as any).username}` 
+          : ctx.from?.first_name || 'User';
+
+      const safeFromUser = escapeMd(fromUser);
+      const adminOrderNotificationMsg = `🔔 *New Top-Up Order (FZR Cards)!*\n` +
+        `═════════════════════════\n` +
+        `├── 👤 User: \`${ctx.chat!.id}\` (${safeFromUser})\n` +
+        `├── 🌐 Provider: \`FZR Cards\`\n` +
         `├── 🎮 Game: *${safeGame}*\n` +
         `├── 📦 Package: *${safeSku}*\n` +
         `├── 💰 Price: \`$${orderCost.toFixed(2)} USD\`\n` +
@@ -3226,6 +3690,7 @@ export function setupBot(
         itemsToRun,
         lootbar,
         topupNation,
+        fzrCards,
         { rawText, source: 'bot' }
       );
 

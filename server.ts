@@ -6,6 +6,8 @@ import mongoose from "mongoose";
 import { LootBarClient } from "./server/lootbar";
 import { TopupNationClient } from "./server/providers/topupnation/TopupNationClient";
 import { TopupNationService } from "./server/providers/topupnation/TopupNationService";
+import { FzrCardsClient } from "./server/providers/fzrcards/FzrCardsClient";
+import { FzrCardsService } from "./server/providers/fzrcards/FzrCardsService";
 import { setupBot } from "./server/bot";
 import { PricePoller } from "./server/pricePoller";
 import { connectDB } from "./server/db";
@@ -15,6 +17,7 @@ import { AppConfig } from "./server/models/AppConfig";
 import { User } from "./server/models/User";
 import { TopupRequest } from "./server/models/TopupRequest";
 import { TopupNationProduct } from "./server/models/TopupNationProduct";
+import { FzrCardsProduct } from "./server/models/FzrCardsProduct";
 import { BulkOrderService } from "./server/bulkOrderService";
 import { createServer as createViteServer } from "vite";
 
@@ -58,6 +61,18 @@ const topupNationClient = new TopupNationClient({
   webhookSecret: TOPUPNATION_WEBHOOK_SECRET
 });
 const topupNationService = new TopupNationService(topupNationClient);
+
+// Initialize FZR Cards Client & Service
+const FZRCARDS_API_KEY = process.env.FZRCARDS_API_KEY || "";
+const FZRCARDS_API_SECRET = process.env.FZRCARDS_API_SECRET || "";
+const FZRCARDS_WEBHOOK_SECRET = process.env.FZRCARDS_WEBHOOK_SECRET || "";
+const fzrCardsClient = new FzrCardsClient({
+  apiKey: FZRCARDS_API_KEY,
+  
+  webhookSecret: FZRCARDS_WEBHOOK_SECRET
+});
+const fzrCardsService = new FzrCardsService(fzrCardsClient);
+
 const pricePoller = new PricePoller(lootbarClient, topupNationService);
 
 // Initialize Telegram Bot State
@@ -83,10 +98,11 @@ async function initOrRestartTelegramBot(token: string, adminChatId: string) {
     telegramBot = setupBot(token, adminChatId, lootbarClient, {
       isServerless,
       webhookUrl
-    }, topupNationService);
+    }, topupNationService, fzrCardsService);
 
-    // Provide Telegram instance to TopupNationService for order status notifications
+    // Provide Telegram instance to provider services for order status notifications
     topupNationService.setTelegram(telegramBot.telegram, adminChatId);
+    fzrCardsService.setTelegram(telegramBot.telegram, adminChatId);
     pricePoller.setTelegram(telegramBot);
   } else {
     console.warn("TELEGRAM_BOT_TOKEN is missing or invalid. Bot will not start.");
@@ -119,6 +135,12 @@ connectDB().then(async () => {
       topupNationClient.updateCredentials(tpnConfig.value);
       console.log("Loaded TopupNation credentials from MongoDB");
     }
+
+    const fzrConfig = await AppConfig.findOne({ key: 'fzrcards_credentials' });
+    if (fzrConfig && fzrConfig.value) {
+      fzrCardsClient.updateCredentials(fzrConfig.value);
+      console.log("Loaded FZR Cards credentials from MongoDB");
+    }
     
     // Load Telegram configuration from DB
     const adminConfig = await AppConfig.findOne({ key: 'admin_chat_id' });
@@ -144,6 +166,13 @@ connectDB().then(async () => {
 setInterval(() => {
   topupNationService.pollActiveOrders().catch((err) => {
     console.error("Error in TopupNation background poller:", err);
+  });
+}, 15000); // 15 seconds
+
+// Periodic background poller for active FZR Cards orders
+setInterval(() => {
+  fzrCardsService.pollActiveOrders().catch((err) => {
+    console.error("Error in FZR Cards background poller:", err);
   });
 }, 15000); // 15 seconds
 
@@ -596,6 +625,7 @@ app.post("/api/orders/bulk/execute", async (req, res) => {
       items,
       lootbarClient,
       topupNationService,
+      fzrCardsService,
       { rawText: req.body.rawText, source: 'web' }
     );
 
@@ -852,6 +882,30 @@ app.post("/api/orders/:referenceId/sync", async (req, res) => {
       return res.json({ success: true, data: order, message: "No change from TopupNation API" });
     }
 
+    const isFzr = order.provider === 'fzrcards' || order.extraInfo?.provider === 'fzrcards';
+    if (isFzr) {
+      if (!fzrCardsClient.isConfigured()) {
+        return res.status(400).json({ error: "FZR Cards API not configured" });
+      }
+      const orderIdToQuery = order.providerOrderId || order.orderId || order.referenceId;
+      const fzrRes = await fzrCardsClient.queryOrder(orderIdToQuery);
+      if (fzrRes && (fzrRes.status || (fzrRes as any).order_status)) {
+        const rawStatus = (fzrRes.status || (fzrRes as any).order_status || '').toUpperCase();
+        let newState = order.state;
+        if (['SUCCESS', 'COMPLETED'].includes(rawStatus)) newState = 2;
+        else if (['FAILED', 'REFUNDED', 'CANCELED', 'CANCELLED'].includes(rawStatus)) newState = 3;
+        else if (['PROCESSING', 'PENDING', 'IN_PROGRESS'].includes(rawStatus)) newState = 1;
+        
+        order.state = newState;
+        order.statusText = rawStatus;
+        if (fzrRes.id || (fzrRes as any).order_id) order.providerOrderId = String(fzrRes.id || (fzrRes as any).order_id);
+        if ((fzrRes as any).receiptNumber || (fzrRes as any).receipt_id) order.providerReceiptNumber = (fzrRes as any).receiptNumber || (fzrRes as any).receipt_id;
+        await order.save();
+        return res.json({ success: true, data: order, apiData: fzrRes });
+      }
+      return res.json({ success: true, data: order, message: "No change from FZR Cards API" });
+    }
+
     if (!lootbarClient.isConfigured()) {
       return res.status(400).json({ error: "LootBar API not configured" });
     }
@@ -1054,16 +1108,16 @@ app.post("/api/saved-games/:gameId/toggle", async (req, res) => {
 // ---------------------------------------------------------
 
 app.post("/api/settings/topupnation", async (req, res) => {
-  const { apiKey, apiSecret, webhookSecret, baseUrl } = req.body;
-  if (!apiKey || !apiSecret) {
-    return res.status(400).json({ error: "apiKey and apiSecret are required." });
+  const { apiKey, webhookSecret, baseUrl } = req.body;
+  if (!apiKey) {
+    return res.status(400).json({ error: "apiKey is required." });
   }
 
   try {
     // 1. Temporarily test credentials
     const testClient = new TopupNationClient({
       apiKey,
-      apiSecret,
+      
       webhookSecret,
       baseUrl: baseUrl || "https://topupnation.io"
     });
@@ -1074,7 +1128,7 @@ app.post("/api/settings/topupnation", async (req, res) => {
     // 2. Update server client
     topupNationClient.updateCredentials({
       apiKey,
-      apiSecret,
+      
       webhookSecret,
       baseUrl: baseUrl || "https://topupnation.io"
     });
@@ -1082,7 +1136,7 @@ app.post("/api/settings/topupnation", async (req, res) => {
     // 3. Save to MongoDB
     await AppConfig.findOneAndUpdate(
       { key: 'topupnation_credentials' },
-      { value: { apiKey, apiSecret, webhookSecret, baseUrl: baseUrl || "https://topupnation.io" } },
+      { value: { apiKey,  webhookSecret, baseUrl: baseUrl || "https://topupnation.io" } },
       { upsert: true, returnDocument: 'after' }
     );
 
@@ -1218,6 +1272,181 @@ app.post("/api/webhooks/topupnation", async (req: any, res) => {
   const rawBody = req.rawBody || JSON.stringify(req.body);
 
   const result = await topupNationService.handleWebhook(req.body, signature, rawBody);
+  if (!result.success) {
+    return res.status(400).json({ success: false, error: result.error });
+  }
+
+  res.json({ success: true, message: "Webhook processed successfully." });
+});
+
+// ---------------------------------------------------------
+// FZR Cards Provider Endpoints
+// ---------------------------------------------------------
+
+app.post("/api/settings/fzrcards", async (req, res) => {
+  const { apiKey, webhookSecret, baseUrl } = req.body;
+  if (!apiKey) {
+    return res.status(400).json({ error: "apiKey is required." });
+  }
+
+  try {
+    // 1. Temporarily test credentials
+    const testClient = new FzrCardsClient({
+      apiKey,
+      
+      webhookSecret,
+      baseUrl: baseUrl || "https://api.fzr.cards"
+    });
+    
+    // Test connection with balance check
+    await testClient.getBalance();
+
+    // 2. Update server client
+    fzrCardsClient.updateCredentials({
+      apiKey,
+      
+      webhookSecret,
+      baseUrl: baseUrl || "https://api.fzr.cards"
+    });
+
+    // 3. Save to MongoDB
+    await AppConfig.findOneAndUpdate(
+      { key: 'fzrcards_credentials' },
+      { value: { apiKey,  webhookSecret, baseUrl: baseUrl || "https://api.fzr.cards" } },
+      { upsert: true, returnDocument: 'after' }
+    );
+
+    res.json({ success: true, message: "FZR Cards credentials saved and verified successfully." });
+  } catch (err: any) {
+    res.status(401).json({ error: err.message || "Failed to authenticate with FZR Cards API." });
+  }
+});
+
+app.get("/api/settings/fzrcards/status", async (req, res) => {
+  try {
+    const config = await AppConfig.findOne({ key: 'fzrcards_credentials' });
+    const isConfigured = !!config?.value?.apiKey || fzrCardsClient.isConfigured();
+    res.json({
+      isConfigured,
+      baseUrl: config?.value?.baseUrl || "https://api.fzr.cards",
+      webhookUrl: `${(process.env.APP_URL || "").replace(/\/$/, "")}/api/webhooks/fzrcards`
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/fzrcards/balance", async (req, res) => {
+  try {
+    if (!fzrCardsClient.isConfigured()) {
+      return res.json({ success: false, data: null, error: "FZR Cards API is not configured." });
+    }
+    const balanceData = await fzrCardsClient.getBalance();
+    res.json({ success: true, data: balanceData });
+  } catch (err: any) {
+    res.json({ success: false, data: null, error: err.message });
+  }
+});
+
+app.get("/api/fzrcards/products", async (req, res) => {
+  try {
+    const products = await fzrCardsService.getProducts();
+    res.json({ success: true, data: products });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/fzrcards/products/sync", async (req, res) => {
+  try {
+    if (!fzrCardsClient.isConfigured()) {
+      return res.status(400).json({ error: "FZR Cards API is not configured." });
+    }
+    const syncResult = await fzrCardsService.syncProducts();
+    const allProducts = await fzrCardsService.getProducts();
+    res.json({ success: true, count: syncResult.synced, total: syncResult.total, data: allProducts });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/fzrcards/products/:productId/sku-shortkeys", async (req, res) => {
+  try {
+    const { skuShortKeys } = req.body;
+    const product = await FzrCardsProduct.findOneAndUpdate(
+      { productId: req.params.productId },
+      { skuShortKeys: skuShortKeys },
+      { returnDocument: 'after' }
+    );
+    res.json({ success: true, data: product });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/fzrcards/products/:productId/shortkey", async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const { shortKey } = req.body;
+    if (!shortKey) {
+      return res.status(400).json({ error: "shortKey is required." });
+    }
+
+    const updated = await fzrCardsService.updateProductShortKey(productId, shortKey);
+    if (!updated) {
+      return res.status(404).json({ error: "Product not found." });
+    }
+
+    res.json({ success: true, data: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/fzrcards/products/:productId/toggle", async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const { isEnabled } = req.body;
+    const updated = await fzrCardsService.toggleProductEnabled(productId, isEnabled);
+    if (!updated) {
+      return res.status(404).json({ error: "Product not found." });
+    }
+    res.json({ success: true, data: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/fzrcards/order", async (req, res) => {
+  try {
+    const { telegramChatId, productId, sku, fields, quantity } = req.body;
+    if (!telegramChatId || !productId || !sku || !fields) {
+      return res.status(400).json({ error: "Missing required order parameters." });
+    }
+
+    const result = await fzrCardsService.placeOrder({
+      telegramChatId: Number(telegramChatId),
+      productId: String(productId),
+      sku: String(sku),
+      fields,
+      quantity: Number(quantity) || 1
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ success: false, error: result.error });
+    }
+
+    res.json({ success: true, data: result.order });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/webhooks/fzrcards", async (req: any, res) => {
+  const signature = req.header("X-Signature") || req.header("x-signature") || "";
+  const rawBody = req.rawBody || JSON.stringify(req.body);
+
+  const result = await fzrCardsService.handleWebhook(req.body);
   if (!result.success) {
     return res.status(400).json({ success: false, error: result.error });
   }

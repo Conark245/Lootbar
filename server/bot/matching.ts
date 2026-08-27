@@ -170,6 +170,8 @@ export function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortK
   return null;
 }
 
+export const findFzrCardsSkuMatch = findTopupNationSkuMatch;
+
 export interface ParsedSkuResult {
   sku: any | null;
   quantity: number;

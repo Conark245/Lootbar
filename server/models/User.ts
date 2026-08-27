@@ -7,7 +7,7 @@ export interface IUser extends Document {
   balance: number;
   balanceMode?: 'wallet' | 'api';
   useDirectApiBalance?: boolean;
-  apiProvider?: 'lootbar' | 'topupnation' | 'both';
+  apiProvider?: 'lootbar' | 'topupnation' | 'fzrcards' | 'both' | 'all';
   notes?: string;
   isAuthorized: boolean;
   receivesNotifications: boolean;
@@ -22,7 +22,7 @@ const userSchema = new mongoose.Schema({
   balance: { type: Number, default: 0 },
   balanceMode: { type: String, enum: ['wallet', 'api'], default: 'wallet' },
   useDirectApiBalance: { type: Boolean, default: false },
-  apiProvider: { type: String, enum: ['lootbar', 'topupnation', 'both'], default: 'both' },
+  apiProvider: { type: String, enum: ['lootbar', 'topupnation', 'fzrcards', 'both', 'all'], default: 'all' },
   notes: { type: String, default: '' },
   isAuthorized: { type: Boolean, default: false },
   receivesNotifications: { type: Boolean, default: false },

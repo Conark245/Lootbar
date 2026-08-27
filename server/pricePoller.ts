@@ -1,7 +1,9 @@
 import { LootBarClient } from './lootbar';
 import { TopupNationService } from './providers/topupnation/TopupNationService';
+import { FzrCardsService } from './providers/fzrcards/FzrCardsService';
 import { SavedGame } from './models/SavedGame';
 import { TopupNationProduct } from './models/TopupNationProduct';
+import { FzrCardsProduct } from './models/FzrCardsProduct';
 import { User } from './models/User';
 import mongoose from 'mongoose';
 
@@ -9,11 +11,17 @@ export class PricePoller {
   private telegramNotifier?: (chatId: number, message: string) => Promise<void>;
   private lootbarClient: LootBarClient;
   private topupNationService: TopupNationService;
+  private fzrCardsService?: FzrCardsService;
   private isPolling = false;
 
-  constructor(lootbarClient: LootBarClient, topupNationService: TopupNationService) {
+  constructor(
+    lootbarClient: LootBarClient,
+    topupNationService: TopupNationService,
+    fzrCardsService?: FzrCardsService
+  ) {
     this.lootbarClient = lootbarClient;
     this.topupNationService = topupNationService;
+    this.fzrCardsService = fzrCardsService;
   }
 
   public setTelegram(telegramBot: any) {
@@ -35,6 +43,7 @@ export class PricePoller {
 
       await this.checkLootbarPrices();
       await this.checkTopupNationPrices();
+      await this.checkFzrCardsPrices();
     } catch (err) {
       console.error('Error polling prices:', err);
     } finally {
@@ -135,6 +144,56 @@ export class PricePoller {
 
           if (changes.length > 0) {
             await this.notifyUsers('TopupNation', p.name, p.shortKey || '', changes);
+          }
+
+          // Update DB with latest data
+          p.name = liveMatch.name;
+          p.status = liveMatch.status || 'ACTIVE';
+          p.category = liveMatch.category;
+          p.description = liveMatch.description;
+          p.iconUrl = liveMatch.iconUrl;
+          p.fields = liveMatch.fields || [];
+          p.skus = liveMatch.skus || [];
+          p.lastSyncedAt = new Date();
+          await p.save();
+        }
+      }
+    } catch (err) {
+      // Skip silently
+    }
+  }
+
+  private async checkFzrCardsPrices() {
+    if (!this.fzrCardsService) return;
+    const fzrClient = this.fzrCardsService.getClient();
+    if (!fzrClient || !fzrClient.isConfigured()) return;
+
+    try {
+      const liveProducts = await fzrClient.getProducts();
+      const enabledProducts = await FzrCardsProduct.find({ isEnabled: { $ne: false } });
+
+      for (const p of enabledProducts) {
+        const liveMatch = liveProducts.find((live: any) => String(live.productId) === String(p.productId));
+        if (liveMatch && liveMatch.skus && liveMatch.skus.length > 0) {
+          const changes: string[] = [];
+
+          // Compare SKUs
+          for (const newSku of liveMatch.skus) {
+            const oldSku = (p.skus || []).find((s: any) => String(s.sku) === String(newSku.sku));
+            if (oldSku) {
+              const oldPrice = parseFloat(String(oldSku.price || '0'));
+              const newPrice = parseFloat(String(newSku.price || '0'));
+
+              if (oldPrice !== newPrice) {
+                const name = (newSku.name || 'Package').replace(/[*_`\[\]]/g, '');
+                const indicator = newPrice > oldPrice ? '🔴 🔺' : '🟢 🔻';
+                changes.push(`• ${name}: \`$${oldPrice.toFixed(2)}\` ➔ \`$${newPrice.toFixed(2)}\` ${indicator}`);
+              }
+            }
+          }
+
+          if (changes.length > 0) {
+            await this.notifyUsers('FZR Cards', p.name, p.shortKey || '', changes);
           }
 
           // Update DB with latest data

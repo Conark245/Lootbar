@@ -1,7 +1,9 @@
 import { v4 as uuidv4 } from 'uuid';
 import { LootBarClient } from './lootbar';
 import { TopupNationService } from './providers/topupnation/TopupNationService';
+import { FzrCardsService } from './providers/fzrcards/FzrCardsService';
 import { TopupNationProduct } from './models/TopupNationProduct';
+import { FzrCardsProduct } from './models/FzrCardsProduct';
 import { SavedGame } from './models/SavedGame';
 import { Order } from './models/Order';
 import { User, IUser } from './models/User';
@@ -12,7 +14,7 @@ import { parseCommandArgs } from './bot/helpers';
 export interface BulkOrderItem {
   lineIndex: number;
   rawLine: string;
-  provider: 'lootbar' | 'topupnation';
+  provider: 'lootbar' | 'topupnation' | 'fzrcards';
   gameId: string;
   gameName: string;
   skuId: string;
@@ -42,7 +44,7 @@ export interface BulkParseResult {
 export interface BulkExecuteItemResult {
   lineIndex: number;
   rawLine: string;
-  provider: 'lootbar' | 'topupnation';
+  provider: 'lootbar' | 'topupnation' | 'fzrcards';
   gameName: string;
   skuName: string;
   quantity: number;
@@ -124,6 +126,7 @@ export class BulkOrderService {
     // Cache database & SKU lookups for speed
     const savedGames = await SavedGame.find({ isEnabled: { $ne: false } });
     const tpnProducts = await TopupNationProduct.find({ isEnabled: { $ne: false } });
+    const fzrProducts = await FzrCardsProduct.find({ isEnabled: { $ne: false } });
     const skuCache: Record<string, any[]> = {};
 
     for (let i = 0; i < rawLines.length; i++) {
@@ -340,11 +343,96 @@ export class BulkOrderService {
         continue;
       }
 
-      // Neither LootBar nor TopupNation matched
+      // Check FZR Cards Products
+      const matchedFzr = fzrProducts.find((p: any) => {
+        const k = (p.shortKey || '').toLowerCase();
+        return k === inputKey || String(p.productId).toLowerCase() === inputKey;
+      });
+
+      if (matchedFzr) {
+        const productId = String(matchedFzr.productId);
+        const productName = matchedFzr.name || 'Game';
+        const skus = (matchedFzr.skus || []).filter((s: any) => s.available !== false && s.availability !== false);
+
+        if (skus.length === 0) {
+          errors.push({
+            lineIndex,
+            rawLine: rawLines[i],
+            error: `No packages available for ${productName} (FZR Cards)`
+          });
+          continue;
+        }
+
+        const requiredFields = (matchedFzr.fields || []).filter((f: any) => f.required);
+        const minFields = requiredFields.length > 0 ? requiredFields.length : 1;
+
+        if (rawArgs.length < minFields + 1) {
+          errors.push({
+            lineIndex,
+            rawLine: rawLines[i],
+            error: `Missing parameters for ${productName} (FZR). Need ${minFields} account field(s) + Package.`
+          });
+          continue;
+        }
+
+        const extraInfo: Record<string, string> = {};
+        if (requiredFields.length === 0) {
+          extraInfo['player_id'] = rawArgs[0];
+        } else {
+          for (let f = 0; f < requiredFields.length; f++) {
+            const field = requiredFields[f];
+            const keyName = field.name || field.title || `field_${f + 1}`;
+            extraInfo[keyName] = rawArgs[f];
+          }
+        }
+
+        const rawProductQuery = rawArgs.slice(minFields).join(' ').trim();
+        let skuKeys: Record<string, string> = {};
+        if (matchedFzr.skuShortKeys) {
+          if (matchedFzr.skuShortKeys instanceof Map || typeof (matchedFzr.skuShortKeys as any).entries === 'function') {
+            skuKeys = Object.fromEntries((matchedFzr.skuShortKeys as any).entries());
+          } else if (typeof matchedFzr.skuShortKeys === 'object') {
+            skuKeys = { ...matchedFzr.skuShortKeys };
+          }
+        }
+
+        const parsedResult = parseSkuWithQuantity(skus, rawProductQuery, skuKeys, true);
+        const matchedSku = parsedResult.sku;
+        const quantity = Math.max(1, Math.min(100, parsedResult.quantity || 1));
+
+        if (!matchedSku) {
+          errors.push({
+            lineIndex,
+            rawLine: rawLines[i],
+            error: `Package "${rawProductQuery}" not found for ${productName} (FZR Cards)`
+          });
+          continue;
+        }
+
+        const unitPrice = typeof matchedSku.price === 'number' ? matchedSku.price : parseFloat(String(matchedSku.price || '0'));
+        const totalPrice = unitPrice * quantity;
+
+        validItems.push({
+          lineIndex,
+          rawLine: rawLines[i],
+          provider: 'fzrcards',
+          gameId: productId,
+          gameName: productName,
+          skuId: String(matchedSku.sku),
+          skuName: matchedSku.name || `${productName} Package`,
+          unitPrice,
+          quantity,
+          totalPrice,
+          extraInfo
+        });
+        continue;
+      }
+
+      // Neither LootBar, TopupNation, nor FZR Cards matched
       errors.push({
         lineIndex,
         rawLine: rawLines[i],
-        error: `Unknown game shortKey: "${inputKey}". Send .games to see available shortcuts.`
+        error: `Unknown game shortKey: "${inputKey}". Send .games or .fzr to see available shortcuts.`
       });
     }
 
@@ -369,6 +457,7 @@ export class BulkOrderService {
     items: BulkOrderItem[],
     lootbarClient: LootBarClient,
     topupNationService?: TopupNationService,
+    fzrCardsService?: FzrCardsService,
     options?: { rawText?: string; source?: 'bot' | 'web' }
   ): Promise<BulkExecuteSummary> {
     const isApiLinked = !!(user.useDirectApiBalance || user.balanceMode === 'api');
@@ -410,7 +499,55 @@ export class BulkOrderService {
       const referenceId = uuidv4();
 
       try {
-        if (item.provider === 'topupnation' && topupNationService) {
+        if (item.provider === 'fzrcards' && fzrCardsService) {
+          // Execute FZR Cards order
+          const fzrResult = await fzrCardsService.placeOrder({
+            telegramChatId: user.telegramChatId,
+            telegramUsername: user.username,
+            telegramFirstName: user.firstName,
+            productId: item.gameId,
+            sku: item.skuId,
+            fields: item.extraInfo, skipBalanceDeduction: true,
+            quantity: item.quantity
+          });
+
+          if (!fzrResult.success || !fzrResult.order) {
+            if (!isApiLinked) {
+              currentBalance += orderCost;
+              user.balance = currentBalance;
+              await user.save();
+            }
+            failedCount++;
+            results.push({
+              lineIndex: item.lineIndex,
+              rawLine: item.rawLine,
+              provider: item.provider,
+              gameName: item.gameName,
+              skuName: item.skuName,
+              quantity: item.quantity,
+              price: orderCost,
+              success: false,
+              error: fzrResult.error || 'FZR Cards rejected order'
+            });
+          } else {
+            successCount++;
+            totalSpent += orderCost;
+            results.push({
+              lineIndex: item.lineIndex,
+              rawLine: item.rawLine,
+              provider: item.provider,
+              gameName: item.gameName,
+              skuName: item.skuName,
+              quantity: item.quantity,
+              price: orderCost,
+              playerName: fzrResult.order.playerName,
+              success: true,
+              referenceId: fzrResult.order.referenceId,
+              orderId: fzrResult.order.providerOrderId || fzrResult.order.orderId,
+              statusText: 'PROCESSING'
+            });
+          }
+        } else if (item.provider === 'topupnation' && topupNationService) {
           // Execute TopupNation order
           const tpnResult = await topupNationService.placeOrder({
             telegramChatId: user.telegramChatId,
@@ -418,7 +555,7 @@ export class BulkOrderService {
             telegramFirstName: user.firstName,
             productId: item.gameId,
             sku: item.skuId,
-            fields: item.extraInfo,
+            fields: item.extraInfo, skipBalanceDeduction: true,
             quantity: item.quantity
           });
 

@@ -174,7 +174,7 @@ export class TopupNationService {
     sku: string;
     fields: Record<string, any>;
     quantity?: number;
-    existingIdempotencyKey?: string;
+    existingIdempotencyKey?: string; skipBalanceDeduction?: boolean;
   }): Promise<{ success: boolean; order?: IOrder; error?: string }> {
     const { 
       telegramChatId, 
@@ -185,7 +185,7 @@ export class TopupNationService {
       sku, 
       fields, 
       quantity = 1, 
-      existingIdempotencyKey 
+      existingIdempotencyKey, skipBalanceDeduction 
     } = params;
 
     // 1. Fetch Product & SKU details
@@ -223,7 +223,7 @@ export class TopupNationService {
     }
 
     const isApiLinked = !!(user.useDirectApiBalance || user.balanceMode === 'api');
-    if (!isApiLinked) {
+    if (!isApiLinked && !skipBalanceDeduction) {
       if (user.balance < totalCost) {
         return { 
           success: false, 
@@ -328,7 +328,7 @@ export class TopupNationService {
 
     // Final verification that userAccount is present
     if (!orderPayload.userAccount || orderPayload.userAccount.trim() === '') {
-      if (!isApiLinked) {
+      if (!isApiLinked && !skipBalanceDeduction) {
         user.balance += totalCost;
         await user.save();
       }
@@ -384,7 +384,7 @@ export class TopupNationService {
       console.error('[TopupNation] Order creation failed:', apiError);
 
       // Refund balance immediately if the API rejected order placement
-      if (!isApiLinked) {
+      if (!isApiLinked && !skipBalanceDeduction) {
         user.balance += totalCost;
         await user.save();
       }
