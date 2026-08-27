@@ -1243,6 +1243,20 @@ app.post("/api/topupnation/products/:productId/shortkey", async (req, res) => {
   }
 });
 
+
+app.post("/api/topupnation/products/bulk-toggle", async (req, res) => {
+  try {
+    const { productIds, isEnabled } = req.body;
+    if (!Array.isArray(productIds)) {
+      return res.status(400).json({ error: "productIds array is required." });
+    }
+    const result = await topupNationService.bulkToggleProductsEnabled(productIds, isEnabled);
+    res.json({ success: true, count: result.modifiedCount });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/topupnation/products/:productId/toggle", async (req, res) => {
   try {
     const { productId } = req.params;
@@ -1419,6 +1433,20 @@ app.post("/api/fzrcards/products/:productId/shortkey", async (req, res) => {
     }
 
     res.json({ success: true, data: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.post("/api/fzrcards/products/bulk-toggle", async (req, res) => {
+  try {
+    const { productIds, isEnabled } = req.body;
+    if (!Array.isArray(productIds)) {
+      return res.status(400).json({ error: "productIds array is required." });
+    }
+    const result = await fzrCardsService.bulkToggleProductsEnabled(productIds, isEnabled);
+    res.json({ success: true, count: result.modifiedCount });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

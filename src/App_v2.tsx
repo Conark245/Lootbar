@@ -320,6 +320,37 @@ export default function App() {
     }
   };
 
+  
+  const handleBulkToggleTpnProducts = async (isEnabled: boolean) => {
+    const filtered = tpnProducts.filter(p => (p.name || "").toLowerCase().includes(tpnGameSearch.toLowerCase()));
+    const productIds = filtered.map(p => p.productId);
+    if (productIds.length === 0) return;
+    
+    if (!confirm(`Are you sure you want to ${isEnabled ? 'enable' : 'disable'} ${productIds.length} TopUpNation products currently filtered?`)) {
+      return;
+    }
+    
+    try {
+      const res = await fetch('/api/topupnation/products/bulk-toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productIds, isEnabled })
+      });
+      const data = await res.json();
+      if (data?.success) {
+        setTpnProducts(prev => prev.map(p => 
+          productIds.includes(p.productId) 
+            ? { ...p, isEnabled, status: isEnabled ? 'ACTIVE' : 'DISABLED' } 
+            : p
+        ));
+      } else {
+        alert(data?.error || 'Failed to bulk toggle products');
+      }
+    } catch (err: any) {
+      alert(`Error bulk toggling products: ${err.message}`);
+    }
+  };
+
   const handleToggleTpnProduct = async (productId: string, currentEnabled: boolean) => {
     try {
       const res = await fetch(`/api/topupnation/products/${productId}/toggle`, {
@@ -451,6 +482,37 @@ export default function App() {
       }
     } catch (err: any) {
       alert(`Error updating shortKey: ${err.message}`);
+    }
+  };
+
+  
+  const handleBulkToggleFzrProducts = async (isEnabled: boolean) => {
+    const filtered = fzrProducts.filter(p => (p.name || "").toLowerCase().includes(fzrGameSearch.toLowerCase()));
+    const productIds = filtered.map(p => p.productId);
+    if (productIds.length === 0) return;
+    
+    if (!confirm(`Are you sure you want to ${isEnabled ? 'enable' : 'disable'} ${productIds.length} FZR Cards products currently filtered?`)) {
+      return;
+    }
+    
+    try {
+      const res = await fetch('/api/fzrcards/products/bulk-toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productIds, isEnabled })
+      });
+      const data = await res.json();
+      if (data?.success) {
+        setFzrProducts(prev => prev.map(p => 
+          productIds.includes(p.productId) 
+            ? { ...p, isEnabled, status: isEnabled ? 'ACTIVE' : 'DISABLED' } 
+            : p
+        ));
+      } else {
+        alert(data?.error || 'Failed to bulk toggle products');
+      }
+    } catch (err: any) {
+      alert(`Error bulk toggling products: ${err.message}`);
     }
   };
 
@@ -2452,7 +2514,7 @@ export default function App() {
           </p>
           {showTpnGames && (
             <div className="mt-4">
-              <div className="mb-4">
+              <div className="mb-4 flex flex-col sm:flex-row gap-3 items-start sm:items-center">
                 <input
                   type="text"
                   placeholder="Search TopUpNation Games..."
@@ -2460,6 +2522,20 @@ export default function App() {
                   value={tpnGameSearch}
                   onChange={(e) => setTpnGameSearch(e.target.value)}
                 />
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => handleBulkToggleTpnProducts(true)}
+                    className="px-3 py-1.5 bg-green-50 text-green-700 hover:bg-green-100 border border-green-200 text-xs font-bold rounded-lg transition-colors"
+                  >
+                    Enable All Filtered
+                  </button>
+                  <button 
+                    onClick={() => handleBulkToggleTpnProducts(false)}
+                    className="px-3 py-1.5 bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 text-xs font-bold rounded-lg transition-colors"
+                  >
+                    Disable All Filtered
+                  </button>
+                </div>
               </div>
 
           {!tpnConfigured ? (
@@ -2618,7 +2694,7 @@ export default function App() {
           </p>
           {showFzrGames && (
             <div className="mt-4">
-              <div className="mb-4">
+              <div className="mb-4 flex flex-col sm:flex-row gap-3 items-start sm:items-center">
                 <input
                   type="text"
                   placeholder="Search FZR Cards Games..."
@@ -2626,6 +2702,20 @@ export default function App() {
                   value={fzrGameSearch}
                   onChange={(e) => setFzrGameSearch(e.target.value)}
                 />
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => handleBulkToggleFzrProducts(true)}
+                    className="px-3 py-1.5 bg-green-50 text-green-700 hover:bg-green-100 border border-green-200 text-xs font-bold rounded-lg transition-colors"
+                  >
+                    Enable All Filtered
+                  </button>
+                  <button 
+                    onClick={() => handleBulkToggleFzrProducts(false)}
+                    className="px-3 py-1.5 bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 text-xs font-bold rounded-lg transition-colors"
+                  >
+                    Disable All Filtered
+                  </button>
+                </div>
               </div>
 
           {!fzrConfigured ? (

@@ -40,6 +40,20 @@ export class TopupNationService {
     );
   }
 
+  
+  public async bulkToggleProductsEnabled(productIds: string[], isEnabled: boolean): Promise<any> {
+    const result = await TopupNationProduct.updateMany(
+      { productId: { $in: productIds } },
+      { 
+        $set: { 
+          isEnabled: isEnabled,
+          status: isEnabled ? 'ACTIVE' : 'DISABLED'
+        }
+      }
+    );
+    return result;
+  }
+
   public async toggleProductEnabled(productId: string, isEnabled?: boolean): Promise<any> {
     const product = await TopupNationProduct.findOne({ productId });
     if (!product) return null;

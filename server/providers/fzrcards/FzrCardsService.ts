@@ -55,6 +55,20 @@ export class FzrCardsService {
     );
   }
 
+  
+  public async bulkToggleProductsEnabled(productIds: string[], isEnabled: boolean): Promise<any> {
+    const result = await FzrCardsProduct.updateMany(
+      { productId: { $in: productIds } },
+      { 
+        $set: { 
+          isEnabled: isEnabled,
+          status: isEnabled ? 'ACTIVE' : 'DISABLED'
+        }
+      }
+    );
+    return result;
+  }
+
   public async toggleProductEnabled(productId: string, isEnabled?: boolean): Promise<any> {
     const product = await FzrCardsProduct.findOne({ productId });
     if (!product) return null;
