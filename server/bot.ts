@@ -347,6 +347,61 @@ export function setupBot(
     }
   }
 
+  // Text-only Game List handler for FZR Cards (No buttons, Owner-enabled only)
+  async function renderFzrCardsGameList(ctx: MyContext) {
+    try {
+      const products = await FzrCardsProduct.find({ 
+        isEnabled: { $ne: false }, 
+        status: { $ne: 'DISABLED' } 
+      }).sort({ name: 1 });
+
+      if (!products || products.length === 0) {
+        return ctx.reply('⚠️ No FZR Cards games are currently enabled by the Owner. Please contact the administrator.');
+      }
+
+      let msg = `💎 *FZR Cards API — ရရှိနိုင်သော Games စာရင်း*\n\n` +
+        `အောက်ပါ Game များအား FZR Cards မှတစ်ဆင့် Top-Up ဝယ်ယူနိုင်ပါသည်။ Product စာရင်း ကြည့်ရှုရန် သို့မဟုတ် အော်ဒါတင်ရန် သက်ဆိုင်ရာ *Short Key* ဖြင့် အသုံးပြုနိုင်ပါသည်:\n\n`;
+
+      const numEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+
+      products.forEach((p: any, index: number) => {
+        const shortKey = (p.shortKey || `f${p.productId.slice(0, 4)}`).toLowerCase();
+        const numEmoji = numEmojis[index] || `🔹`;
+
+        const requiredFields = (p.fields || []).filter((f: any) => f.required);
+        let format = `.${shortKey} <PlayerID> <Product>`;
+        let example = `.${shortKey} 123456789 60`;
+
+        if (requiredFields.length === 1) {
+          const fName = requiredFields[0].title || requiredFields[0].name || 'PlayerID';
+          format = `.${shortKey} <${fName}> <Product>`;
+          example = `.${shortKey} 12345678 60`;
+        } else if (requiredFields.length >= 2) {
+          const f1 = requiredFields[0].title || requiredFields[0].name || 'Account';
+          const f2 = requiredFields[1].title || requiredFields[1].name || 'Server';
+          format = `.${shortKey} <${f1}> <${f2}> <Product>`;
+          example = `.${shortKey} 12345678 2001 86`;
+        }
+
+        msg += `${numEmoji} *${p.name}*\n` +
+          `   ▫️ *Short Key:* \`.${shortKey}\`\n` +
+          `   ▫️ *Packages ကြည့်ရန်:* \`.${shortKey}\`\n` +
+          `   ▫️ *Order တင်ရန်:* \`${format}\`\n` +
+          `   ▫️ *ဥပမာ:* \`${example}\`\n\n`;
+      });
+
+      msg += `━━━━━━━━━━━━━━━━━━━━\n` +
+        `💡 *အသုံးပြုနည်း လမ်းညွှန်:*\n` +
+        `• Packages & Prices ကြည့်ရှုရန်: \`.<shortKey>\` (ဥပမာ \`.${products[0]?.shortKey || 'fzr'}\`)\n` +
+        `• တိုက်ရိုက် Order တင်ရန်: \`.<shortKey> <Account> <Product>\``;
+
+      return ctx.reply(msg, { parse_mode: 'Markdown' });
+    } catch (error: any) {
+      console.error('Failed to fetch FZR Cards text game list:', error);
+      return ctx.reply(`An error occurred while fetching the FZR Cards game list: ${error.message}`);
+    }
+  }
+
   // Combined or generic Game List handler (shows both providers in text)
   async function renderAllGamesList(ctx: MyContext) {
     try {
@@ -355,8 +410,12 @@ export function setupBot(
         isEnabled: { $ne: false }, 
         status: { $ne: 'DISABLED' } 
       }).sort({ name: 1 });
+      const fzrGames = await FzrCardsProduct.find({ 
+        isEnabled: { $ne: false }, 
+        status: { $ne: 'DISABLED' } 
+      }).sort({ name: 1 });
 
-      if (lootbarGames.length === 0 && tpnGames.length === 0) {
+      if (lootbarGames.length === 0 && tpnGames.length === 0 && fzrGames.length === 0) {
         return ctx.reply('⚠️ No games are currently enabled by the Owner.');
       }
 
@@ -375,6 +434,15 @@ export function setupBot(
         msg += `🌐 *[TopupNation API Games]*\n`;
         tpnGames.forEach(p => {
           const sk = (p.shortKey || `t${p.productId.slice(0, 4)}`).toLowerCase();
+          msg += `• *${p.name}* ➔ \`.${sk}\`\n`;
+        });
+        msg += `\n`;
+      }
+
+      if (fzrGames.length > 0) {
+        msg += `💎 *[FZR Cards API Games]*\n`;
+        fzrGames.forEach(p => {
+          const sk = (p.shortKey || `f${p.productId.slice(0, 4)}`).toLowerCase();
           msg += `• *${p.name}* ➔ \`.${sk}\`\n`;
         });
         msg += `\n`;
@@ -990,6 +1058,7 @@ export function setupBot(
         `\`.pubg 5123456789 60\`\n` +
         `\`.ff 11223344 100\`\n` +
         `\`.tp 123456789 100\`\n` +
+        `\`.fzr 123456789 100\`\n` +
         `═════════════════════════\n` +
         `_💡 Note: အော်ဒါများကို မပို့မီ စုစုပေါင်းကုန်ကျငွေနှင့် အချက်အလက်များကို စနစ်မှ သေချာစွာ စစ်ဆေးအတည်ပြုခိုင်းမည် ဖြစ်ပါသည်။_`,
         Markup.inlineKeyboard([
@@ -1355,32 +1424,7 @@ export function setupBot(
 
   // FZR Cards Games & Products Catalog Command
   bot.command(['fzr', 'fzrcards'], async (ctx) => {
-    try {
-      const products = await FzrCardsProduct.find({}).sort({ name: 1 });
-      if (products.length === 0) {
-        return ctx.reply(
-          `⚡ *FZR Cards Provider Catalog*\n\n` +
-          `No FZR Cards products are currently synced. Please sync products in the Admin Panel.`,
-          { parse_mode: 'Markdown' }
-        );
-      }
-
-      let msg = `⚡ *FZR Cards Games & Products*\n\n` +
-        `ရရှိနိုင်သော Games များကိုကြည့်ရန် သက်ဆိုင်ရာ Short Key ကို ပို့ပေးပါ:\n\n`;
-
-      products.forEach((p: any) => {
-        const sk = p.shortKey || `f${p.productId.slice(0, 4)}`;
-        msg += `🎮 *${p.name}* ➔ \`.${sk}\`\n`;
-      });
-
-      msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
-        `💡 *ဥပမာ:* \`.${products[0]?.shortKey || 'fml'}\` ပို့ပြီး Package စာရင်းနှင့် ဈေးနှုန်းကြည့်နိုင်ပါသည်။\n` +
-        `━━━━━━━━━━━━━━━━━━━━`;
-
-      return ctx.reply(msg, { parse_mode: 'Markdown' });
-    } catch (err: any) {
-      return ctx.reply(`❌ Error fetching FZR Cards list: ${err.message}`);
-    }
+    return await renderFzrCardsGameList(ctx);
   });
 
   // TopupNation Games & Products Catalog Command
