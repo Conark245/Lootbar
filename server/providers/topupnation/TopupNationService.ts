@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import mongoose from 'mongoose';
 import { TopupNationClient } from './TopupNationClient';
 import { TopupNationProduct } from '../../models/TopupNationProduct';
 import { TopupNationWebhookEvent } from '../../models/TopupNationWebhookEvent';
@@ -475,7 +476,7 @@ export class TopupNationService {
           ...(orderData.receiptNumber ? { providerReceiptNumber: orderData.receiptNumber } : {})
         } 
       },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (!updatedOrder) {
@@ -532,6 +533,7 @@ export class TopupNationService {
    */
   public async pollActiveOrders(): Promise<void> {
     if (!this.client.isConfigured()) return;
+    if (mongoose.connection.readyState !== 1) return;
 
     try {
       const activeOrders = await Order.find({
@@ -566,7 +568,7 @@ export class TopupNationService {
                     ...(res.receiptNumber ? { providerReceiptNumber: res.receiptNumber } : {})
                   } 
                 },
-                { new: true }
+                { returnDocument: 'after' }
               );
 
               if (!updatedOrder) {

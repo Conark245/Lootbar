@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import cors from "cors";
 import dotenv from "dotenv";
+import mongoose from "mongoose";
 import { LootBarClient } from "./server/lootbar";
 import { TopupNationClient } from "./server/providers/topupnation/TopupNationClient";
 import { TopupNationService } from "./server/providers/topupnation/TopupNationService";
@@ -568,6 +569,7 @@ app.get("/api/asset", async (req, res) => {
 // ---------------------------------------------------------
 async function syncActiveOrders() {
   if (!lootbarClient.isConfigured()) return;
+  if (mongoose.connection.readyState !== 1) return;
   try {
     // Find active orders that are in Pending (0), In Transaction (1), or Settling (4)
     const activeOrders = await Order.find({
@@ -666,6 +668,7 @@ async function syncActiveOrders() {
 
 // Backfill missing telegramUsername and info on existing orders
 async function backfillOrderUsernames() {
+  if (mongoose.connection.readyState !== 1) return;
   try {
     const ordersWithoutUsername = await Order.find({
       $or: [
@@ -1053,7 +1056,7 @@ app.post("/api/topupnation/products/:productId/sku-shortkeys", async (req, res) 
     const product = await TopupNationProduct.findOneAndUpdate(
       { productId: req.params.productId },
       { skuShortKeys: skuShortKeys },
-      { new: true }
+      { returnDocument: 'after' }
     );
     res.json({ success: true, data: product });
   } catch (err: any) {
