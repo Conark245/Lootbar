@@ -191,9 +191,11 @@ export function setupBot(
   }
 
   const mainMenu = Markup.keyboard([
+    ['🎮 All Games', '📦 Bulk Order'],
     ['🎮 LootBar Games', '🌐 TopupNation Games'],
-    ['📦 Bulk Order', '💰 Request Top-Up'],
-    ['👤 My Account', '💳 Check Balance', '📜 Order History']
+    ['💎 FZR Cards Games', '💰 Request Top-Up'],
+    ['📜 Order History', '💳 Check Balance'],
+    ['👤 My Account']
   ]).resize();
 
   bot.command('start', async (ctx) => {
@@ -203,6 +205,7 @@ export function setupBot(
       'သင်ဝယ်ယူလိုသော API Provider အလိုက် Games စာရင်းကို အောက်ပါ Menu မှ ရွေးချယ်ကြည့်ရှုနိုင်ပါသည်:\n' +
       '• *🎮 LootBar Games* — LootBar API Games စာရင်း\n' +
       '• *🌐 TopupNation Games* — TopupNation API Games စာရင်း\n' +
+      '• *💎 FZR Cards Games* — FZR Cards API Games စာရင်း\n' +
       '• *📦 Bulk Order* — အော်ဒါများစွာ တစ်ခါတည်း ဝယ်ယူခြင်း\n\n' +
       '⚡ *အသုံးပြုနည်း အမြန်လမ်းညွှန်:*\n' +
       '• Game ၏ Products စာရင်း ကြည့်ရန်: `.<shortKey>` (ဥပမာ `.p`, `.ml`, `.tp`)\n' +
@@ -992,7 +995,7 @@ export function setupBot(
       // Smart parse SKU and quantity
       const parsedResult = parseSkuWithQuantity(skus, rawProductQuery, skuKeys, true);
       const matchedSku = parsedResult.sku;
-      const quantity = parsedResult.quantity;
+      const quantity = 1; // API does not support quantity
 
       ctx.session = {};
       ctx.session.quantity = quantity;
@@ -2823,6 +2826,10 @@ export function setupBot(
     return await renderLootBarGameList(ctx);
   });
 
+  bot.hears(['💎 FZR Cards Games', 'FZR Cards Games', 'FZR Cards', 'fzrcards'], async (ctx) => {
+    return await renderFzrCardsGameList(ctx);
+  });
+
   bot.hears(['🌐 TopupNation Games', 'TopupNation Games', 'TopUpNation Games', 'TopupNation', 'tpn'], async (ctx) => {
     return await renderTopupNationGameList(ctx);
   });
@@ -2839,7 +2846,7 @@ export function setupBot(
     return await renderBulkOrderHistory(ctx);
   });
 
-  bot.hears(['🎮 Game List', 'Game List', 'Games', 'games', '🎮 Games'], async (ctx) => {
+  bot.hears(['🎮 Game List', 'Game List', 'Games', 'games', '🎮 Games', '🎮 All Games'], async (ctx) => {
     return await renderAllGamesList(ctx);
   });
 

@@ -102,8 +102,8 @@ export default function App() {
   const [skuModalSuccessMsg, setSkuModalSuccessMsg] = useState('');
 
   const [loadingSaved, setLoadingSaved] = useState(true);
-  const [showTpnGames, setShowTpnGames] = useState(false);
-  const [showLootbarGames, setShowLootbarGames] = useState(false);
+  const [showTpnGames, setShowTpnGames] = useState(true);
+  const [showLootbarGames, setShowLootbarGames] = useState(true);
 
   
   // Telegram Users State
@@ -198,7 +198,15 @@ export default function App() {
   const [showFzrModal, setShowFzrModal] = useState(false);
   const [fzrError, setFzrError] = useState('');
   const [isSavingFzr, setIsSavingFzr] = useState(false);
-  const [showFzrGames, setShowFzrGames] = useState(false);
+  const [showFzrGames, setShowFzrGames] = useState(true);
+
+  const [lbGameSearch, setLbGameSearch] = useState('');
+  const [tpnGameSearch, setTpnGameSearch] = useState('');
+  const [fzrGameSearch, setFzrGameSearch] = useState('');
+
+  const [activeGameSearch, setActiveGameSearch] = useState('');
+
+
 
   const fetchTpnStatus = async () => {
     try {
@@ -2441,6 +2449,15 @@ export default function App() {
           </p>
           {showTpnGames && (
             <div className="mt-4">
+              <div className="mb-4">
+                <input
+                  type="text"
+                  placeholder="Search TopUpNation Games..."
+                  className="px-4 py-2 border border-neutral-300 rounded-lg w-full max-w-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  value={tpnGameSearch}
+                  onChange={(e) => setTpnGameSearch(e.target.value)}
+                />
+              </div>
 
           {!tpnConfigured ? (
             <div className="text-center py-10 bg-neutral-50 rounded-lg border border-neutral-200 border-dashed">
@@ -2460,7 +2477,7 @@ export default function App() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {tpnProducts.map((p) => {
+              {tpnProducts.filter(p => (p.name || "").toLowerCase().includes(tpnGameSearch.toLowerCase())).map((p) => {
                 const activeKey = p.shortKey || '';
                 const currentInput = tpnShortKeyInput[p.productId] !== undefined ? tpnShortKeyInput[p.productId] : activeKey;
                 const isModified = currentInput !== activeKey;
@@ -2598,6 +2615,15 @@ export default function App() {
           </p>
           {showFzrGames && (
             <div className="mt-4">
+              <div className="mb-4">
+                <input
+                  type="text"
+                  placeholder="Search FZR Cards Games..."
+                  className="px-4 py-2 border border-neutral-300 rounded-lg w-full max-w-sm focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
+                  value={fzrGameSearch}
+                  onChange={(e) => setFzrGameSearch(e.target.value)}
+                />
+              </div>
 
           {!fzrConfigured ? (
             <div className="text-center py-10 bg-neutral-50 rounded-lg border border-neutral-200 border-dashed">
@@ -2617,7 +2643,7 @@ export default function App() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {fzrProducts.map((p) => {
+              {fzrProducts.filter(p => (p.name || "").toLowerCase().includes(fzrGameSearch.toLowerCase())).map((p) => {
                 const activeKey = p.shortKey || '';
                 const currentInput = fzrShortKeyInput[p.productId] !== undefined ? fzrShortKeyInput[p.productId] : activeKey;
                 const isModified = currentInput !== activeKey;
@@ -2747,11 +2773,21 @@ export default function App() {
               </button>
             )}
           </div>
-          <p className="text-sm text-neutral-500 mb-6">
+          <p className="text-sm text-neutral-500 mb-4">
             Choose which games from LootBar API should appear in your Telegram Bot. Only enabled games will be displayed in the bot's <span className="font-semibold text-neutral-700">🎮 Game List</span>.
           </p>
+          
           {showLootbarGames && (
             <div className="mt-4">
+              <div className="mb-4">
+                <input
+                  type="text"
+                  placeholder="Search LootBar Games..."
+                  className="px-4 py-2 border border-neutral-300 rounded-lg w-full max-w-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                  value={lbGameSearch}
+                  onChange={(e) => setLbGameSearch(e.target.value)}
+                />
+              </div>
 
           {isConfigured === null ? (
             <p className="text-neutral-500 py-4 text-center">Checking API connection...</p>
@@ -2771,7 +2807,7 @@ export default function App() {
             <p className="text-red-500">Failed to load games. Credentials might be invalid.</p>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {games.map((game, i) => {
+              {games.filter(g => (g.name || g.game_name || "").toLowerCase().includes(lbGameSearch.toLowerCase())).map((game, i) => {
                 const gameId = String(game.id || game.game_id);
                 const gameName = game.name || game.game_name || 'Unknown';
                 const savedMatch = savedGames.find(s => String(s.gameId) === gameId);
@@ -2858,9 +2894,18 @@ export default function App() {
         {/* Active Games in Telegram Bot & Short Key Settings */}
         <div className="bg-white p-8 rounded-xl shadow-sm border border-neutral-200">
           <div className="flex justify-between items-center mb-4">
-            <div>
-              <h2 className="text-lg font-bold text-neutral-900">Current Active Games in Bot ({savedGames.length + tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length})</h2>
+            <div className="flex-1">
+              <h2 className="text-lg font-bold text-neutral-900">Current Active Games in Bot ({savedGames.length + tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length + fzrProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length})</h2>
               <p className="text-sm text-neutral-500 mt-1">Set custom Short Keys so users can lookup products and order via <span className="font-mono text-neutral-700">.&lt;shortKey&gt;</span></p>
+            </div>
+            <div className="w-full sm:w-auto mt-4 sm:mt-0">
+              <input
+                type="text"
+                placeholder="Search Active Games..."
+                className="px-4 py-2 border border-neutral-300 rounded-lg w-full min-w-[250px] focus:outline-none focus:border-neutral-500 focus:ring-1 focus:ring-neutral-500"
+                value={activeGameSearch}
+                onChange={(e) => setActiveGameSearch(e.target.value)}
+              />
             </div>
           </div>
           
@@ -2874,7 +2919,7 @@ export default function App() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* LootBar Enabled Games */}
-              {savedGames.map((saved, i) => {
+              {savedGames.filter(g => (g.name || "").toLowerCase().includes(activeGameSearch.toLowerCase())).map((saved, i) => {
                 const currentKey = shortKeyInputs[saved.gameId] !== undefined ? shortKeyInputs[saved.gameId] : (saved.shortKey || '');
                 const isDirty = currentKey !== (saved.shortKey || '');
                 const skuKeyCount = saved.skuShortKeys ? Object.values(saved.skuShortKeys).filter(Boolean).length : 0;
@@ -2949,7 +2994,7 @@ export default function App() {
               })}
 
               {/* TopupNation Enabled Games */}
-              {tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').map((p, i) => {
+              {tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED' && (p.name || '').toLowerCase().includes(activeGameSearch.toLowerCase())).map((p, i) => {
                 const activeKey = p.shortKey || '';
                 const currentInput = tpnShortKeyInput[p.productId] !== undefined ? tpnShortKeyInput[p.productId] : activeKey;
                 const isModified = currentInput !== activeKey;
@@ -3025,7 +3070,7 @@ export default function App() {
               })}
 
               {/* FZR Cards Enabled Games */}
-              {fzrProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').map((p, i) => {
+              {fzrProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED' && (p.name || '').toLowerCase().includes(activeGameSearch.toLowerCase())).map((p, i) => {
                 const activeKey = p.shortKey || '';
                 const currentInput = fzrShortKeyInput[p.productId] !== undefined ? fzrShortKeyInput[p.productId] : activeKey;
                 const isModified = currentInput !== activeKey;

@@ -547,12 +547,27 @@ app.get("/api/games", async (req, res) => {
     if (!lootbarClient.isConfigured()) {
       return res.json({ error: "LootBar not configured", data: { items: [] } });
     }
-    const data = await lootbarClient.getGames();
+    const data = await lootbarClient.getGames(1, 100);
+    if (data?.data?.total_page && data.data.total_page > 1) {
+      let allItems = [...(data.data.items || [])];
+      for (let p = 2; p <= data.data.total_page; p++) {
+        try {
+          const nextData = await lootbarClient.getGames(p, 100);
+          if (nextData?.data?.items) {
+            allItems = allItems.concat(nextData.data.items);
+          }
+        } catch (e) {
+          console.error(`Failed to fetch LootBar games page ${p}`, e);
+        }
+      }
+      data.data.items = allItems;
+    }
     res.json(data);
   } catch (err: any) {
     res.json({ error: err.message, data: { items: [] } });
   }
 });
+
 
 app.get("/api/skus", async (req, res) => {
   try {

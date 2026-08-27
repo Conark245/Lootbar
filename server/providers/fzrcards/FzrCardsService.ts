@@ -303,7 +303,8 @@ export class FzrCardsService {
       categoryId: String(productId),
       offerId: String(sku),
       fields: fields || {},
-      quantity: Number(quantity) || 1
+      quantity: Number(quantity) || 1,
+      kind: product.category === 'Gift Card' ? 'gift_card' : 'topup'
     };
 
     // 5. Call FZR Cards API
@@ -450,7 +451,7 @@ export class FzrCardsService {
     const orderId = String(data.id || data.orderId || data.order_id || payload.id || '');
 
     if (!orderId) {
-      return { received: true, message: 'No orderId in webhook payload' };
+      return { success: true, received: true, message: 'No orderId in webhook payload' };
     }
 
     const order = await Order.findOne({
@@ -458,7 +459,7 @@ export class FzrCardsService {
     });
 
     if (!order) {
-      return { received: true, message: 'Order not found in database' };
+      return { success: true, received: true, message: 'Order not found in database' };
     }
 
     const rawStatus = String(data.status || eventType).toUpperCase();
@@ -492,7 +493,7 @@ export class FzrCardsService {
       this.telegramNotifier(order.telegramChatId, msg);
     }
 
-    return { received: true, orderId, newState };
+    return { success: true, received: true, orderId, newState };
   }
 
   public async pollActiveOrders(): Promise<void> {

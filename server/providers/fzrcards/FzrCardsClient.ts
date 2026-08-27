@@ -185,21 +185,102 @@ export class FzrCardsClient {
    * GET /topups
    * Retrieves all top-up categories/games.
    */
+  
   public async getCategories(): Promise<any[]> {
-    const res = await this.request<any>('GET', '/topups');
-    if (Array.isArray(res)) return res;
-    if (Array.isArray(res?.data)) return res.data;
-    if (Array.isArray(res?.categories)) return res.categories;
-    if (Array.isArray(res?.items)) return res.items;
-    return [];
+    let allCategories: any[] = [];
+    
+    // Fetch Topups
+    try {
+      let cursor: string | null = null;
+      let page = 1;
+      let hasMore = true;
+      while (hasMore) {
+        let url = '/topups';
+        if (cursor) {
+          url = `/topups?cursor=${encodeURIComponent(cursor)}`;
+        } else if (page > 1) {
+          url = `/topups?page=${page}`;
+        }
+        
+        const res = await this.request<any>('GET', url);
+        
+        // Extract items
+        if (res?.items) {
+          allCategories = allCategories.concat(res.items.map((i: any) => ({ ...i, _kind: 'topup' })));
+        } else if (res?.data && Array.isArray(res.data)) {
+          allCategories = allCategories.concat(res.data.map((i: any) => ({ ...i, _kind: 'topup' })));
+        } else if (Array.isArray(res)) {
+          allCategories = allCategories.concat(res.map((i: any) => ({ ...i, _kind: 'topup' })));
+        }
+        
+        // Check pagination
+        if (res?.meta?.has_more && res?.meta?.next_cursor) {
+          cursor = res.meta.next_cursor;
+        } else if (res?.meta?.current_page && res?.meta?.last_page && res.meta.current_page < res.meta.last_page) {
+          page = res.meta.current_page + 1;
+          cursor = null;
+        } else {
+          hasMore = false;
+        }
+      }
+    } catch (e) {
+      console.error('Failed to fetch topup categories:', e);
+    }
+    
+    // Fetch Giftcards
+    try {
+      let cursor: string | null = null;
+      let page = 1;
+      let hasMore = true;
+      while (hasMore) {
+        let url = '/giftcards';
+        if (cursor) {
+          url = `/giftcards?cursor=${encodeURIComponent(cursor)}`;
+        } else if (page > 1) {
+          url = `/giftcards?page=${page}`;
+        }
+        
+        const res = await this.request<any>('GET', url);
+        
+        // Extract items
+        if (res?.items) {
+          allCategories = allCategories.concat(res.items.map((i: any) => ({ ...i, _kind: 'gift_card' })));
+        } else if (res?.data && Array.isArray(res.data)) {
+          allCategories = allCategories.concat(res.data.map((i: any) => ({ ...i, _kind: 'gift_card' })));
+        } else if (Array.isArray(res)) {
+          allCategories = allCategories.concat(res.map((i: any) => ({ ...i, _kind: 'gift_card' })));
+        }
+        
+        // Check pagination
+        if (res?.meta?.has_more && res?.meta?.next_cursor) {
+          cursor = res.meta.next_cursor;
+        } else if (res?.meta?.current_page && res?.meta?.last_page && res.meta.current_page < res.meta.last_page) {
+          page = res.meta.current_page + 1;
+          cursor = null;
+        } else {
+          hasMore = false;
+        }
+      }
+    } catch (e) {
+      console.error('Failed to fetch giftcard categories:', e);
+    }
+    
+    return allCategories;
   }
+
 
   /**
    * GET /topups/offers?category_id=...
    * Retrieves available offers / SKUs and dynamic fields definitions for a category.
    */
-  public async getOffers(categoryId: string): Promise<{ offers: any[]; fields: any[] }> {
-    const res = await this.request<any>('GET', `/topups/offers?category_id=${encodeURIComponent(categoryId)}`);
+  
+  public async getOffers(categoryId: string, kind: string = 'topup'): Promise<{ offers: any[]; fields: any[] }> {
+    let url = `/topups/offers?category_id=${encodeURIComponent(categoryId)}`;
+    if (kind === 'gift_card') {
+      url = `/giftcards/cards?category_id=${encodeURIComponent(categoryId)}`;
+    }
+    
+    const res = await this.request<any>('GET', url);
     const offers = res?.offers || res?.data?.offers || res?.items || (Array.isArray(res) ? res : []);
     const fields = res?.fields || res?.data?.fields || [];
     return {
@@ -223,7 +304,7 @@ export class FzrCardsClient {
       let fields: any[] = cat.fields || [];
 
       try {
-        const offerData = await this.getOffers(catId);
+        const offerData = await this.getOffers(catId, cat._kind);
         offers = offerData.offers;
         if (offerData.fields && offerData.fields.length > 0) {
           fields = offerData.fields;
@@ -280,7 +361,7 @@ export class FzrCardsClient {
         productId: catId,
         name: catName,
         status: (cat.status || 'ACTIVE').toUpperCase(),
-        category: cat.category || cat.type || 'Game',
+        category: cat._kind === 'gift_card' ? 'Gift Card' : 'Game Top-up',
         description: cat.description || cat.guide || '',
         iconUrl: cat.icon || cat.image || cat.icon_url || cat.logo || '',
         fields: mappedFields,
@@ -326,6 +407,7 @@ export class FzrCardsClient {
    * POST /topups/order
    * Places a top-up order with optional idempotency key.
    */
+  
   public async createOrder(
     orderData: FzrCardsOrderRequest,
     idempotencyKey?: string
@@ -336,16 +418,27 @@ export class FzrCardsClient {
       headers['X-IDEMPOTENCY-KEY'] = idempotencyKey;
     }
 
-    // Format payload matching FZR Cards documentation:
-    // { category_id, offer_id, fields, quantity }
-    const payload = {
-      category_id: orderData.categoryId,
-      offer_id: orderData.offerId,
-      fields: orderData.fields || {},
-      ...(orderData.quantity && orderData.quantity > 1 ? { quantity: orderData.quantity } : {})
-    };
+    let url = '/topups/order';
+    let payload: any = {};
 
-    const res = await this.request<any>('POST', '/topups/order', payload, headers);
+    if (orderData.kind === 'gift_card') {
+      url = '/giftcards/order';
+      payload = {
+        category_id: orderData.categoryId,
+        card_id: orderData.offerId,
+        quantity: orderData.quantity || 1
+      };
+    } else {
+      url = '/topups/order';
+      payload = {
+        category_id: orderData.categoryId,
+        offer_id: orderData.offerId,
+        fields: orderData.fields || {}
+      };
+    }
+
+    const res = await this.request<any>('POST', url, payload, headers);
+
     const data = res?.data || res?.order || res || {};
 
     const orderId = String(data.order_id || data.id || data.orderId || '');

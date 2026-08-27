@@ -56,6 +56,7 @@ export interface FzrCardsValidateIdResponse {
 export interface FzrCardsOrderRequest {
   categoryId: string;
   offerId: string;
+  kind?: 'topup' | 'gift_card';
   fields: Record<string, any>;
   quantity?: number;
 }
@@ -66,6 +67,7 @@ export interface FzrCardsOrderResponse {
   referenceId?: string;
   categoryId: string;
   offerId: string;
+  kind?: 'topup' | 'gift_card';
   status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'REFUNDED' | 'CANCELLED' | string;
   amount?: number;
   currency?: string;
