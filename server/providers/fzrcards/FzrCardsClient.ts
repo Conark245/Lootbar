@@ -296,79 +296,86 @@ export class FzrCardsClient {
     const categories = await this.getCategories();
     const products: FzrCardsProduct[] = [];
 
-    for (const cat of categories) {
-      const catId = String(cat.category_id || cat.id || cat.slug || cat.code);
-      const catName = cat.name || cat.title || cat.category_name || 'Game Top-up';
-      
-      let offers: any[] = [];
-      let fields: any[] = cat.fields || [];
+    const CHUNK_SIZE = 5;
+    for (let i = 0; i < categories.length; i += CHUNK_SIZE) {
+      const chunk = categories.slice(i, i + CHUNK_SIZE);
+      const chunkPromises = chunk.map(async (cat) => {
+        const catId = String(cat.category_id || cat.id || cat.slug || cat.code);
+        const catName = cat.name || cat.title || cat.category_name || 'Game Top-up';
+        
+        let offers: any[] = [];
+        let fields: any[] = cat.fields || [];
 
-      try {
-        const offerData = await this.getOffers(catId, cat._kind);
-        offers = offerData.offers;
-        if (offerData.fields && offerData.fields.length > 0) {
-          fields = offerData.fields;
+        try {
+          const offerData = await this.getOffers(catId, cat._kind);
+          offers = offerData.offers;
+          if (offerData.fields && offerData.fields.length > 0) {
+            fields = offerData.fields;
+          }
+        } catch (err: any) {
+          console.warn(`[FZR Cards] Could not fetch offers for category ${catId} (${catName}):`, err.message);
         }
-      } catch (err: any) {
-        console.warn(`[FZR Cards] Could not fetch offers for category ${catId} (${catName}):`, err.message);
-      }
 
-      // Map fields
-      const mappedFields: FzrCardsFieldDefinition[] = fields.map((f: any) => ({
-        name: f.name || f.key || f.field_name || 'account_id',
-        title: f.title || f.label || f.name || 'Account ID',
-        type: f.type === 'select' || f.type === 'number' || f.type === 'text' ? f.type : 'string',
-        required: f.required !== undefined ? Boolean(f.required) : true,
-        placeholder: f.placeholder || f.hint || '',
-        options: Array.isArray(f.options) ? f.options.map((opt: any) => ({
-          label: typeof opt === 'string' ? opt : (opt.label || opt.name || String(opt.value)),
-          value: typeof opt === 'string' ? opt : String(opt.value !== undefined ? opt.value : opt.id)
-        })) : undefined,
-        description: f.description || ''
-      }));
+        // Map fields
+        const mappedFields: FzrCardsFieldDefinition[] = fields.map((f: any) => ({
+          name: f.name || f.key || f.field_name || 'account_id',
+          title: f.title || f.label || f.name || 'Account ID',
+          type: f.type === 'select' || f.type === 'number' || f.type === 'text' ? f.type : 'string',
+          required: f.required !== undefined ? Boolean(f.required) : true,
+          placeholder: f.placeholder || f.hint || '',
+          options: Array.isArray(f.options) ? f.options.map((opt: any) => ({
+            label: typeof opt === 'string' ? opt : (opt.label || opt.name || String(opt.value)),
+            value: typeof opt === 'string' ? opt : String(opt.value !== undefined ? opt.value : opt.id)
+          })) : undefined,
+          description: f.description || ''
+        }));
 
-      // Default fields fallback if empty (e.g. Player ID)
-      if (mappedFields.length === 0) {
-        mappedFields.push({
-          name: 'player_id',
-          title: 'Player ID / User ID',
-          type: 'string',
-          required: true,
-          placeholder: 'Enter in-game ID'
+        // Default fields fallback if empty (e.g. Player ID)
+        if (mappedFields.length === 0) {
+          mappedFields.push({
+            name: 'player_id',
+            title: 'Player ID / User ID',
+            type: 'string',
+            required: true,
+            placeholder: 'Enter in-game ID'
+          });
+        }
+
+        // Map SKUs
+        const mappedSkus: FzrCardsSku[] = offers.map((o: any) => {
+          const skuId = String(o.offer_id || o.id || o.sku_id || o.sku || o.code);
+          const skuName = o.name || o.title || o.offer_name || `${o.amount || ''} Package`;
+          const priceVal = o.price_usd !== undefined ? o.price_usd : (o.price !== undefined ? o.price : (o.reseller_price || o.cost || 0));
+          const price = parseFloat(String(priceVal || '0'));
+          const available = o.availability !== undefined ? Boolean(o.availability) : (o.available !== undefined ? Boolean(o.available) : (o.status !== 'disabled'));
+
+          return {
+            sku: skuId,
+            name: skuName,
+            price: isNaN(price) ? 0 : price,
+            currency: o.currency || 'USD',
+            available,
+            minQuantity: o.min_quantity || o.minQuantity || 1,
+            maxQuantity: o.max_quantity || o.maxQuantity || 100
+          };
         });
-      }
-
-      // Map SKUs
-      const mappedSkus: FzrCardsSku[] = offers.map((o: any) => {
-        const skuId = String(o.offer_id || o.id || o.sku_id || o.sku || o.code);
-        const skuName = o.name || o.title || o.offer_name || `${o.amount || ''} Package`;
-        const priceVal = o.price_usd !== undefined ? o.price_usd : (o.price !== undefined ? o.price : (o.reseller_price || o.cost || 0));
-        const price = parseFloat(String(priceVal || '0'));
-        const available = o.availability !== undefined ? Boolean(o.availability) : (o.available !== undefined ? Boolean(o.available) : (o.status !== 'disabled'));
 
         return {
-          sku: skuId,
-          name: skuName,
-          price: isNaN(price) ? 0 : price,
-          currency: o.currency || 'USD',
-          available,
-          minQuantity: o.min_quantity || o.minQuantity || 1,
-          maxQuantity: o.max_quantity || o.maxQuantity || 100
+          productId: catId,
+          name: catName,
+          status: (cat.status || 'ACTIVE').toUpperCase(),
+          category: cat._kind === 'gift_card' ? 'Gift Card' : 'Game Top-up',
+          description: cat.description || cat.guide || '',
+          iconUrl: cat.icon || cat.image || cat.icon_url || cat.logo || '',
+          fields: mappedFields,
+          skus: mappedSkus,
+          isEnabled: cat.status !== 'DISABLED' && cat.status !== 'disabled',
+          lastSyncedAt: new Date()
         };
       });
 
-      products.push({
-        productId: catId,
-        name: catName,
-        status: (cat.status || 'ACTIVE').toUpperCase(),
-        category: cat._kind === 'gift_card' ? 'Gift Card' : 'Game Top-up',
-        description: cat.description || cat.guide || '',
-        iconUrl: cat.icon || cat.image || cat.icon_url || cat.logo || '',
-        fields: mappedFields,
-        skus: mappedSkus,
-        isEnabled: cat.status !== 'DISABLED' && cat.status !== 'disabled',
-        lastSyncedAt: new Date()
-      });
+      const chunkResults = await Promise.all(chunkPromises);
+      products.push(...chunkResults);
     }
 
     return products;

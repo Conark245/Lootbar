@@ -388,6 +388,9 @@ export default function App() {
       const res = await fetch('/api/fzrcards/products/sync', { method: 'POST' });
       const data = await res.json();
       if (data?.success) {
+        if (data.message) {
+          alert("Sync started in background! This may take 1-2 minutes. Please refresh the page later to see the new products.");
+        }
         fetchFzrProducts();
       } else {
         alert(`Failed to sync: ${data?.error || 'Unknown error'}`);

@@ -120,50 +120,55 @@ export class FzrCardsService {
     }
 
     const liveProducts = await this.client.getProducts();
-    let synced = 0;
     const errors: string[] = [];
 
-    for (const p of liveProducts) {
+    if (liveProducts.length > 0) {
       try {
-        const shortKey = this.generateDefaultShortKey(p.name, p.productId);
-        await FzrCardsProduct.findOneAndUpdate(
-          { productId: p.productId },
-          {
-            name: p.name,
-            status: p.status || 'ACTIVE',
-            category: p.category || 'Game',
-            description: p.description,
-            iconUrl: p.iconUrl,
-            fields: p.fields || [],
-            skus: p.skus || [],
-            $setOnInsert: { shortKey },
-            lastSyncedAt: new Date()
-          },
-          { upsert: true, returnDocument: 'after' }
-        );
-        synced++;
+        const bulkOps = liveProducts.map(p => {
+          const shortKey = this.generateDefaultShortKey(p.name, p.productId);
+          return {
+            updateOne: {
+              filter: { productId: p.productId },
+              update: {
+                $set: {
+                  name: p.name,
+                  status: p.status || 'ACTIVE',
+                  category: p.category || 'Game',
+                  description: p.description,
+                  iconUrl: p.iconUrl,
+                  fields: p.fields || [],
+                  skus: p.skus || [],
+                  lastSyncedAt: new Date()
+                },
+                $setOnInsert: { shortKey }
+              },
+              upsert: true
+            }
+          };
+        });
+
+        const CHUNK_SIZE = 100;
+        for (let i = 0; i < bulkOps.length; i += CHUNK_SIZE) {
+          const chunk = bulkOps.slice(i, i + CHUNK_SIZE);
+          await FzrCardsProduct.bulkWrite(chunk);
+        }
       } catch (err: any) {
-        errors.push(`Product ${p.productId} (${p.name}): ${err.message}`);
+        errors.push(`Bulk write error: ${err.message}`);
       }
     }
 
-    return { total: liveProducts.length, synced, errors: errors.length > 0 ? errors : undefined };
+    return { 
+      total: liveProducts.length, 
+      synced: liveProducts.length - errors.length, 
+      errors: errors.length > 0 ? errors : undefined 
+    };
   }
 
   /**
    * Retrieves products from local database or syncs if empty.
    */
   public async getProducts(): Promise<any[]> {
-    let items = await FzrCardsProduct.find().sort({ name: 1 });
-    if (items.length === 0 && this.client.isConfigured()) {
-      try {
-        await this.syncCatalog();
-        items = await FzrCardsProduct.find().sort({ name: 1 });
-      } catch (e) {
-        console.warn('Auto-sync products on FZR Cards getProducts failed:', e);
-      }
-    }
-    return items;
+    return await FzrCardsProduct.find().sort({ name: 1 });
   }
 
   /**

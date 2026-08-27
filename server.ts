@@ -1377,9 +1377,15 @@ app.post("/api/fzrcards/products/sync", async (req, res) => {
     if (!fzrCardsClient.isConfigured()) {
       return res.status(400).json({ error: "FZR Cards API is not configured." });
     }
-    const syncResult = await fzrCardsService.syncProducts();
+    
+    // Run sync in the background
+    fzrCardsService.syncProducts().catch(err => {
+      console.error("[FZR Sync Background Error]:", err);
+    });
+    
+    // Return immediately to avoid request timeout
     const allProducts = await fzrCardsService.getProducts();
-    res.json({ success: true, count: syncResult.synced, total: syncResult.total, data: allProducts });
+    res.json({ success: true, count: 0, total: allProducts.length, data: allProducts, message: 'Sync started in background.' });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
