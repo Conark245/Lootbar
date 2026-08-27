@@ -104,7 +104,6 @@ export default function App() {
   const [loadingSaved, setLoadingSaved] = useState(true);
   const [showTpnGames, setShowTpnGames] = useState(false);
   const [showLootbarGames, setShowLootbarGames] = useState(false);
-  const [orderPage, setOrderPage] = useState(1);
 
   
   // Telegram Users State
@@ -124,9 +123,15 @@ export default function App() {
   const [orderFilter, setOrderFilter] = useState<'ALL' | 'ACTIVE' | 'COMPLETED' | 'FAILED'>('ALL');
   const [orderProviderFilter, setOrderProviderFilter] = useState<'ALL' | 'LOOTBAR' | 'TOPUPNATION'>('ALL');
   const [orderSearch, setOrderSearch] = useState('');
+  const [orderPage, setOrderPage] = useState<number>(1);
   const [selectedTrackingOrder, setSelectedTrackingOrder] = useState<any | null>(null);
   const [lastSyncTime, setLastSyncTime] = useState<Date>(new Date());
   const [isAutoSyncing, setIsAutoSyncing] = useState(true);
+
+  // Reset pagination when filters change
+  useEffect(() => {
+    setOrderPage(1);
+  }, [orderFilter, orderProviderFilter, orderSearch]);
 
   // Force dashboard re-fetch
   const [refreshKey, setRefreshKey] = useState(0);
@@ -2418,182 +2423,281 @@ export default function App() {
               );
             }
 
+            const ORDERS_PER_PAGE = 10;
+            const totalOrdersCount = filteredOrders.length;
+            const totalPages = Math.max(1, Math.ceil(totalOrdersCount / ORDERS_PER_PAGE));
+            const currentPage = Math.min(Math.max(1, orderPage), totalPages);
+            const startIndex = (currentPage - 1) * ORDERS_PER_PAGE;
+            const endIndex = Math.min(startIndex + ORDERS_PER_PAGE, totalOrdersCount);
+            const paginatedOrders = filteredOrders.slice(startIndex, endIndex);
+
             return (
-              <div className="overflow-x-auto border border-neutral-200 rounded-xl">
-                <table className="w-full text-left text-sm border-collapse">
-                  <thead>
-                    <tr className="border-b border-neutral-200 bg-neutral-50/80 text-neutral-600 font-medium text-xs">
-                      <th className="py-3 px-4">Date / Time</th>
-                      <th className="py-3 px-4">Provider</th>
-                      <th className="py-3 px-4">User</th>
-                      <th className="py-3 px-4">Game & Product</th>
-                      <th className="py-3 px-4">Player Name</th>
-                      <th className="py-3 px-4">Account UID</th>
-                      <th className="py-3 px-4">Price</th>
-                      <th className="py-3 px-4">Live Status Pipeline</th>
-                      <th className="py-3 px-4 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-neutral-100 bg-white">
-                    {filteredOrders.map((o) => {
-                      const status = getOrderStateDetails(o.state);
-                      const isSyncingThis = syncingRefId === o.referenceId;
-                      const provider = o.provider || 'lootbar';
+              <div className="border border-neutral-200 rounded-xl overflow-hidden bg-white shadow-xs">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm border-collapse">
+                    <thead>
+                      <tr className="border-b border-neutral-200 bg-neutral-50/80 text-neutral-600 font-medium text-xs">
+                        <th className="py-3 px-4">Date / Time</th>
+                        <th className="py-3 px-4">Provider</th>
+                        <th className="py-3 px-4">User</th>
+                        <th className="py-3 px-4">Game & Product</th>
+                        <th className="py-3 px-4">Player Name</th>
+                        <th className="py-3 px-4">Account UID</th>
+                        <th className="py-3 px-4">Price</th>
+                        <th className="py-3 px-4">Live Status Pipeline</th>
+                        <th className="py-3 px-4 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-100 bg-white">
+                      {paginatedOrders.map((o) => {
+                        const status = getOrderStateDetails(o.state);
+                        const isSyncingThis = syncingRefId === o.referenceId;
+                        const provider = o.provider || 'lootbar';
 
-                      return (
-                        <tr key={o.referenceId} className="hover:bg-neutral-50/70 transition-colors">
-                          {/* Date */}
-                          <td className="py-3.5 px-4 text-xs text-neutral-500 whitespace-nowrap">
-                            <div className="font-medium text-neutral-700">{formatMyanmarDate(o.createdAt)}</div>
-                            <div className="text-[11px] text-neutral-400">{formatMyanmarTime(o.createdAt)}</div>
-                          </td>
+                        return (
+                          <tr key={o.referenceId} className="hover:bg-neutral-50/70 transition-colors">
+                            {/* Date */}
+                            <td className="py-3.5 px-4 text-xs text-neutral-500 whitespace-nowrap">
+                              <div className="font-medium text-neutral-700">{formatMyanmarDate(o.createdAt)}</div>
+                              <div className="text-[11px] text-neutral-400">{formatMyanmarTime(o.createdAt)}</div>
+                            </td>
 
-                          {/* Provider */}
-                          <td className="py-3.5 px-4 whitespace-nowrap">
-                            {provider === 'topupnation' ? (
-                              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md">
-                                🌐 TopupNation
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
-                                🟢 LootBar
-                              </span>
-                            )}
-                          </td>
-
-                          {/* User */}
-                          <td className="py-3.5 px-4">
-                            {(() => {
-                              const matchedUser = telegramUsers.find(u => String(u.telegramChatId) === String(o.telegramChatId));
-                              const isApi = !!(matchedUser?.useDirectApiBalance || matchedUser?.balanceMode === 'api');
-                              const username = o.telegramUsername || matchedUser?.username;
-                              const firstName = o.telegramFirstName || matchedUser?.firstName;
-
-                              return (
-                                <div className="space-y-0.5">
-                                  {username ? (
-                                    <button
-                                      onClick={() => setOrderSearch(`@${username}`)}
-                                      className="font-medium text-xs text-blue-700 hover:text-blue-900 hover:underline flex items-center gap-1 group"
-                                      title="Filter by @username"
-                                    >
-                                      <span className="font-semibold text-neutral-900 group-hover:text-blue-800">@{username}</span>
-                                    </button>
-                                  ) : firstName ? (
-                                    <div className="font-medium text-xs text-neutral-800">{firstName}</div>
-                                  ) : null}
-
-                                  <div className="flex items-center gap-1">
-                                    <button
-                                      onClick={() => setOrderSearch(String(o.telegramChatId))}
-                                      className="font-mono text-[11px] text-neutral-500 hover:text-neutral-800 hover:underline"
-                                      title="Filter by Chat ID"
-                                    >
-                                      ID: {o.telegramChatId}
-                                    </button>
-                                  </div>
-
-                                  {matchedUser?.notes ? (
-                                    <div className="text-[11px] text-neutral-600 truncate max-w-[130px] font-medium" title={matchedUser.notes}>
-                                      📝 {matchedUser.notes}
-                                    </div>
-                                  ) : null}
-
-                                  {isApi && (
-                                    <span className="inline-block mt-0.5 text-[9px] font-bold text-purple-700 bg-purple-50 border border-purple-200 px-1.5 py-0.2 rounded">
-                                      VIP API
-                                    </span>
-                                  )}
-                                </div>
-                              );
-                            })()}
-                          </td>
-
-                          {/* Game & Product */}
-                          <td className="py-3.5 px-4">
-                            <span className="font-semibold text-neutral-900 block">{o.skuName || `Product #${o.skuId}`}</span>
-                            <span className="text-xs text-neutral-500 font-medium">{o.gameName || `Game #${o.gameId}`}</span>
-                          </td>
-
-                          {/* Player Name */}
-                          <td className="py-3.5 px-4">
-                            {o.playerName && String(o.playerName).toLowerCase() !== 'undefined' && String(o.playerName).toLowerCase() !== 'null' ? (
-                              <span className="inline-flex items-center gap-1 font-semibold text-xs text-blue-800 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md">
-                                🎯 {o.playerName}
-                              </span>
-                            ) : (
-                              <span className="text-xs text-neutral-400 italic">-</span>
-                            )}
-                          </td>
-
-                          {/* Account UID & Details */}
-                          <td className="py-3.5 px-4 text-xs">
-                            {o.extraInfo ? (
-                              <div className="space-y-0.5 max-w-[180px]">
-                                {Object.entries(o.extraInfo)
-                                  .filter(([k, v]) => k !== 'paymentSource' && k !== 'provider' && v && String(v).trim() && String(v).toLowerCase() !== 'undefined' && String(v).toLowerCase() !== 'null')
-                                  .map(([k, v]) => (
-                                    <div key={k} className="truncate">
-                                      <span className="text-neutral-400 font-medium uppercase text-[10px]">{k}:</span>{' '}
-                                      <span className="font-mono font-medium text-neutral-800">{String(v)}</span>
-                                    </div>
-                                  ))}
-                              </div>
-                            ) : '-'}
-                          </td>
-
-                          {/* Price */}
-                          <td className="py-3.5 px-4 font-bold text-neutral-900 font-mono text-xs">
-                            ${Number(o.price || 0).toFixed(2)}
-                          </td>
-
-                          {/* Live Status Tracking Stepper */}
-                          <td className="py-3.5 px-4">
-                            <div className="flex flex-col gap-1.5 min-w-[160px]">
-                              <div className="flex items-center gap-2">
-                                <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold border ${status.badgeBg}`}>
-                                  <span className={`w-1.5 h-1.5 rounded-full ${status.dotBg}`}></span>
-                                  {status.label}
+                            {/* Provider */}
+                            <td className="py-3.5 px-4 whitespace-nowrap">
+                              {provider === 'topupnation' ? (
+                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md">
+                                  🌐 TopupNation
                                 </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+                                  🟢 LootBar
+                                </span>
+                              )}
+                            </td>
+
+                            {/* User */}
+                            <td className="py-3.5 px-4">
+                              {(() => {
+                                const matchedUser = telegramUsers.find(u => String(u.telegramChatId) === String(o.telegramChatId));
+                                const isApi = !!(matchedUser?.useDirectApiBalance || matchedUser?.balanceMode === 'api');
+                                const username = o.telegramUsername || matchedUser?.username;
+                                const firstName = o.telegramFirstName || matchedUser?.firstName;
+
+                                return (
+                                  <div className="space-y-0.5">
+                                    {username ? (
+                                      <button
+                                        onClick={() => setOrderSearch(`@${username}`)}
+                                        className="font-medium text-xs text-blue-700 hover:text-blue-900 hover:underline flex items-center gap-1 group"
+                                        title="Filter by @username"
+                                      >
+                                        <span className="font-semibold text-neutral-900 group-hover:text-blue-800">@{username}</span>
+                                      </button>
+                                    ) : firstName ? (
+                                      <div className="font-medium text-xs text-neutral-800">{firstName}</div>
+                                    ) : null}
+
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        onClick={() => setOrderSearch(String(o.telegramChatId))}
+                                        className="font-mono text-[11px] text-neutral-500 hover:text-neutral-800 hover:underline"
+                                        title="Filter by Chat ID"
+                                      >
+                                        ID: {o.telegramChatId}
+                                      </button>
+                                    </div>
+
+                                    {matchedUser?.notes ? (
+                                      <div className="text-[11px] text-neutral-600 truncate max-w-[130px] font-medium" title={matchedUser.notes}>
+                                        📝 {matchedUser.notes}
+                                      </div>
+                                    ) : null}
+
+                                    {isApi && (
+                                      <span className="inline-block mt-0.5 text-[9px] font-bold text-purple-700 bg-purple-50 border border-purple-200 px-1.5 py-0.2 rounded">
+                                        VIP API
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                            </td>
+
+                            {/* Game & Product */}
+                            <td className="py-3.5 px-4">
+                              <span className="font-semibold text-neutral-900 block">{o.skuName || `Product #${o.skuId}`}</span>
+                              <span className="text-xs text-neutral-500 font-medium">{o.gameName || `Game #${o.gameId}`}</span>
+                            </td>
+
+                            {/* Player Name */}
+                            <td className="py-3.5 px-4">
+                              {o.playerName && String(o.playerName).toLowerCase() !== 'undefined' && String(o.playerName).toLowerCase() !== 'null' ? (
+                                <span className="inline-flex items-center gap-1 font-semibold text-xs text-blue-800 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md">
+                                  🎯 {o.playerName}
+                                </span>
+                              ) : (
+                                <span className="text-xs text-neutral-400 italic">-</span>
+                              )}
+                            </td>
+
+                            {/* Account UID & Details */}
+                            <td className="py-3.5 px-4 text-xs">
+                              {o.extraInfo ? (
+                                <div className="space-y-0.5 max-w-[180px]">
+                                  {Object.entries(o.extraInfo)
+                                    .filter(([k, v]) => k !== 'paymentSource' && k !== 'provider' && v && String(v).trim() && String(v).toLowerCase() !== 'undefined' && String(v).toLowerCase() !== 'null')
+                                    .map(([k, v]) => (
+                                      <div key={k} className="truncate">
+                                        <span className="text-neutral-400 font-medium uppercase text-[10px]">{k}:</span>{' '}
+                                        <span className="font-mono font-medium text-neutral-800">{String(v)}</span>
+                                      </div>
+                                    ))}
+                                </div>
+                              ) : '-'}
+                            </td>
+
+                            {/* Price */}
+                            <td className="py-3.5 px-4 font-bold text-neutral-900 font-mono text-xs">
+                              ${Number(o.price || 0).toFixed(2)}
+                            </td>
+
+                            {/* Live Status Tracking Stepper */}
+                            <td className="py-3.5 px-4">
+                              <div className="flex flex-col gap-1.5 min-w-[160px]">
+                                <div className="flex items-center gap-2">
+                                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold border ${status.badgeBg}`}>
+                                    <span className={`w-1.5 h-1.5 rounded-full ${status.dotBg}`}></span>
+                                    {status.label}
+                                  </span>
+                                </div>
+
+                                {/* 3-Step Mini Visual Progress Bar */}
+                                <div className="flex items-center gap-1 w-full max-w-[140px]">
+                                  <div className={`h-1.5 flex-1 rounded-full ${status.step >= 1 ? (o.state === 3 ? 'bg-rose-400' : 'bg-amber-400') : 'bg-neutral-200'}`} title="Step 1: Pending"></div>
+                                  <div className={`h-1.5 flex-1 rounded-full ${status.step >= 2 ? (o.state === 3 ? 'bg-rose-400' : o.state === 2 ? 'bg-emerald-500' : 'bg-blue-500 animate-pulse') : 'bg-neutral-200'}`} title="Step 2: Processing"></div>
+                                  <div className={`h-1.5 flex-1 rounded-full ${status.step >= 3 ? (o.state === 3 ? 'bg-rose-500' : 'bg-emerald-500') : 'bg-neutral-200'}`} title="Step 3: Completed"></div>
+                                </div>
                               </div>
+                            </td>
 
-                              {/* 3-Step Mini Visual Progress Bar */}
-                              <div className="flex items-center gap-1 w-full max-w-[140px]">
-                                <div className={`h-1.5 flex-1 rounded-full ${status.step >= 1 ? (o.state === 3 ? 'bg-rose-400' : 'bg-amber-400') : 'bg-neutral-200'}`} title="Step 1: Pending"></div>
-                                <div className={`h-1.5 flex-1 rounded-full ${status.step >= 2 ? (o.state === 3 ? 'bg-rose-400' : o.state === 2 ? 'bg-emerald-500' : 'bg-blue-500 animate-pulse') : 'bg-neutral-200'}`} title="Step 2: Processing"></div>
-                                <div className={`h-1.5 flex-1 rounded-full ${status.step >= 3 ? (o.state === 3 ? 'bg-rose-500' : 'bg-emerald-500') : 'bg-neutral-200'}`} title="Step 3: Completed"></div>
+                            {/* Actions */}
+                            <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  onClick={() => handleSyncOrder(o.referenceId)}
+                                  disabled={isSyncingThis}
+                                  className="text-xs font-medium px-2.5 py-1 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded-md border border-neutral-200 transition-colors flex items-center gap-1 disabled:opacity-50"
+                                  title="Check status with LootBar API right now"
+                                >
+                                  <svg className={`w-3 h-3 ${isSyncingThis ? 'animate-spin text-blue-600' : ''}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                  </svg>
+                                  {isSyncingThis ? 'Syncing...' : 'Sync'}
+                                </button>
+
+                                <button
+                                  onClick={() => setSelectedTrackingOrder(o)}
+                                  className="text-xs font-medium px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-md border border-blue-200 transition-colors"
+                                >
+                                  View Tracker
+                                </button>
                               </div>
-                            </div>
-                          </td>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
 
-                          {/* Actions */}
-                          <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                            <div className="flex items-center justify-end gap-1.5">
-                              <button
-                                onClick={() => handleSyncOrder(o.referenceId)}
-                                disabled={isSyncingThis}
-                                className="text-xs font-medium px-2.5 py-1 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded-md border border-neutral-200 transition-colors flex items-center gap-1 disabled:opacity-50"
-                                title="Check status with LootBar API right now"
-                              >
-                                <svg className={`w-3 h-3 ${isSyncingThis ? 'animate-spin text-blue-600' : ''}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                                </svg>
-                                {isSyncingThis ? 'Syncing...' : 'Sync'}
-                              </button>
+                {/* Pagination Controls */}
+                {totalPages > 1 && (
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 bg-neutral-50/90 border-t border-neutral-200 text-xs text-neutral-600">
+                    <div className="font-medium">
+                      Showing <span className="font-semibold text-neutral-900">{startIndex + 1}</span> -{' '}
+                      <span className="font-semibold text-neutral-900">{endIndex}</span> of{' '}
+                      <span className="font-semibold text-neutral-900">{totalOrdersCount}</span> orders
+                    </div>
 
+                    <div className="flex items-center gap-1 flex-wrap justify-center">
+                      <button
+                        onClick={() => setOrderPage(1)}
+                        disabled={currentPage === 1}
+                        className="px-2.5 py-1 rounded-md border border-neutral-200 bg-white font-medium hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        title="First Page"
+                      >
+                        « First
+                      </button>
+                      <button
+                        onClick={() => setOrderPage(p => Math.max(1, p - 1))}
+                        disabled={currentPage === 1}
+                        className="px-2.5 py-1 rounded-md border border-neutral-200 bg-white font-medium hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        title="Previous Page"
+                      >
+                        ‹ Prev
+                      </button>
+
+                      {/* Dynamic Page Buttons with Smart Ellipsis */}
+                      <div className="flex items-center gap-1 mx-1">
+                        {(() => {
+                          const pages: (number | string)[] = [];
+                          if (totalPages <= 7) {
+                            for (let i = 1; i <= totalPages; i++) pages.push(i);
+                          } else {
+                            if (currentPage <= 4) {
+                              pages.push(1, 2, 3, 4, 5, '...', totalPages);
+                            } else if (currentPage >= totalPages - 3) {
+                              pages.push(1, '...', totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages);
+                            } else {
+                              pages.push(1, '...', currentPage - 1, currentPage, currentPage + 1, '...', totalPages);
+                            }
+                          }
+
+                          return pages.map((p, idx) => {
+                            if (p === '...') {
+                              return (
+                                <span key={`dots-${idx}`} className="px-1 text-neutral-400 font-mono select-none">
+                                  ...
+                                </span>
+                              );
+                            }
+                            const isCurrent = p === currentPage;
+                            return (
                               <button
-                                onClick={() => setSelectedTrackingOrder(o)}
-                                className="text-xs font-medium px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-md border border-blue-200 transition-colors"
+                                key={`page-${p}`}
+                                onClick={() => setOrderPage(Number(p))}
+                                className={`min-w-[28px] h-7 px-2 rounded-md text-xs font-semibold transition-all ${
+                                  isCurrent
+                                    ? 'bg-neutral-900 text-white shadow-xs'
+                                    : 'bg-white border border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                                }`}
                               >
-                                View Tracker
+                                {p}
                               </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                            );
+                          });
+                        })()}
+                      </div>
+
+                      <button
+                        onClick={() => setOrderPage(p => Math.min(totalPages, p + 1))}
+                        disabled={currentPage === totalPages}
+                        className="px-2.5 py-1 rounded-md border border-neutral-200 bg-white font-medium hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        title="Next Page"
+                      >
+                        Next ›
+                      </button>
+                      <button
+                        onClick={() => setOrderPage(totalPages)}
+                        disabled={currentPage === totalPages}
+                        className="px-2.5 py-1 rounded-md border border-neutral-200 bg-white font-medium hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        title="Last Page"
+                      >
+                        Last »
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })()}
