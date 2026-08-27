@@ -2017,9 +2017,10 @@ export function setupBot(
     }
 
     // Direct API Linked VIP or Owner: Show Live API Balances
-    const [lbRes, tpnRes] = await Promise.all([
+    const [lbRes, tpnRes, fzrRes] = await Promise.all([
       getLootBarLiveBalance(),
-      getTopupNationLiveBalance()
+      getTopupNationLiveBalance(),
+      getFzrCardsLiveBalance()
     ]);
 
     let msg = `⚡ *Direct API Live Balance (VIP / Reseller)*\n` +
@@ -2029,16 +2030,18 @@ export function setupBot(
       `═════════════════════════\n` +
       `🎮 *LootBar API:* \`$${lbRes.balance} USD\` (${lbRes.success ? '✅ Connected' : '⚠️ Offline'})\n` +
       `🌐 *TopupNation API:* \`$${tpnRes.balance} USD\` (${tpnRes.success ? '✅ Connected' : '⚠️ Offline'})\n` +
+      `⚡ *FZR Cards API:* \`$${fzrRes.balance} USD\` (${fzrRes.success ? '✅ Connected' : '⚠️ Offline'})\n` +
       `═════════════════════════\n` +
       `💡 _API Balance တစ်ခုချင်းစီကို သီးသန့် ရွေးချယ်ကြည့်ရှုလိုပါက အောက်ပါခလုတ်များကို နှိပ်ပါ:_`;
 
     const keyboard = Markup.inlineKeyboard([
       [
-        Markup.button.callback('🎮 LootBar Balance', 'api_bal_lootbar'),
-        Markup.button.callback('🌐 TopupNation Balance', 'api_bal_topupnation')
+        Markup.button.callback('🎮 LootBar', 'api_bal_lootbar'),
+        Markup.button.callback('🌐 TopupNation', 'api_bal_topupnation'),
+        Markup.button.callback('⚡ FZR Cards', 'api_bal_fzrcards')
       ],
       [
-        Markup.button.callback('🔄 Both API Balances', 'api_bal_both'),
+        Markup.button.callback('🔄 All APIs', 'api_bal_both'),
         Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')
       ],
       [

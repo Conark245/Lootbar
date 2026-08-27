@@ -2075,9 +2075,9 @@ export default function App() {
                 <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-lg ${
                   skuModalGame.isTpn 
                     ? 'bg-indigo-100 text-indigo-700' 
-                    : 'bg-emerald-100 text-emerald-700'
+                    : skuModalGame.isFzr ? 'bg-sky-100 text-sky-700' : 'bg-emerald-100 text-emerald-700'
                 }`}>
-                  {skuModalGame.isTpn ? '🌐' : '🎮'}
+                  {skuModalGame.isTpn ? '🌐' : skuModalGame.isFzr ? '💎' : '🎮'}
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
@@ -2085,18 +2085,18 @@ export default function App() {
                     <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
                       skuModalGame.isTpn 
                         ? 'bg-indigo-100 text-indigo-800' 
-                        : 'bg-emerald-100 text-emerald-800'
+                        : skuModalGame.isFzr ? 'bg-sky-100 text-sky-800' : 'bg-emerald-100 text-emerald-800'
                     }`}>
-                      {skuModalGame.isTpn ? 'TopupNation' : 'LootBar'}
+                      {skuModalGame.isTpn ? 'TopupNation' : skuModalGame.isFzr ? 'FZR Cards' : 'LootBar'}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 mt-0.5">
                     <span className="text-xs text-neutral-500 font-mono">
-                      Game Short Key: <strong className="text-neutral-800 font-bold">.{skuModalGame.shortKey || (skuModalGame.isTpn ? `t${skuModalGame.productId.slice(0, 4)}` : skuModalGame.gameId)}</strong>
+                      Game Short Key: <strong className="text-neutral-800 font-bold">.{skuModalGame.shortKey || (skuModalGame.isTpn ? `t${skuModalGame.productId.slice(0, 4)}` : skuModalGame.isFzr ? `f${skuModalGame.productId.slice(0, 4)}` : skuModalGame.gameId)}</strong>
                     </span>
                     <span className="text-neutral-300">•</span>
                     <span className="text-xs text-neutral-500">
-                      ID: {skuModalGame.isTpn ? skuModalGame.productId : skuModalGame.gameId}
+                      ID: {skuModalGame.isTpn || skuModalGame.isFzr ? skuModalGame.productId : skuModalGame.gameId}
                     </span>
                   </div>
                 </div>
@@ -2177,8 +2177,9 @@ export default function App() {
                   const filteredSkus = (skuModalGame.modalSkus || []).filter((sku: any) => {
                     if (!skuSearchFilter.trim()) return true;
                     const query = skuSearchFilter.toLowerCase().trim();
-                    const name = String(skuModalGame.isTpn ? sku.name : (sku.sku_name || '')).toLowerCase();
-                    const id = String(skuModalGame.isTpn ? sku.sku : sku.sku_id).toLowerCase();
+                    const isApiBased = skuModalGame.isTpn || skuModalGame.isFzr;
+                    const name = String(isApiBased ? sku.name : (sku.sku_name || '')).toLowerCase();
+                    const id = String(isApiBased ? sku.sku : sku.sku_id).toLowerCase();
                     const currentKey = String(skuShortKeysInput[id] || '').toLowerCase();
                     return name.includes(query) || id.includes(query) || currentKey.includes(query);
                   });
@@ -2191,13 +2192,14 @@ export default function App() {
                     );
                   }
 
-                  const activeGameKey = skuModalGame.shortKey || (skuModalGame.isTpn ? `t${skuModalGame.productId.slice(0, 4)}` : skuModalGame.gameId);
+                  const activeGameKey = skuModalGame.shortKey || (skuModalGame.isTpn ? `t${skuModalGame.productId.slice(0, 4)}` : skuModalGame.isFzr ? `f${skuModalGame.productId.slice(0, 4)}` : skuModalGame.gameId);
 
                   return filteredSkus.map((sku: any) => {
-                    const skuId = String(skuModalGame.isTpn ? sku.sku : sku.sku_id);
-                    const name = skuModalGame.isTpn ? sku.name : (sku.sku_name || `Package #${skuId}`);
-                    const price = skuModalGame.isTpn 
-                      ? `${sku.price} ${sku.currency || 'USD'}` 
+                    const isApiBased = skuModalGame.isTpn || skuModalGame.isFzr;
+                    const skuId = String(isApiBased ? sku.sku : sku.sku_id);
+                    const name = isApiBased ? sku.name : (sku.sku_name || `Package #${skuId}`);
+                    const price = isApiBased 
+                      ? `$${sku.price} ${sku.currency || 'USD'}` 
                       : `$${sku.reseller_price || sku.price || '0.00'}`;
                     const currentKey = skuShortKeysInput[skuId] || '';
 
