@@ -15,6 +15,7 @@ import { AppConfig } from "./server/models/AppConfig";
 import { User } from "./server/models/User";
 import { TopupRequest } from "./server/models/TopupRequest";
 import { TopupNationProduct } from "./server/models/TopupNationProduct";
+import { BulkOrderService } from "./server/bulkOrderService";
 import { createServer as createViteServer } from "vite";
 
 dotenv.config();
@@ -543,6 +544,96 @@ app.post("/api/order", async (req, res) => {
     res.json(data);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Bulk Order: Parse & Preview
+app.post("/api/orders/bulk/preview", async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ success: false, error: "Text is required" });
+    }
+    const result = await BulkOrderService.parseBulkText(text, lootbarClient);
+    res.json({ success: true, data: result });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Bulk Order: Execute
+app.post("/api/orders/bulk/execute", async (req, res) => {
+  try {
+    const { telegramChatId, userId, items, isDirectApi } = req.body;
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ success: false, error: "Items array is required" });
+    }
+
+    let targetUser: any = null;
+    if (telegramChatId) {
+      targetUser = await User.findOne({ telegramChatId });
+    } else if (userId) {
+      targetUser = await User.findById(userId);
+    }
+
+    if (!targetUser) {
+      // Create or use fallback Admin Direct API user
+      targetUser = await User.findOne({ telegramChatId: 0 });
+      if (!targetUser) {
+        targetUser = await User.create({
+          telegramChatId: 0,
+          username: "admin_direct",
+          firstName: "System Admin",
+          balanceMode: isDirectApi !== false ? "api" : "wallet",
+          useDirectApiBalance: true,
+          balance: 999999
+        });
+      }
+    }
+
+    const summary = await BulkOrderService.executeBulkOrders(
+      targetUser,
+      items,
+      lootbarClient,
+      topupNationService,
+      { rawText: req.body.rawText, source: 'web' }
+    );
+
+    res.json({ success: true, data: summary });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Bulk Order: History List
+app.get("/api/orders/bulk/history", async (req, res) => {
+  try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+    const telegramChatId = req.query.telegramChatId ? parseInt(req.query.telegramChatId as string) : undefined;
+
+    const data = await BulkOrderService.getBulkHistory({
+      page,
+      limit,
+      telegramChatId
+    });
+
+    res.json({ success: true, data });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Bulk Order: Batch Detail
+app.get("/api/orders/bulk/batch/:batchId", async (req, res) => {
+  try {
+    const batch = await BulkOrderService.getBulkBatchById(req.params.batchId);
+    if (!batch) {
+      return res.status(404).json({ success: false, error: "Bulk batch not found" });
+    }
+    res.json({ success: true, data: batch });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

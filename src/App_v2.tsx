@@ -136,6 +136,36 @@ export default function App() {
   // Force dashboard re-fetch
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // Bulk Order Engine State
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [bulkActiveTab, setBulkActiveTab] = useState<'create' | 'history'>('create');
+  const [bulkText, setBulkText] = useState('');
+  const [bulkTargetUser, setBulkTargetUser] = useState<string>('direct_api');
+  const [bulkPreview, setBulkPreview] = useState<any>(null);
+  const [bulkIsParsing, setBulkIsParsing] = useState(false);
+  const [bulkIsExecuting, setBulkIsExecuting] = useState(false);
+  const [bulkSummary, setBulkSummary] = useState<any>(null);
+  const [bulkError, setBulkError] = useState('');
+  const [bulkHistory, setBulkHistory] = useState<any>(null);
+  const [loadingBulkHistory, setLoadingBulkHistory] = useState(false);
+  const [bulkHistoryPage, setBulkHistoryPage] = useState(1);
+  const [selectedBulkBatch, setSelectedBulkBatch] = useState<any>(null);
+
+  const fetchBulkHistory = async (page: number = 1) => {
+    setLoadingBulkHistory(true);
+    try {
+      const data = await safeFetchJson(`/api/orders/bulk/history?page=${page}&limit=10`);
+      if (data?.success && data?.data) {
+        setBulkHistory(data.data);
+        setBulkHistoryPage(page);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setLoadingBulkHistory(false);
+    }
+  };
+
   // TopUpNation Reseller API State
   const [tpnConfigured, setTpnConfigured] = useState<boolean | null>(null);
   const [tpnApiKey, setTpnApiKey] = useState('');
@@ -281,6 +311,80 @@ export default function App() {
     } catch (err: any) {
       alert(`Error toggling product: ${err.message}`);
     }
+  };
+
+  const handlePreviewBulkOrder = async () => {
+    if (!bulkText.trim()) {
+      setBulkError('Please enter at least one order line.');
+      return;
+    }
+    setBulkIsParsing(true);
+    setBulkError('');
+    setBulkSummary(null);
+    try {
+      const res = await fetch('/api/orders/bulk/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: bulkText })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setBulkError(data.error || 'Failed to parse bulk orders');
+      } else {
+        setBulkPreview(data.data);
+      }
+    } catch (err: any) {
+      setBulkError(err.message || 'Network error');
+    } finally {
+      setBulkIsParsing(false);
+    }
+  };
+
+  const handleExecuteBulkOrder = async () => {
+    if (!bulkPreview || !bulkPreview.validItems || bulkPreview.validItems.length === 0) {
+      setBulkError('No valid items to execute. Please preview and validate first.');
+      return;
+    }
+    setBulkIsExecuting(true);
+    setBulkError('');
+    try {
+      const payload: any = {
+        items: bulkPreview.validItems
+      };
+      if (bulkTargetUser === 'direct_api') {
+        payload.isDirectApi = true;
+      } else {
+        payload.telegramChatId = Number(bulkTargetUser);
+      }
+      const res = await fetch('/api/orders/bulk/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setBulkError(data.error || 'Failed to execute bulk order');
+      } else {
+        setBulkSummary(data.data);
+        setBulkPreview(null);
+        fetchOrders();
+        fetchTelegramUsers();
+        fetchLootbarBalance();
+        fetchTpnBalance();
+        fetchBulkHistory(1);
+      }
+    } catch (err: any) {
+      setBulkError(err.message || 'Execution error');
+    } finally {
+      setBulkIsExecuting(false);
+    }
+  };
+
+  const loadExampleBulkLines = () => {
+    const example = `.ml 12345678 2001 wp\n.ml 87654321 2002 86 x3\n.pubg 5123456789 60\n.ff 11223344 100`;
+    setBulkText(example);
+    setBulkError('');
+    setBulkSummary(null);
   };
 
   const fetchLootbarBalance = async () => {
@@ -949,6 +1053,601 @@ export default function App() {
         </div>
       )}
 
+      {/* Bulk Order Engine Modal */}
+      {showBulkModal && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-xl border border-neutral-200 w-full max-w-4xl max-h-[90vh] flex flex-col relative my-6">
+            {/* Modal Header */}
+            <div className="p-6 border-b border-neutral-200 flex items-center justify-between bg-neutral-50/80 rounded-t-2xl">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center font-bold text-xl">
+                  ⚡
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold text-neutral-900 tracking-tight">Bulk Top-Up Order Engine</h2>
+                  <p className="text-xs text-neutral-500">
+                    Place multiple top-up orders at once and track bulk batch histories
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => {
+                  setShowBulkModal(false);
+                  setSelectedBulkBatch(null);
+                }}
+                className="w-8 h-8 rounded-lg hover:bg-neutral-200 text-neutral-500 hover:text-neutral-800 flex items-center justify-center font-bold text-lg transition-colors cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Tabs Navigation */}
+            <div className="px-6 pt-3 border-b border-neutral-200 flex items-center gap-2 bg-neutral-50/50">
+              <button
+                type="button"
+                onClick={() => {
+                  setBulkActiveTab('create');
+                  setSelectedBulkBatch(null);
+                }}
+                className={`px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-all border-b-2 cursor-pointer flex items-center gap-1.5 ${
+                  bulkActiveTab === 'create'
+                    ? 'border-amber-600 text-amber-900 bg-white shadow-xs font-bold'
+                    : 'border-transparent text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100/60'
+                }`}
+              >
+                <span>⚡ New Bulk Order</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setBulkActiveTab('history');
+                  setSelectedBulkBatch(null);
+                  fetchBulkHistory(1);
+                }}
+                className={`px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-all border-b-2 cursor-pointer flex items-center gap-1.5 ${
+                  bulkActiveTab === 'history'
+                    ? 'border-amber-600 text-amber-900 bg-white shadow-xs font-bold'
+                    : 'border-transparent text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100/60'
+                }`}
+              >
+                <span>📜 Bulk Order History</span>
+                {bulkHistory?.total > 0 && (
+                  <span className="px-1.5 py-0.5 text-[10px] bg-amber-100 text-amber-800 font-bold rounded-full">
+                    {bulkHistory.total}
+                  </span>
+                )}
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto space-y-5 flex-1 text-sm">
+              {bulkActiveTab === 'create' && (
+                <>
+                  {/* Account Source Selector */}
+                  <div className="bg-neutral-50 p-4 rounded-xl border border-neutral-200">
+                    <label className="block text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-2">
+                      💳 Payment / Balance Source:
+                    </label>
+                    <select
+                      value={bulkTargetUser}
+                      onChange={e => setBulkTargetUser(e.target.value)}
+                      className="w-full px-3.5 py-2.5 bg-white border border-neutral-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none"
+                    >
+                      <option value="direct_api">⚡ Admin Direct API Balance (Bypass User Wallet / Direct API Purchase)</option>
+                      <optgroup label="Telegram Users (Deduct User Wallet Balance)">
+                        {telegramUsers.map(u => (
+                          <option key={u.telegramChatId} value={String(u.telegramChatId)}>
+                            👤 {u.telegramUsername ? `@${u.telegramUsername}` : u.firstName || 'User'} (ID: {u.telegramChatId}) — Balance: ${Number(u.balance || 0).toFixed(2)} USD {u.useDirectApiBalance ? '⚡ API Linked' : ''}
+                          </option>
+                        ))}
+                      </optgroup>
+                    </select>
+                  </div>
+
+                  {/* Execution Summary Report */}
+                  {bulkSummary && (
+                    <div className="p-5 bg-emerald-50 border border-emerald-200 rounded-xl space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xl">🎉</span>
+                          <div>
+                            <h3 className="font-bold text-emerald-900 text-base">Bulk Order Execution Completed!</h3>
+                            {bulkSummary.batchId && (
+                              <p className="text-xs text-emerald-700 font-mono">Batch ID: {bulkSummary.batchId}</p>
+                            )}
+                          </div>
+                        </div>
+                        <span className="px-3 py-1 bg-emerald-100 text-emerald-800 font-semibold text-xs rounded-full">
+                          {bulkSummary.successCount} Success / {bulkSummary.failedCount} Failed
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                        <div className="bg-white p-3 rounded-lg border border-emerald-100">
+                          <span className="text-neutral-500 block">Total Requested</span>
+                          <span className="text-base font-bold text-neutral-900">{bulkSummary.totalRequested} orders</span>
+                        </div>
+                        <div className="bg-white p-3 rounded-lg border border-emerald-100">
+                          <span className="text-neutral-500 block">Successful</span>
+                          <span className="text-base font-bold text-emerald-600">{bulkSummary.successCount}</span>
+                        </div>
+                        <div className="bg-white p-3 rounded-lg border border-emerald-100">
+                          <span className="text-neutral-500 block">Failed / Refunded</span>
+                          <span className="text-base font-bold text-red-600">{bulkSummary.failedCount}</span>
+                        </div>
+                        <div className="bg-white p-3 rounded-lg border border-emerald-100">
+                          <span className="text-neutral-500 block">Total Spent</span>
+                          <span className="text-base font-bold text-amber-700">${Number(bulkSummary.totalSpent || 0).toFixed(2)} USD</span>
+                        </div>
+                      </div>
+
+                      {/* Results list */}
+                      <div className="bg-white rounded-lg border border-emerald-200 overflow-hidden divide-y divide-neutral-100 max-h-56 overflow-y-auto">
+                        {bulkSummary.results?.map((res: any, idx: number) => (
+                          <div key={idx} className="p-3 flex items-center justify-between text-xs hover:bg-neutral-50">
+                            <div className="flex items-center gap-2">
+                              <span className={res.success ? 'text-emerald-600 font-bold' : 'text-red-500 font-bold'}>
+                                {res.success ? '✅' : '❌'} #{idx + 1}
+                              </span>
+                              <div>
+                                <span className="font-semibold text-neutral-800">{res.gameName}</span>
+                                <span className="text-neutral-500 ml-1.5 font-mono">({res.skuName})</span>
+                                {res.quantity > 1 && <span className="ml-1 text-amber-600 font-bold">x{res.quantity}</span>}
+                                {res.error && <p className="text-red-500 text-[11px] mt-0.5">{res.error}</p>}
+                              </div>
+                            </div>
+                            <div className="text-right font-mono">
+                              <span className="font-semibold text-neutral-800">${Number(res.price || 0).toFixed(2)}</span>
+                              <div className="text-[10px] text-neutral-400">{res.orderId || res.referenceId || '-'}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3 pt-1">
+                        <button
+                          onClick={() => {
+                            setBulkActiveTab('history');
+                            setSelectedBulkBatch(null);
+                            fetchBulkHistory(1);
+                          }}
+                          className="px-4 py-2 bg-white hover:bg-neutral-100 text-neutral-700 border border-neutral-300 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                        >
+                          📜 View in Bulk History
+                        </button>
+                        <button
+                          onClick={() => {
+                            setBulkSummary(null);
+                            setBulkText('');
+                          }}
+                          className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                        >
+                          Start New Bulk Order
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Input Area (only if summary not active) */}
+                  {!bulkSummary && (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-semibold text-neutral-700 uppercase tracking-wider">
+                          📝 Multi-Line Order Text (လိုင်းများစွာ တစ်ပြိုင်တည်း ရိုက်ထည့်ပါ):
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={loadExampleBulkLines}
+                            className="text-xs text-amber-700 hover:text-amber-800 font-semibold bg-amber-50 hover:bg-amber-100 px-2.5 py-1 rounded-md border border-amber-200 transition-colors"
+                          >
+                            ⚡ Load Example
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setBulkText('');
+                              setBulkPreview(null);
+                              setBulkError('');
+                            }}
+                            className="text-xs text-neutral-500 hover:text-neutral-700 px-2 py-1 rounded hover:bg-neutral-100 transition-colors"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+
+                      <textarea
+                        rows={6}
+                        value={bulkText}
+                        onChange={e => {
+                          setBulkText(e.target.value);
+                          if (bulkPreview) setBulkPreview(null);
+                        }}
+                        placeholder={`.ml 12345678 2001 wp\n.ml 87654321 2002 86 x3\n.pubg 5123456789 60\n.ff 11223344 100`}
+                        className="w-full px-4 py-3 border border-neutral-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none font-mono text-sm leading-relaxed"
+                      />
+
+                      {/* Format tips */}
+                      <div className="bg-neutral-50 p-3 rounded-lg border border-neutral-200 text-xs text-neutral-600 flex flex-col gap-1">
+                        <div className="font-semibold text-neutral-700">💡 Format Syntax Rules:</div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] font-mono">
+                          <div>• MLBB: <span className="text-amber-800">.ml &lt;UserId&gt; &lt;ZoneId&gt; &lt;Product&gt; [xQty]</span></div>
+                          <div>• PUBG/Genshin/FF: <span className="text-amber-800">.&lt;shortKey&gt; &lt;UID&gt; &lt;Product&gt; [xQty]</span></div>
+                        </div>
+                      </div>
+
+                      {bulkError && (
+                        <div className="p-3 bg-red-50 text-red-700 border border-red-200 rounded-xl text-xs flex items-center gap-2">
+                          <span>⚠️</span>
+                          <span>{bulkError}</span>
+                        </div>
+                      )}
+
+                      {/* Action Buttons: Preview or Execute */}
+                      <div className="flex items-center gap-3 pt-2">
+                        <button
+                          type="button"
+                          disabled={bulkIsParsing || !bulkText.trim()}
+                          onClick={handlePreviewBulkOrder}
+                          className="flex-1 py-2.5 bg-neutral-900 hover:bg-neutral-800 disabled:bg-neutral-300 text-white font-semibold rounded-xl text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                        >
+                          {bulkIsParsing ? (
+                            <>
+                              <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                              Parsing & Validating...
+                            </>
+                          ) : (
+                            '🔍 Preview & Validate Orders'
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Preview Section */}
+                  {bulkPreview && !bulkSummary && (
+                    <div className="mt-4 p-5 bg-amber-50/60 border border-amber-200 rounded-xl space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="font-bold text-neutral-900 text-sm">Bulk Order Preview</h4>
+                          <p className="text-xs text-neutral-500">
+                            Review verified orders and pricing before placing
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-full font-bold text-xs">
+                            {bulkPreview.validCount} Valid
+                          </span>
+                          {bulkPreview.invalidCount > 0 && (
+                            <span className="px-2.5 py-1 bg-red-100 text-red-800 rounded-full font-bold text-xs">
+                              {bulkPreview.invalidCount} Errors
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Errors in preview if any */}
+                      {bulkPreview.errors?.length > 0 && (
+                        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs space-y-1">
+                          <div className="font-bold text-red-800">⚠️ Issues found in {bulkPreview.errors.length} line(s):</div>
+                          {bulkPreview.errors.map((err: string, i: number) => (
+                            <div key={i} className="text-red-700 font-mono text-[11px]">• {err}</div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Valid Items Table */}
+                      {bulkPreview.validItems?.length > 0 && (
+                        <div className="border border-neutral-200 rounded-lg overflow-hidden bg-white">
+                          <table className="w-full text-left text-xs">
+                            <thead className="bg-neutral-100 text-neutral-600 font-semibold border-b border-neutral-200">
+                              <tr>
+                                <th className="p-2.5">#</th>
+                                <th className="p-2.5">Game</th>
+                                <th className="p-2.5">Item / Product</th>
+                                <th className="p-2.5">Account ID / Fields</th>
+                                <th className="p-2.5 text-center">Qty</th>
+                                <th className="p-2.5 text-right">Unit Price</th>
+                                <th className="p-2.5 text-right">Total</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-neutral-100">
+                              {bulkPreview.validItems.map((item: any, idx: number) => (
+                                <tr key={idx} className="hover:bg-neutral-50 font-mono">
+                                  <td className="p-2.5 text-neutral-400">{idx + 1}</td>
+                                  <td className="p-2.5 font-sans font-semibold text-neutral-800">{item.gameName}</td>
+                                  <td className="p-2.5 font-sans text-neutral-700">{item.skuName}</td>
+                                  <td className="p-2.5 text-neutral-600 truncate max-w-xs">
+                                    {Object.entries(item.extraInfo || {}).map(([k, v]) => `${k}:${v}`).join(', ') || '-'}
+                                  </td>
+                                  <td className="p-2.5 text-center font-bold text-neutral-900">x{item.quantity}</td>
+                                  <td className="p-2.5 text-right text-neutral-500">${Number(item.unitPrice || 0).toFixed(2)}</td>
+                                  <td className="p-2.5 text-right font-bold text-amber-700">${Number(item.totalPrice || 0).toFixed(2)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                            <tfoot className="bg-amber-50/70 border-t border-amber-200 font-semibold text-neutral-900">
+                              <tr>
+                                <td colSpan={4} className="p-3 text-right font-sans">
+                                  Grand Total ({bulkPreview.validItems.length} items):
+                                </td>
+                                <td className="p-3 text-center font-bold font-mono">
+                                  x{bulkPreview.totalQuantity || bulkPreview.validItems.reduce((acc: number, cur: any) => acc + cur.quantity, 0)}
+                                </td>
+                                <td colSpan={2} className="p-3 text-right text-base font-bold text-amber-900 font-mono">
+                                  ${Number(bulkPreview.totalPrice || 0).toFixed(2)} USD
+                                </td>
+                              </tr>
+                            </tfoot>
+                          </table>
+                        </div>
+                      )}
+
+                      {/* Execute Button */}
+                      {bulkPreview.validItems?.length > 0 && (
+                        <div className="flex items-center justify-end gap-3 pt-2">
+                          <button
+                            type="button"
+                            onClick={() => setBulkPreview(null)}
+                            className="px-4 py-2.5 border border-neutral-300 text-neutral-700 hover:bg-neutral-100 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+                          >
+                            Edit Lines
+                          </button>
+                          <button
+                            type="button"
+                            disabled={bulkIsExecuting}
+                            onClick={handleExecuteBulkOrder}
+                            className="px-6 py-2.5 bg-amber-600 hover:bg-amber-700 disabled:bg-neutral-400 text-white font-bold rounded-xl text-xs transition-colors flex items-center gap-2 shadow-sm cursor-pointer"
+                          >
+                            {bulkIsExecuting ? (
+                              <>
+                                <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                                Executing Orders Sequentially...
+                              </>
+                            ) : (
+                              `🚀 Confirm & Execute ${bulkPreview.validItems.length} Order(s) ($${Number(bulkPreview.totalPrice || 0).toFixed(2)} USD)`
+                            )}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Bulk Order History Tab */}
+              {bulkActiveTab === 'history' && (
+                <div className="space-y-4">
+                  {selectedBulkBatch ? (
+                    /* Specific Batch Detail View */
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between bg-neutral-50 p-4 rounded-xl border border-neutral-200">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedBulkBatch(null)}
+                          className="px-3 py-1.5 bg-white border border-neutral-300 hover:bg-neutral-100 text-neutral-700 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
+                        >
+                          ◀️ Back to Batches
+                        </button>
+                        <div className="text-right">
+                          <span className="text-xs text-neutral-400 block">Batch ID</span>
+                          <span className="font-mono font-bold text-amber-900 text-sm">{selectedBulkBatch.batchId}</span>
+                        </div>
+                      </div>
+
+                      {/* Batch Meta Stats */}
+                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+                        <div className="bg-neutral-50 p-3 rounded-xl border border-neutral-200">
+                          <span className="text-neutral-400 block text-[11px]">Placed Time</span>
+                          <span className="font-medium text-neutral-800">{formatMyanmarDateTime(selectedBulkBatch.createdAt)}</span>
+                        </div>
+                        <div className="bg-neutral-50 p-3 rounded-xl border border-neutral-200">
+                          <span className="text-neutral-400 block text-[11px]">User / Source</span>
+                          <span className="font-semibold text-neutral-800">
+                            {selectedBulkBatch.telegramUsername ? `@${selectedBulkBatch.telegramUsername}` : selectedBulkBatch.telegramFirstName || `ID:${selectedBulkBatch.telegramChatId}`}
+                            <span className="ml-1 text-[10px] uppercase px-1.5 py-0.5 rounded bg-neutral-200 font-mono">
+                              {selectedBulkBatch.source || 'BOT'}
+                            </span>
+                          </span>
+                        </div>
+                        <div className="bg-neutral-50 p-3 rounded-xl border border-neutral-200">
+                          <span className="text-neutral-400 block text-[11px]">Total Requested</span>
+                          <span className="font-bold text-neutral-900 text-sm">{selectedBulkBatch.totalRequested} orders</span>
+                        </div>
+                        <div className="bg-neutral-50 p-3 rounded-xl border border-neutral-200">
+                          <span className="text-neutral-400 block text-[11px]">Result</span>
+                          <span className="font-bold text-emerald-600 text-sm">
+                            {selectedBulkBatch.successCount} Success
+                            {selectedBulkBatch.failedCount > 0 && <span className="text-red-500 font-normal ml-1">/ {selectedBulkBatch.failedCount} Failed</span>}
+                          </span>
+                        </div>
+                        <div className="bg-neutral-50 p-3 rounded-xl border border-neutral-200">
+                          <span className="text-neutral-400 block text-[11px]">Total Spent</span>
+                          <span className="font-bold text-amber-700 font-mono text-sm">${Number(selectedBulkBatch.totalSpent || 0).toFixed(2)} USD</span>
+                        </div>
+                      </div>
+
+                      {/* Items breakdown table */}
+                      <div className="border border-neutral-200 rounded-xl overflow-hidden bg-white shadow-xs">
+                        <div className="p-3 bg-neutral-100/70 border-b border-neutral-200 flex items-center justify-between text-xs font-semibold text-neutral-700">
+                          <span>📦 Order Lines in Batch ({selectedBulkBatch.results?.length || 0})</span>
+                          <span className="text-[11px] text-neutral-500 font-normal">
+                            Payment: {selectedBulkBatch.isApiLinked ? '⚡ Direct API' : '💰 User Wallet'}
+                          </span>
+                        </div>
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-neutral-50 text-neutral-500 border-b border-neutral-200 font-medium">
+                            <tr>
+                              <th className="p-2.5">#</th>
+                              <th className="p-2.5">Status</th>
+                              <th className="p-2.5">Game</th>
+                              <th className="p-2.5">Product / SKU</th>
+                              <th className="p-2.5">Account / Extra</th>
+                              <th className="p-2.5 text-center">Qty</th>
+                              <th className="p-2.5 text-right">Price</th>
+                              <th className="p-2.5">Reference / Order ID</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-neutral-100">
+                            {selectedBulkBatch.results?.map((item: any, idx: number) => (
+                              <tr key={idx} className={`hover:bg-neutral-50/80 font-mono ${!item.success ? 'bg-red-50/30' : ''}`}>
+                                <td className="p-2.5 text-neutral-400">{idx + 1}</td>
+                                <td className="p-2.5">
+                                  {item.success ? (
+                                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 font-sans font-bold text-[10px] rounded-full">
+                                      SUCCESS
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 bg-red-100 text-red-800 font-sans font-bold text-[10px] rounded-full">
+                                      FAILED
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="p-2.5 font-sans font-semibold text-neutral-800">{item.gameName}</td>
+                                <td className="p-2.5 font-sans text-neutral-700">{item.skuName}</td>
+                                <td className="p-2.5 text-neutral-600 truncate max-w-xs text-[11px]">
+                                  {Object.entries(item.extraInfo || {}).map(([k, v]) => `${k}:${v}`).join(', ') || '-'}
+                                </td>
+                                <td className="p-2.5 text-center font-bold text-neutral-900">x{item.quantity || 1}</td>
+                                <td className="p-2.5 text-right font-bold text-amber-800">${Number(item.price || 0).toFixed(2)}</td>
+                                <td className="p-2.5 text-neutral-600 text-[11px]">
+                                  {item.orderId || item.referenceId ? (
+                                    <span className="text-neutral-700">{item.orderId || item.referenceId}</span>
+                                  ) : (
+                                    <span className="text-red-500 italic font-sans">{item.error || 'Failed'}</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Batches List */
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="font-bold text-neutral-900 text-sm">Bulk Order History Batches</h4>
+                          <p className="text-xs text-neutral-500">
+                            View past bulk batches, success rates, and line-item details
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={loadingBulkHistory}
+                          onClick={() => fetchBulkHistory(bulkHistoryPage)}
+                          className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1 cursor-pointer"
+                        >
+                          <span className={loadingBulkHistory ? 'animate-spin' : ''}>🔄</span> Refresh
+                        </button>
+                      </div>
+
+                      {loadingBulkHistory ? (
+                        <div className="p-12 text-center text-neutral-400 flex flex-col items-center justify-center gap-2">
+                          <span className="w-6 h-6 border-2 border-neutral-300 border-t-amber-600 rounded-full animate-spin"></span>
+                          <span className="text-xs">Loading bulk order batches...</span>
+                        </div>
+                      ) : !bulkHistory?.batches || bulkHistory.batches.length === 0 ? (
+                        <div className="p-12 text-center bg-neutral-50 rounded-xl border border-neutral-200 text-neutral-500 space-y-2">
+                          <span className="text-3xl block">📜</span>
+                          <p className="font-medium text-sm">No bulk order history found yet.</p>
+                          <p className="text-xs text-neutral-400">Place orders using the "New Bulk Order" tab or via Telegram Bot /bulk command.</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {bulkHistory.batches.map((batch: any) => (
+                            <div
+                              key={batch.batchId}
+                              className="p-4 bg-white border border-neutral-200 hover:border-amber-300 rounded-xl shadow-xs transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                            >
+                              <div className="space-y-1.5">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-mono font-bold text-neutral-900 text-xs bg-neutral-100 px-2 py-0.5 rounded">
+                                    {batch.batchId}
+                                  </span>
+                                  <span className="text-xs text-neutral-400">•</span>
+                                  <span className="text-xs text-neutral-500">{formatMyanmarDateTime(batch.createdAt)}</span>
+                                  <span className={`px-2 py-0.5 text-[10px] font-bold rounded-full uppercase ${
+                                    batch.source === 'web' ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'
+                                  }`}>
+                                    {batch.source || 'BOT'}
+                                  </span>
+                                </div>
+                                <div className="text-xs text-neutral-600 flex items-center gap-3">
+                                  <span>
+                                    👤 {batch.telegramUsername ? `@${batch.telegramUsername}` : batch.telegramFirstName || `ID:${batch.telegramChatId}`}
+                                  </span>
+                                  <span>•</span>
+                                  <span className="font-semibold text-emerald-600">{batch.successCount} Successful</span>
+                                  {batch.failedCount > 0 && (
+                                    <>
+                                      <span>•</span>
+                                      <span className="font-semibold text-red-500">{batch.failedCount} Failed</span>
+                                    </>
+                                  )}
+                                  <span>•</span>
+                                  <span>Total: {batch.totalRequested} items</span>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center justify-between sm:justify-end gap-4 border-t sm:border-t-0 pt-2 sm:pt-0">
+                                <div className="text-right">
+                                  <span className="text-[11px] text-neutral-400 block">Total Spent</span>
+                                  <span className="font-mono font-bold text-amber-900 text-sm">
+                                    ${Number(batch.totalSpent || 0).toFixed(2)} USD
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedBulkBatch(batch)}
+                                  className="px-3.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+                                >
+                                  🔍 Details
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+
+                          {/* Pagination Toolbar (10 per page) */}
+                          <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 flex items-center justify-between text-xs">
+                            <div className="text-neutral-500">
+                              Showing Page <span className="font-bold text-neutral-800">{bulkHistory.page}</span> of <span className="font-bold text-neutral-800">{bulkHistory.totalPages || 1}</span> (Total: {bulkHistory.total} Batches)
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                disabled={bulkHistory.page <= 1 || loadingBulkHistory}
+                                onClick={() => fetchBulkHistory(bulkHistory.page - 1)}
+                                className="px-3 py-1.5 bg-white border border-neutral-300 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-neutral-100 rounded-lg font-medium transition-colors cursor-pointer"
+                              >
+                                ◀️ Prev
+                              </button>
+                              <span className="px-3 py-1.5 bg-white border border-neutral-300 rounded-lg font-bold text-neutral-800 font-mono">
+                                {bulkHistory.page} / {bulkHistory.totalPages || 1}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={bulkHistory.page >= bulkHistory.totalPages || loadingBulkHistory}
+                                onClick={() => fetchBulkHistory(bulkHistory.page + 1)}
+                                className="px-3 py-1.5 bg-white border border-neutral-300 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-neutral-100 rounded-lg font-medium transition-colors cursor-pointer"
+                              >
+                                Next ▶️
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Login Modal */}
       {showLoginModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
@@ -1267,6 +1966,18 @@ export default function App() {
               </p>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
+              <button 
+                onClick={() => {
+                  setShowBulkModal(true);
+                  setBulkError('');
+                  setBulkSummary(null);
+                }}
+                className="px-3.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors flex items-center gap-1.5 bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100 shadow-xs cursor-pointer"
+              >
+                <span className="text-amber-600 font-bold">⚡</span>
+                Bulk Order Engine
+              </button>
+
               <button 
                 onClick={() => setShowLoginModal(true)}
                 className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors flex items-center gap-1.5 ${

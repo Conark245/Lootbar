@@ -11,6 +11,7 @@ import { SavedGame } from './models/SavedGame';
 import { TopupRequest } from './models/TopupRequest';
 import { escapeMd, escapeCode, formatMyanmarDateTime, formatMyanmarTimeOnly, safeReply, safeSendMessage, safeEditMessageText, safeSendPhoto, safeEditMessageCaption,parseCommandArgs } from './bot/helpers';
 import { findLootBarSkuMatch, findTopupNationSkuMatch, parseSkuWithQuantity } from './bot/matching';
+import { BulkOrderService, BulkOrderItem } from './bulkOrderService';
 
 // Helper to escape text for Telegram Markdown v1
 async function getAdminChatId(defaultId: string | undefined): Promise<string | undefined> {
@@ -39,6 +40,9 @@ interface SessionData {
   topupAmount?: number;
   topupNote?: string;
   topupPhotoFileId?: string;
+  bulkOrders?: BulkOrderItem[];
+  bulkTotalPrice?: number;
+  bulkRawText?: string;
 }
 
 export interface MyContext extends Context {
@@ -185,8 +189,8 @@ export function setupBot(
 
   const mainMenu = Markup.keyboard([
     ['🎮 LootBar Games', '🌐 TopupNation Games'],
-    ['👤 My Account', '💳 Check Balance'],
-    ['💰 Request Top-Up', '📜 Order History']
+    ['📦 Bulk Order', '💰 Request Top-Up'],
+    ['👤 My Account', '💳 Check Balance', '📜 Order History']
   ]).resize();
 
   bot.command('start', async (ctx) => {
@@ -195,10 +199,12 @@ export function setupBot(
       '🎮 *Welcome to the Game Top-Up Bot!*\n\n' +
       'သင်ဝယ်ယူလိုသော API Provider အလိုက် Games စာရင်းကို အောက်ပါ Menu မှ ရွေးချယ်ကြည့်ရှုနိုင်ပါသည်:\n' +
       '• *🎮 LootBar Games* — LootBar API Games စာရင်း\n' +
-      '• *🌐 TopupNation Games* — TopupNation API Games စာရင်း\n\n' +
+      '• *🌐 TopupNation Games* — TopupNation API Games စာရင်း\n' +
+      '• *📦 Bulk Order* — အော်ဒါများစွာ တစ်ခါတည်း ဝယ်ယူခြင်း\n\n' +
       '⚡ *အသုံးပြုနည်း အမြန်လမ်းညွှန်:*\n' +
       '• Game ၏ Products စာရင်း ကြည့်ရန်: `.<shortKey>` (ဥပမာ `.p`, `.ml`, `.tp`)\n' +
       '• အော်ဒါ တိုက်ရိုက်တင်ရန်: `.<shortKey> <Account ID> <Product>`\n' +
+      '• Bulk အော်ဒါ တင်ရန်: `/bulk` သို့မဟုတ် လိုင်းများစွာ တိုက်ရိုက်ပို့ပါ\n' +
       '👉 _ဥပမာ:_ `.p 5123456789 60` သို့မဟုတ် `.tp 5123456789 60`',
       {
         parse_mode: 'Markdown',
@@ -765,17 +771,169 @@ export function setupBot(
     }
   }
 
+  // Multi-line / Bulk Order Flow Handler
+  async function handleBulkOrderFlow(ctx: MyContext, text: string) {
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+
+    // If user sent just "/bulk" or ".bulk" without order lines
+    if (lines.length === 1 && (lines[0].toLowerCase() === '/bulk' || lines[0].toLowerCase() === '.bulk' || lines[0].toLowerCase() === 'bulk')) {
+      return safeReply(
+        ctx,
+        `📦 *Bulk Top-Up Order (အော်ဒါအများအပြား တင်ခြင်း)*\n` +
+        `═════════════════════════\n` +
+        `အော်ဒါများစွာကို တစ်ကြိမ်တည်းဖြင့် တိုက်ရိုက်တင်ရန်အတွက် အောက်ပါအတိုင်း Message တစ်စောင်တည်းတွင် တစ်ကြောင်းချင်းစီ ရိုက်ပို့ပေးပါ:\n\n` +
+        `📌 *Format:*\n` +
+        `\`.<shortKey> <Account ID> [ZoneID] <Product> [xQty]\`\n\n` +
+        `💡 *ဥပမာ နမူနာများ:*\n` +
+        `\`.ml 12345678 2001 wp\`\n` +
+        `\`.ml 87654321 2002 86 x3\`\n` +
+        `\`.pubg 5123456789 60\`\n` +
+        `\`.ff 11223344 100\`\n` +
+        `\`.tp 123456789 100\`\n` +
+        `═════════════════════════\n` +
+        `_💡 Note: အော်ဒါများကို မပို့မီ စုစုပေါင်းကုန်ကျငွေနှင့် အချက်အလက်များကို စနစ်မှ သေချာစွာ စစ်ဆေးအတည်ပြုခိုင်းမည် ဖြစ်ပါသည်။_`,
+        Markup.inlineKeyboard([
+          [Markup.button.callback('📜 View Bulk Order History', 'bulk_history_page_1')],
+          [Markup.button.callback('🏠 Main Menu', 'main_menu')]
+        ])
+      );
+    }
+
+    try {
+      const parseResult = await BulkOrderService.parseBulkText(text, lootbar);
+
+      if (parseResult.errors.length > 0) {
+        let errMsg = `⚠️ *Bulk Order Format Errors!*\n═════════════════════════\n` +
+          `အောက်ပါ စာကြောင်းများတွင် အချက်အလက် မပြည့်စုံပါ သို့မဟုတ် မှားယွင်းနေပါသည်:\n\n`;
+
+        parseResult.errors.slice(0, 8).forEach(e => {
+          errMsg += `❌ *Line ${e.lineIndex}:* \`${escapeCode(e.rawLine)}\`\n   ↳ _${escapeMd(e.error)}_\n\n`;
+        });
+
+        if (parseResult.errors.length > 8) {
+          errMsg += `_... နောက်ထပ် error (${parseResult.errors.length - 8}) ခု ရှိပါသေးသည်။_\n\n`;
+        }
+
+        if (parseResult.validItems.length > 0) {
+          errMsg += `✅ *မှန်ကန်သော အော်ဒါ:* ${parseResult.validItems.length} ခု\n` +
+            `❌ *မှားယွင်းနေသော အော်ဒါ:* ${parseResult.errors.length} ခု\n\n` +
+            `_ကျေးဇူးပြု၍ မှားယွင်းနေသော လိုင်းများကို ပြန်လည်စစ်ဆေးပြီး အားလုံးမှန်ကန်အောင် ပြန်လည်ပို့ပေးပါ။_`;
+        } else {
+          errMsg += `💡 *Format:* \`.ml 12345678 2001 wp\``;
+        }
+
+        return safeReply(ctx, errMsg);
+      }
+
+      if (parseResult.validItems.length === 0) {
+        return safeReply(ctx, '⚠️ No valid order lines found in the message.');
+      }
+
+      // Check user balance
+      let userDoc = await User.findOne({ telegramChatId: ctx.chat!.id });
+      if (!userDoc) {
+        userDoc = await User.create({
+          telegramChatId: ctx.chat!.id,
+          username: ctx.from?.username || (ctx.chat as any)?.username,
+          firstName: ctx.from?.first_name || (ctx.chat as any)?.first_name,
+          balance: 0
+        });
+      }
+
+      const isApiLinked = !!(userDoc.useDirectApiBalance || userDoc.balanceMode === 'api');
+      const userBalance = userDoc.balance || 0;
+      const totalPrice = parseResult.totalPrice;
+
+      if (!isApiLinked && userBalance < totalPrice) {
+        const needed = (totalPrice - userBalance).toFixed(2);
+        return safeReply(
+          ctx,
+          `⚠️ *Insufficient Balance for Bulk Order!*\n═════════════════════════\n` +
+          `├── 📦 Total Orders: *${parseResult.validItems.length} items*\n` +
+          `├── 💰 Total Cost: \`$${totalPrice.toFixed(2)} USD\`\n` +
+          `├── 💳 Your Balance: \`$${userBalance.toFixed(2)} USD\`\n` +
+          `└── ⚠️ Needed More: \`$${needed} USD\`\n` +
+          `═════════════════════════\n` +
+          `_ကျေးဇူးပြု၍ Wallet ထဲသို့ ငွေဖြည့်သွင်းပြီးမှ အော်ဒါတင်ပေးပါ။_`,
+          Markup.inlineKeyboard([
+            [Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')],
+            [Markup.button.callback('❌ Cancel', 'cancel_order')]
+          ])
+        );
+      }
+
+      // Store in session
+      ctx.session = ctx.session || {};
+      ctx.session.bulkOrders = parseResult.validItems;
+      ctx.session.bulkTotalPrice = totalPrice;
+      ctx.session.bulkRawText = text;
+
+      let summaryMsg = `🛒 *Confirm Bulk Top-Up Order*\n═════════════════════════\n` +
+        `စုစုပေါင်း အော်ဒါ *(${parseResult.validItems.length})* ခု တင်ရန် အတည်ပြုပေးပါ:\n\n`;
+
+      parseResult.validItems.forEach((item, idx) => {
+        let accountStr = '';
+        if (item.extraInfo) {
+          const vals = Object.entries(item.extraInfo)
+            .filter(([k, v]) => k !== 'paymentSource' && k !== 'provider' && v)
+            .map(([_, v]) => String(v));
+          accountStr = vals.join(' | ');
+        }
+        const qtyStr = item.quantity > 1 ? ` (x${item.quantity})` : '';
+        summaryMsg += `▫️ *#${idx + 1} ${escapeMd(item.gameName)}* — ${escapeMd(item.skuName)}${qtyStr}\n` +
+          `   └ 🎯 \`${escapeCode(accountStr)}\` • \`$${item.totalPrice.toFixed(2)}\`\n`;
+      });
+
+      summaryMsg += `═════════════════════════\n` +
+        `├── 📦 Total Items: *${parseResult.validItems.length} orders* (${parseResult.totalQuantity} items)\n` +
+        `├── 💰 Total Price: \`$${totalPrice.toFixed(2)} USD\`\n`;
+
+      if (isApiLinked) {
+        summaryMsg += `└── 💳 Payment: \`⚡ Direct API Balance Linked\`\n`;
+      } else {
+        const after = Math.max(0, userBalance - totalPrice);
+        summaryMsg += `├── 💳 Current Balance: \`$${userBalance.toFixed(2)} USD\`\n` +
+          `└── 💵 Balance After: \`$${after.toFixed(2)} USD\`\n`;
+      }
+      summaryMsg += `═════════════════════════`;
+
+      const confirmKeyboard = Markup.inlineKeyboard([
+        [Markup.button.callback(`🚀 Confirm & Place ${parseResult.validItems.length} Orders ($${totalPrice.toFixed(2)})`, 'confirm_bulk_orders')],
+        [Markup.button.callback('❌ Cancel Bulk Order', 'cancel_order')]
+      ]);
+
+      return safeReply(ctx, summaryMsg, confirmKeyboard);
+    } catch (err: any) {
+      console.error('Bulk order flow error:', err);
+      return safeReply(ctx, `❌ Bulk Order Processing Error: ${err.message}`);
+    }
+  }
+
+  // Bulk Command Handler (/bulk or /bulkorder)
+  bot.command(['bulk', 'bulkorder'], async (ctx) => {
+    const text = ctx.message.text || '';
+    return await handleBulkOrderFlow(ctx, text);
+  });
+
   // Universal Short Key Listener (e.g. .p, .ml, .ff, /p, etc.)
   bot.hears(/^[./]([a-zA-Z0-9_-]+)(\s+.*)?$/i, async (ctx, next) => {
     const text = ctx.message.text.trim();
+    if (text.includes('\n')) {
+      return await handleBulkOrderFlow(ctx, text);
+    }
     const match = text.match(/^[./]([a-zA-Z0-9_-]+)(\s+.*)?$/i);
     if (!match) return next();
 
     const inputKey = match[1].toLowerCase();
     const rawArgs = match[2] ? parseCommandArgs(match[2]) : [];
 
-    // Skip reserved commands like /start, /cancel, /auth, /unauth, /users, /addbalance, /orders, /balance, /games, /account, /profile, /wallet, /topup, /deposit, /lootbar, /tpn
-    const reservedCommands = ['start', 'cancel', 'auth', 'unauth', 'users', 'addbalance', 'orders', 'balance', 'games', 'gamelist', 'help', 'account', 'profile', 'wallet', 'myaccount', 'mywallet', 'mybalance', 'topup', 'deposit', 'requesttopup', 'requestbalance', 'addmoney', 'lootbar', 'lb', 'tpn', 'topupnation'];
+    // Check if bulk command
+    if (inputKey === 'bulk' || inputKey === 'bulkorder') {
+      return await handleBulkOrderFlow(ctx, text);
+    }
+
+    // Skip reserved commands like /start, /cancel, /auth, /unauth, /users, /addbalance, /orders, /balance, /games, /account, /profile, /wallet, /topup, /deposit, /lootbar, /tpn, /bulk
+    const reservedCommands = ['start', 'cancel', 'auth', 'unauth', 'users', 'addbalance', 'orders', 'balance', 'games', 'gamelist', 'help', 'account', 'profile', 'wallet', 'myaccount', 'mywallet', 'mybalance', 'topup', 'deposit', 'requesttopup', 'requestbalance', 'addmoney', 'lootbar', 'lb', 'tpn', 'topupnation', 'bulk', 'bulkorder'];
     if (reservedCommands.includes(inputKey)) {
       return next();
     }
@@ -2029,7 +2187,142 @@ export function setupBot(
     return await safeReply(ctx, msg, keyboard);
   }
 
+  async function renderBulkOrderHistory(
+    ctx: MyContext,
+    isEdit: boolean = false,
+    page: number = 1
+  ) {
+    const pageSize = 3;
+    const chatId = ctx.chat!.id;
+    const currentAdminId = await getAdminChatId(adminChatId);
+    const isOwner = String(chatId) === currentAdminId;
+
+    const data = await BulkOrderService.getBulkHistory({
+      telegramChatId: isOwner ? undefined : chatId,
+      page,
+      limit: pageSize
+    });
+
+    const headerTitle = isOwner ? '👑 *Bulk Orders History (Admin View)*' : '📦 *My Bulk Order History*';
+
+    if (data.total === 0) {
+      const emptyMsg = `${headerTitle}\n═════════════════════════\n\n📜 _Bulk အော်ဒါမှတ်တမ်း မရှိသေးပါ။_\n\n/bulk ဖြင့် အော်ဒါများစွာ တစ်ခါတည်း စတင်ဝယ်ယူနိုင်ပါသည်!`;
+      const emptyKeyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('📦 Place Bulk Order', 'bulk_order_start')],
+        [Markup.button.callback('📜 Single Orders History', 'view_orders_action')],
+        [Markup.button.callback('🏠 Main Menu', 'main_menu')]
+      ]);
+      if (isEdit) return await safeEditMessageText(ctx, emptyMsg, emptyKeyboard);
+      return await safeReply(ctx, emptyMsg, emptyKeyboard);
+    }
+
+    let msg = `${headerTitle}\n` +
+      `📄 Page ${data.page} of ${data.totalPages} (Total: ${data.total} Batches)\n` +
+      `═════════════════════════\n\n`;
+
+    const detailButtons: any[] = [];
+
+    data.batches.forEach((b: any, idx: number) => {
+      const batchNum = (data.page - 1) * pageSize + idx + 1;
+      const timeStr = formatMyanmarDateTime(b.createdAt);
+      const userStr = isOwner && b.telegramChatId ? ` (${b.telegramUsername ? `@${b.telegramUsername}` : `ID:${b.telegramChatId}`})` : '';
+
+      msg += `📦 *#${batchNum} Batch: \`${b.batchId}\`*${userStr}\n` +
+        `├── 🕒 Time: \`${timeStr}\`\n` +
+        `├── 📊 Requested: *${b.totalRequested} orders*\n` +
+        `├── ✅ Success: *${b.successCount}* | ❌ Failed: *${b.failedCount}*\n` +
+        `├── 💰 Total Spent: \`$${Number(b.totalSpent || 0).toFixed(2)} USD\`\n` +
+        `└── 💳 Payment: \`${b.isApiLinked ? '⚡ Direct API' : '💰 User Wallet'}\`\n\n`;
+
+      detailButtons.push([
+        Markup.button.callback(`🔍 View Batch #${batchNum} (\`${b.batchId}\`)`, `bulk_batch_detail_${b.batchId}`)
+      ]);
+    });
+
+    msg += `═════════════════════════\n` +
+      `_💡 အသေးစိတ်ကြည့်လိုပါက သက်ဆိုင်ရာ Batch Button ကို နှိပ်ပါ_`;
+
+    const navRow: any[] = [];
+    if (data.page > 1) {
+      navRow.push(Markup.button.callback('◀️ Prev', `bulk_history_page_${data.page - 1}`));
+    }
+    navRow.push(Markup.button.callback(`📄 ${data.page}/${data.totalPages}`, 'noop_page_indicator'));
+    if (data.page < data.totalPages) {
+      navRow.push(Markup.button.callback('Next ▶️', `bulk_history_page_${data.page + 1}`));
+    }
+
+    const allButtons = [
+      ...detailButtons,
+      ...(navRow.length > 0 ? [navRow] : []),
+      [
+        Markup.button.callback('🔄 Refresh', `bulk_history_page_${data.page}`),
+        Markup.button.callback('📜 Single Orders', 'view_orders_action')
+      ],
+      [Markup.button.callback('🏠 Main Menu', 'main_menu')]
+    ];
+
+    const keyboard = Markup.inlineKeyboard(allButtons);
+    if (isEdit) return await safeEditMessageText(ctx, msg, keyboard);
+    return await safeReply(ctx, msg, keyboard);
+  }
+
+  async function renderBulkBatchDetail(ctx: MyContext, batchId: string) {
+    const batch = await BulkOrderService.getBulkBatchById(batchId);
+    if (!batch) {
+      return safeReply(ctx, '❌ Bulk batch details not found.');
+    }
+
+    let msg = `📦 *Bulk Batch Details: \`${batch.batchId}\`*\n` +
+      `═════════════════════════\n` +
+      `├── 🕒 Created: \`${formatMyanmarDateTime(batch.createdAt)}\`\n` +
+      `├── 👤 User: \`${batch.telegramChatId}\` (${escapeMd(batch.telegramUsername ? `@${batch.telegramUsername}` : batch.telegramFirstName || 'User')})\n` +
+      `├── 📊 Total Requested: *${batch.totalRequested} orders*\n` +
+      `├── ✅ Successful: *${batch.successCount}*\n` +
+      `├── ❌ Failed: *${batch.failedCount}*\n` +
+      `├── 💰 Total Spent: \`$${Number(batch.totalSpent || 0).toFixed(2)} USD\`\n` +
+      `└── 💳 Source: \`${(batch.source || 'BOT').toUpperCase()}\` (${batch.isApiLinked ? '⚡ Direct API' : '💰 User Wallet'})\n` +
+      `═════════════════════════\n\n*Order Lines Breakdown:*\n`;
+
+    (batch.results || []).slice(0, 15).forEach((r: any, idx: number) => {
+      const qtyStr = r.quantity > 1 ? ` (x${r.quantity})` : '';
+      if (r.success) {
+        msg += `✅ *#${idx + 1} ${escapeMd(r.gameName)}* — ${escapeMd(r.skuName)}${qtyStr}\n` +
+          `   └ 🆔 \`${r.orderId || r.referenceId}\` • \`$${Number(r.price || 0).toFixed(2)}\` • _${r.statusText || 'PROCESSING'}_\n`;
+      } else {
+        msg += `❌ *#${idx + 1} ${escapeMd(r.gameName)}* — ${escapeMd(r.skuName)}${qtyStr}\n` +
+          `   └ ⚠️ Error: _${escapeMd(r.error || 'Failed')}_\n`;
+      }
+    });
+
+    if ((batch.results || []).length > 15) {
+      msg += `_... နောက်ထပ် အော်ဒါ (${batch.results.length - 15}) ခု ကျန်ပါသေးသည်။_\n`;
+    }
+
+    const keyboard = Markup.inlineKeyboard([
+      [Markup.button.callback('◀️ Back to Bulk History', 'bulk_history_page_1')],
+      [Markup.button.callback('🏠 Main Menu', 'main_menu')]
+    ]);
+
+    return await safeReply(ctx, msg, keyboard);
+  }
+
   // Handle provider and scope tab switching and pagination
+  bot.action(/^bulk_history_page_(\d+)$/, async (ctx) => {
+    const page = parseInt(ctx.match[1], 10) || 1;
+    await ctx.answerCbQuery();
+    return await renderBulkOrderHistory(ctx, true, page);
+  });
+
+  bot.action(/^bulk_batch_detail_(.+)$/, async (ctx) => {
+    const batchId = ctx.match[1];
+    await ctx.answerCbQuery();
+    return await renderBulkBatchDetail(ctx, batchId);
+  });
+
+  bot.action('bulk_order_start', async (ctx) => {
+    await ctx.answerCbQuery();
+    return await handleBulkOrderFlow(ctx, '/bulk');
+  });
   bot.action(/^order_filter_(all|lootbar|topupnation)_(all|mine)_page_(\d+)$/, async (ctx) => {
     const provider = ctx.match[1] as 'all' | 'lootbar' | 'topupnation';
     const scope = ctx.match[2] as 'all' | 'mine';
@@ -2107,6 +2400,18 @@ export function setupBot(
 
   bot.hears(['🌐 TopupNation Games', 'TopupNation Games', 'TopUpNation Games', 'TopupNation', 'tpn'], async (ctx) => {
     return await renderTopupNationGameList(ctx);
+  });
+
+  bot.hears(['📦 Bulk Order', 'Bulk Order', 'bulk order', 'Bulk order'], async (ctx) => {
+    return await handleBulkOrderFlow(ctx, '/bulk');
+  });
+
+  bot.hears(['📦 Bulk History', 'Bulk History', 'bulk history', 'Bulk history', 'Bulk Order History', '📦 Bulk Order History'], async (ctx) => {
+    return await renderBulkOrderHistory(ctx);
+  });
+
+  bot.command(['bulkhistory', 'bulkorders', 'bulkhist', 'bulk_history', 'bulk_orders'], async (ctx) => {
+    return await renderBulkOrderHistory(ctx);
   });
 
   bot.hears(['🎮 Game List', 'Game List', 'Games', 'games', '🎮 Games'], async (ctx) => {
@@ -2390,6 +2695,10 @@ export function setupBot(
         await showOrderConfirmation(ctx);
       }
       return;
+    }
+
+    if (userInput.includes('\n')) {
+      return await handleBulkOrderFlow(ctx, userInput);
     }
 
     return next();
@@ -2886,6 +3195,104 @@ export function setupBot(
       await safeReply(ctx, `❌ *Order Error*\n\nReason: \`${escapeCode(error.message || 'Server error')}\`${!isApiLinked ? `\n\nYour balance of $${orderCost.toFixed(2)} has been refunded to your wallet.` : ''}`, mainMenu);
     }
   }
+
+  // Action: Confirm Bulk Orders Execution
+  bot.action('confirm_bulk_orders', async (ctx) => {
+    try {
+      await ctx.answerCbQuery('Processing bulk order...');
+      const bulkItems: BulkOrderItem[] = ctx.session?.bulkOrders || [];
+      if (!bulkItems || bulkItems.length === 0) {
+        return safeReply(ctx, '⚠️ Bulk order session expired or already processed. Please submit again.', mainMenu);
+      }
+
+      const userDoc = await User.findOne({ telegramChatId: ctx.chat!.id });
+      if (!userDoc) return safeReply(ctx, '❌ User account not found.', mainMenu);
+
+      // Clear session so double clicks do not execute twice
+      const itemsToRun = [...bulkItems];
+      ctx.session.bulkOrders = [];
+      ctx.session.bulkTotalPrice = 0;
+
+      const progressMsg = await ctx.reply(
+        `⏳ *Processing Bulk Order...*\n═════════════════════════\n` +
+        `အော်ဒါ ${itemsToRun.length} ခုအား တစ်ခုချင်းစီ ဆာဗာသို့ ပေးပို့ဆောင်ရွက်နေပါသည်...\n` +
+        `_ကျေးဇူးပြု၍ ခေတ္တစောင့်ဆိုင်းပေးပါ..._`,
+        { parse_mode: 'Markdown' }
+      );
+
+      const rawText = ctx.session?.bulkRawText;
+      const summary = await BulkOrderService.executeBulkOrders(
+        userDoc,
+        itemsToRun,
+        lootbar,
+        topupNation,
+        { rawText, source: 'bot' }
+      );
+
+      let finalMsg = `📦 *Bulk Top-Up Order Report*\n═════════════════════════\n` +
+        `├── 🆔 Batch ID: \`${summary.batchId}\`\n` +
+        `├── 📊 Total Requested: *${summary.totalRequested} orders*\n` +
+        `├── ✅ Successful: *${summary.successCount}*\n` +
+        `├── ❌ Failed: *${summary.failedCount}*\n` +
+        `├── 💰 Total Spent: \`$${summary.totalSpent.toFixed(2)} USD\`\n`;
+
+      if (!summary.isApiLinked) {
+        finalMsg += `└── 💳 Remaining Balance: \`$${summary.userBalanceAfter.toFixed(2)} USD\`\n`;
+      } else {
+        finalMsg += `└── 💳 Payment: \`⚡ Direct API Balance Linked\`\n`;
+      }
+      finalMsg += `═════════════════════════\n\n*Detailed Order Results:*\n`;
+
+      summary.results.slice(0, 12).forEach((r, idx) => {
+        const qtyStr = r.quantity > 1 ? ` (x${r.quantity})` : '';
+        if (r.success) {
+          finalMsg += `✅ *#${idx + 1} ${escapeMd(r.gameName)}* — ${escapeMd(r.skuName)}${qtyStr}\n` +
+            `   └ 🆔 \`${r.orderId || r.referenceId}\` • \`$${r.price.toFixed(2)}\` • _${r.statusText || 'PROCESSING'}_\n`;
+        } else {
+          finalMsg += `❌ *#${idx + 1} ${escapeMd(r.gameName)}* — ${escapeMd(r.skuName)}${qtyStr}\n` +
+            `   └ ⚠️ Error: _${escapeMd(r.error || 'Failed')}_\n`;
+        }
+      });
+
+      if (summary.results.length > 12) {
+        finalMsg += `_... နောက်ထပ် အော်ဒါ (${summary.results.length - 12}) ခု ပြီးဆုံးပါပြီ။_\n`;
+      }
+
+      const keyboard = Markup.inlineKeyboard([
+        [
+          Markup.button.callback('📜 Bulk History', 'bulk_history_page_1'),
+          Markup.button.callback('📑 All Orders', 'view_orders_action')
+        ],
+        [Markup.button.callback('🏠 Main Menu', 'main_menu')]
+      ]);
+
+      if (progressMsg) {
+        try {
+          await ctx.deleteMessage(progressMsg.message_id);
+        } catch {}
+      }
+
+      await safeReply(ctx, finalMsg, keyboard);
+
+      // Notify Owner/Admin
+      const currentAdminIdForNotify = await getAdminChatId(adminChatId);
+      if (currentAdminIdForNotify) {
+        const fromUser = ctx.from?.username ? `@${ctx.from.username}` : ctx.from?.first_name || 'User';
+        const adminBulkNotify = `🔔 *New Bulk Top-Up Order!*\n` +
+          `═════════════════════════\n` +
+          `├── 👤 User: \`${ctx.chat!.id}\` (${escapeMd(fromUser)})\n` +
+          `├── 📦 Total Orders: *${summary.totalRequested}*\n` +
+          `├── ✅ Success: *${summary.successCount}* | ❌ Failed: *${summary.failedCount}*\n` +
+          `├── 💰 Total Spent: \`$${summary.totalSpent.toFixed(2)} USD\`\n` +
+          `└── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
+          `═════════════════════════`;
+        await safeSendMessage(bot.telegram, currentAdminIdForNotify, adminBulkNotify);
+      }
+    } catch (err: any) {
+      console.error('Bulk order execution error:', err);
+      return safeReply(ctx, `❌ Bulk Order Execution Error: ${err.message}`, mainMenu);
+    }
+  });
 
   // Live multi-provider order status tracking logic
   async function handleTrackOrderQuery(ctx: any, queryId: string, isCallback: boolean = false) {
