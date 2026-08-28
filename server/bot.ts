@@ -3158,12 +3158,18 @@ export function setupBot(
     // Optional: Try to resolve player name in background if available
     if (!playerName && gameId && Object.keys(extraInfo).length > 0) {
       try {
-        const checkResult = await lootbar.checkRole(gameId, extraInfo);
+        let checkResult;
+        if (ctx.session.provider === 'topupnation' && topupNation) {
+          checkResult = await topupNation.checkRole(gameId, extraInfo);
+        } else if (ctx.session.provider === 'lootbar') {
+          checkResult = await lootbar.checkRole(gameId, extraInfo);
+        }
+        
         if (checkResult?.playerName) {
           playerName = checkResult.playerName;
           ctx.session.playerName = checkResult.playerName;
         }
-      } catch {
+      } catch (err) {
         // Never block purchase
       }
     }

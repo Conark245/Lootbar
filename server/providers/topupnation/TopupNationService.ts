@@ -104,6 +104,33 @@ export class TopupNationService {
   /**
    * Synchronizes product catalog from TopupNation API into MongoDB.
    */
+  
+  public async checkRole(productId: string, extraInfo: Record<string, string>): Promise<{ success: boolean; playerName?: string; error?: string }> {
+    try {
+      let userAccount = '';
+      let server = '';
+      for (const [key, val] of Object.entries(extraInfo)) {
+        if (!val) continue;
+        const lk = key.toLowerCase();
+        if (!userAccount && (lk === 'uid' || lk === 'userid' || lk === 'user_id' || lk === 'player_id' || lk === 'account_id' || lk === 'useraccount')) {
+          userAccount = String(val).trim();
+        } else if (!server && (lk === 'zoneid' || lk === 'zone_id' || lk === 'server' || lk === 'server_id' || lk === 'serverid')) {
+          server = String(val).trim();
+        }
+      }
+      if (!userAccount) {
+        return { success: false, error: 'User Account ID missing' };
+      }
+      const valRes = await this.client.validateUser(productId, userAccount, server);
+      if (valRes.success && valRes.role) {
+        return { success: true, playerName: valRes.role };
+      }
+      return { success: false, error: valRes.error || 'Player validation failed' };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
   public async syncCatalog(): Promise<{ total: number; synced: number; errors?: string[] }> {
     if (!this.client.isConfigured()) {
       throw new Error('TopupNation API is not configured. Please provide API Key and Secret first.');

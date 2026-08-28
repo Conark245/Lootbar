@@ -219,6 +219,29 @@ export class TopupNationClient {
    * GET /api/v1/reseller/wallet/balance
    * Retrieves TopupNation reseller wallet balance.
    */
+    /**
+   * GET /api/v1/reseller/products/:productId/validate
+   * Validates user account and returns role/player name.
+   */
+  public async validateUser(productId: string, userAccount: string, server?: string): Promise<{ success: boolean; role?: string; error?: string }> {
+    try {
+      const queryParams = new URLSearchParams();
+      queryParams.append('userAccount', userAccount);
+      if (server) {
+        queryParams.append('server', server);
+      }
+      const res = await this.request<any>('GET', `/api/v1/reseller/products/${encodeURIComponent(productId)}/validate?${queryParams.toString()}`);
+      const data = res?.data || res;
+      const role = data?.role || data?.roleName || data?.playerName || data?.name;
+      if (role) {
+        return { success: true, role: String(role) };
+      }
+      return { success: false, error: 'Validation returned success but no role was found.' };
+    } catch (error: any) {
+      return { success: false, error: error.message || 'Validation failed' };
+    }
+  }
+
   public async getWalletBalance(): Promise<TopupNationWalletBalance> {
     const res = await this.request<any>('GET', '/api/v1/reseller/wallet/balance');
     const data = res?.data || res;
