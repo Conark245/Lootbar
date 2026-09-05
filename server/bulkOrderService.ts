@@ -485,7 +485,7 @@ export class BulkOrderService {
             quantity: item.quantity,
             price: orderCost,
             success: false,
-            error: `Insufficient balance (Need $${orderCost.toFixed(2)}, balance $${currentBalance.toFixed(2)})`
+            error: `Insufficient balance (Need $${orderCost.toFixed(3)}, balance $${currentBalance.toFixed(3)})`
           });
           continue;
         }

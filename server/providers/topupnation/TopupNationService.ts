@@ -268,7 +268,7 @@ export class TopupNationService {
       if (user.balance < totalCost) {
         return { 
           success: false, 
-          error: `Insufficient wallet balance. Total cost is $${totalCost.toFixed(2)} USD, but your balance is $${user.balance.toFixed(2)} USD.` 
+          error: `Insufficient wallet balance. Total cost is $${totalCost.toFixed(3)} USD, but your balance is $${user.balance.toFixed(3)} USD.` 
         };
       }
 
@@ -560,7 +560,7 @@ export class TopupNationService {
           `├── 🆔 Order ID: \`${order.providerOrderId || order.orderId}\`\n` +
           `├── 🎮 Game: *${(order.gameName || 'Game').replace(/[*_`\[\]]/g, '')}*\n` +
           `├── ❌ Status: *FAILED*\n` +
-          `└── 💬 Message: _Could not be fulfilled_${!isApiLinked ? ` (Refunded $${order.price.toFixed(2)} USD to your wallet)` : ''}\n` +
+          `└── 💬 Message: _Could not be fulfilled_${!isApiLinked ? ` (Refunded $${order.price.toFixed(3)} USD to your wallet)` : ''}\n` +
           `═════════════════════════`;
         await this.telegramNotifier(order.telegramChatId, msg);
       }
@@ -645,7 +645,7 @@ export class TopupNationService {
                     `═════════════════════════\n` +
                     `├── 🆔 Order ID: \`${order.providerOrderId || order.orderId}\`\n` +
                     `├── ❌ Status: *FAILED*\n` +
-                    `└── 💬 Message: _Could not be fulfilled_${!isApiLinked ? ` (Refunded $${order.price.toFixed(2)} USD to your wallet)` : ''}\n` +
+                    `└── 💬 Message: _Could not be fulfilled_${!isApiLinked ? ` (Refunded $${order.price.toFixed(3)} USD to your wallet)` : ''}\n` +
                     `═════════════════════════`;
                   await this.telegramNotifier(order.telegramChatId, msg);
                 }

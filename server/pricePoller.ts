@@ -91,13 +91,13 @@ export class PricePoller {
                 if (oldPrice !== newPrice) {
                   const name = (newSku.sku_name || newSku.name || 'Package').replace(/[*_`\[\]]/g, '');
                   const indicator = newPrice > oldPrice ? '🔴 🔺' : '🟢 🔻';
-                  changes.push(`• ${name}: \`$${oldPrice.toFixed(2)}\` ➔ \`$${newPrice.toFixed(2)}\` ${indicator}`);
+                  changes.push(`• ${name}: \`$${oldPrice.toFixed(3)}\` ➔ \`$${newPrice.toFixed(3)}\` ${indicator}`);
                 }
               } else {
                 // New SKU logic
                 const newPrice = parseFloat(newSku.reseller_price || newSku.price || '0');
                 const name = (newSku.sku_name || newSku.name || 'Package').replace(/[*_`\[\]]/g, '');
-                changes.push(`• 🆕 ${name} (New): \`$${newPrice.toFixed(2)}\``);
+                changes.push(`• 🆕 ${name} (New): \`$${newPrice.toFixed(3)}\``);
               }
             }
 
@@ -188,13 +188,13 @@ export class PricePoller {
               if (oldPrice !== newPrice) {
                 const name = (newSku.name || 'Package').replace(/[*_`\[\]]/g, '');
                 const indicator = newPrice > oldPrice ? '🔴 🔺' : '🟢 🔻';
-                changes.push(`• ${name}: \`$${oldPrice.toFixed(2)}\` ➔ \`$${newPrice.toFixed(2)}\` ${indicator}`);
+                changes.push(`• ${name}: \`$${oldPrice.toFixed(3)}\` ➔ \`$${newPrice.toFixed(3)}\` ${indicator}`);
               }
             } else {
               // New SKU logic
               const newPrice = parseFloat(String(newSku.price || '0'));
               const name = (newSku.name || 'Package').replace(/[*_`\[\]]/g, '');
-              changes.push(`• 🆕 ${name} (New): \`$${newPrice.toFixed(2)}\``);
+              changes.push(`• 🆕 ${name} (New): \`$${newPrice.toFixed(3)}\``);
             }
           }
 
@@ -296,13 +296,13 @@ export class PricePoller {
               if (oldPrice !== newPrice) {
                 const name = (newSku.name || 'Package').replace(/[*_`\[\]]/g, '');
                 const indicator = newPrice > oldPrice ? '🔴 🔺' : '🟢 🔻';
-                changes.push(`• ${name}: \`$${oldPrice.toFixed(2)}\` ➔ \`$${newPrice.toFixed(2)}\` ${indicator}`);
+                changes.push(`• ${name}: \`$${oldPrice.toFixed(3)}\` ➔ \`$${newPrice.toFixed(3)}\` ${indicator}`);
               }
             } else {
               // New SKU logic
               const newPrice = parseFloat(String(newSku.price || '0'));
               const name = (newSku.name || 'Package').replace(/[*_`\[\]]/g, '');
-              changes.push(`• 🆕 ${name} (New): \`$${newPrice.toFixed(2)}\``);
+              changes.push(`• 🆕 ${name} (New): \`$${newPrice.toFixed(3)}\``);
             }
           }
 

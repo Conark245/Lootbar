@@ -1486,7 +1486,7 @@ export default function App() {
                       <optgroup label="Telegram Users (Deduct User Wallet Balance)">
                         {telegramUsers.map(u => (
                           <option key={u.telegramChatId} value={String(u.telegramChatId)}>
-                            👤 {u.telegramUsername ? `@${u.telegramUsername}` : u.firstName || 'User'} (ID: {u.telegramChatId}) — Balance: ${Number(u.balance || 0).toFixed(2)} USD {u.useDirectApiBalance ? '⚡ API Linked' : ''}
+                            👤 {u.telegramUsername ? `@${u.telegramUsername}` : u.firstName || 'User'} (ID: {u.telegramChatId}) — Balance: ${Number(u.balance || 0).toFixed(3)} USD {u.useDirectApiBalance ? '⚡ API Linked' : ''}
                           </option>
                         ))}
                       </optgroup>
@@ -1526,7 +1526,7 @@ export default function App() {
                         </div>
                         <div className="bg-white p-3 rounded-lg border border-emerald-100">
                           <span className="text-neutral-500 block">Total Spent</span>
-                          <span className="text-base font-bold text-amber-700">${Number(bulkSummary.totalSpent || 0).toFixed(2)} USD</span>
+                          <span className="text-base font-bold text-amber-700">${Number(bulkSummary.totalSpent || 0).toFixed(3)} USD</span>
                         </div>
                       </div>
 
@@ -1546,7 +1546,7 @@ export default function App() {
                               </div>
                             </div>
                             <div className="text-right font-mono">
-                              <span className="font-semibold text-neutral-800">${Number(res.price || 0).toFixed(2)}</span>
+                              <span className="font-semibold text-neutral-800">${Number(res.price || 0).toFixed(3)}</span>
                               <div className="text-[10px] text-neutral-400">{res.orderId || res.referenceId || '-'}</div>
                             </div>
                           </div>
@@ -1711,8 +1711,8 @@ export default function App() {
                                     {Object.entries(item.extraInfo || {}).map(([k, v]) => `${k}:${v}`).join(', ') || '-'}
                                   </td>
                                   <td className="p-2.5 text-center font-bold text-neutral-900">x{item.quantity}</td>
-                                  <td className="p-2.5 text-right text-neutral-500">${Number(item.unitPrice || 0).toFixed(2)}</td>
-                                  <td className="p-2.5 text-right font-bold text-amber-700">${Number(item.totalPrice || 0).toFixed(2)}</td>
+                                  <td className="p-2.5 text-right text-neutral-500">${Number(item.unitPrice || 0).toFixed(3)}</td>
+                                  <td className="p-2.5 text-right font-bold text-amber-700">${Number(item.totalPrice || 0).toFixed(3)}</td>
                                 </tr>
                               ))}
                             </tbody>
@@ -1725,7 +1725,7 @@ export default function App() {
                                   x{bulkPreview.totalQuantity || bulkPreview.validItems.reduce((acc: number, cur: any) => acc + cur.quantity, 0)}
                                 </td>
                                 <td colSpan={2} className="p-3 text-right text-base font-bold text-amber-900 font-mono">
-                                  ${Number(bulkPreview.totalPrice || 0).toFixed(2)} USD
+                                  ${Number(bulkPreview.totalPrice || 0).toFixed(3)} USD
                                 </td>
                               </tr>
                             </tfoot>
@@ -1755,7 +1755,7 @@ export default function App() {
                                 Executing Orders Sequentially...
                               </>
                             ) : (
-                              `🚀 Confirm & Execute ${bulkPreview.validItems.length} Order(s) ($${Number(bulkPreview.totalPrice || 0).toFixed(2)} USD)`
+                              `🚀 Confirm & Execute ${bulkPreview.validItems.length} Order(s) ($${Number(bulkPreview.totalPrice || 0).toFixed(3)} USD)`
                             )}
                           </button>
                         </div>
@@ -1813,7 +1813,7 @@ export default function App() {
                         </div>
                         <div className="bg-neutral-50 p-3 rounded-xl border border-neutral-200">
                           <span className="text-neutral-400 block text-[11px]">Total Spent</span>
-                          <span className="font-bold text-amber-700 font-mono text-sm">${Number(selectedBulkBatch.totalSpent || 0).toFixed(2)} USD</span>
+                          <span className="font-bold text-amber-700 font-mono text-sm">${Number(selectedBulkBatch.totalSpent || 0).toFixed(3)} USD</span>
                         </div>
                       </div>
 
@@ -1859,7 +1859,7 @@ export default function App() {
                                   {Object.entries(item.extraInfo || {}).map(([k, v]) => `${k}:${v}`).join(', ') || '-'}
                                 </td>
                                 <td className="p-2.5 text-center font-bold text-neutral-900">x{item.quantity || 1}</td>
-                                <td className="p-2.5 text-right font-bold text-amber-800">${Number(item.price || 0).toFixed(2)}</td>
+                                <td className="p-2.5 text-right font-bold text-amber-800">${Number(item.price || 0).toFixed(3)}</td>
                                 <td className="p-2.5 text-neutral-600 text-[11px]">
                                   {item.orderId || item.referenceId ? (
                                     <span className="text-neutral-700">{item.orderId || item.referenceId}</span>
@@ -1945,7 +1945,7 @@ export default function App() {
                                 <div className="text-right">
                                   <span className="text-[11px] text-neutral-400 block">Total Spent</span>
                                   <span className="font-mono font-bold text-amber-900 text-sm">
-                                    ${Number(batch.totalSpent || 0).toFixed(2)} USD
+                                    ${Number(batch.totalSpent || 0).toFixed(3)} USD
                                   </span>
                                 </div>
                                 <button
@@ -2449,7 +2449,7 @@ export default function App() {
 
               {tpnBalance ? (
                 <div className="text-2xl font-extrabold relative z-10 flex items-baseline gap-1">
-                  ${Number(tpnBalance.balance || 0).toFixed(2)} 
+                  ${Number(tpnBalance.balance || 0).toFixed(3)} 
                   <span className="text-xs text-indigo-200 font-semibold">{tpnBalance.currency || 'USD'}</span>
                 </div>
               ) : (
@@ -2474,7 +2474,7 @@ export default function App() {
 
               {fzrBalance ? (
                 <div className="text-2xl font-extrabold relative z-10 flex items-baseline gap-1">
-                  ${Number(fzrBalance.balance || fzrBalance.balance_usd || 0).toFixed(2)} 
+                  ${Number(fzrBalance.balance || fzrBalance.balance_usd || 0).toFixed(3)} 
                   <span className="text-xs text-sky-200 font-semibold">{fzrBalance.currency || 'USD'}</span>
                 </div>
               ) : (
@@ -3451,7 +3451,7 @@ export default function App() {
                             ) : (
                               <div className="inline-flex items-baseline bg-neutral-50 px-3 py-1.5 rounded-lg border border-neutral-200">
                                 <span className="text-xs text-neutral-500 mr-2 font-medium">Wallet Balance:</span>
-                                <span className="text-xl font-extrabold text-neutral-900">${Number(user.balance || 0).toFixed(2)}</span>
+                                <span className="text-xl font-extrabold text-neutral-900">${Number(user.balance || 0).toFixed(3)}</span>
                                 <span className="text-[11px] text-neutral-400 ml-1">USD</span>
                               </div>
                             )}
@@ -3622,13 +3622,13 @@ export default function App() {
               {tpnBalance && (
                 <div className="flex flex-col px-3.5 py-1.5 bg-indigo-50 border border-indigo-200 rounded-lg">
                   <span className="text-[10px] uppercase font-bold text-indigo-700 tracking-wider">TopupNation</span>
-                  <span className="text-base font-mono font-extrabold text-indigo-900">${Number(tpnBalance.balance || 0).toFixed(2)}</span>
+                  <span className="text-base font-mono font-extrabold text-indigo-900">${Number(tpnBalance.balance || 0).toFixed(3)}</span>
                 </div>
               )}
               {fzrBalance && (
                 <div className="flex flex-col px-3.5 py-1.5 bg-sky-50 border border-sky-200 rounded-lg">
                   <span className="text-[10px] uppercase font-bold text-sky-700 tracking-wider">FZR Cards</span>
-                  <span className="text-base font-mono font-extrabold text-sky-900">${Number(fzrBalance.balance || fzrBalance.balance_usd || 0).toFixed(2)}</span>
+                  <span className="text-base font-mono font-extrabold text-sky-900">${Number(fzrBalance.balance || fzrBalance.balance_usd || 0).toFixed(3)}</span>
                 </div>
               )}
             </div>
@@ -3703,7 +3703,7 @@ export default function App() {
                 </div>
                 <div className="bg-purple-50/60 p-3 rounded-xl border border-purple-100">
                   <div className="text-[11px] text-purple-700 font-medium">Total Volume</div>
-                  <div className="text-lg font-bold text-purple-900 mt-0.5 font-mono">${totalVol.toFixed(2)}</div>
+                  <div className="text-lg font-bold text-purple-900 mt-0.5 font-mono">${totalVol.toFixed(3)}</div>
                 </div>
               </div>
             );
@@ -4000,7 +4000,7 @@ export default function App() {
 
                             {/* Price */}
                             <td className="py-3.5 px-4 font-bold text-neutral-900 font-mono text-xs">
-                              ${Number(o.price || 0).toFixed(2)}
+                              ${Number(o.price || 0).toFixed(3)}
                             </td>
 
                             {/* Live Status Tracking Stepper */}
@@ -4261,7 +4261,7 @@ export default function App() {
                   </div>
                   <div className="flex justify-between py-1 border-b border-neutral-200/60">
                     <span className="text-neutral-500">Top-Up Amount Paid:</span>
-                    <span className="font-bold text-neutral-900 font-mono">${Number(selectedTrackingOrder.price || 0).toFixed(2)} USD</span>
+                    <span className="font-bold text-neutral-900 font-mono">${Number(selectedTrackingOrder.price || 0).toFixed(3)} USD</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-neutral-200/60">
                     <span className="text-neutral-500">Telegram Chat ID:</span>

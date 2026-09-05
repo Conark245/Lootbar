@@ -504,7 +504,7 @@ export function setupBot(
         const price = sku.reseller_price || sku.price || '0.00';
         const customKey = skuKeys[String(sku.sku_id)];
         const shortKeyTag = customKey ? ` (Key: \`${customKey}\`)` : '';
-        msg += `▫️ *${name}* — \`$${Number(price).toFixed(2)} USD\`${shortKeyTag}\n`;
+        msg += `▫️ *${name}* — \`$${Number(price).toFixed(3)} USD\`${shortKeyTag}\n`;
       });
 
       msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
@@ -693,7 +693,7 @@ export function setupBot(
         const price = sku.price || '0.00';
         const customKey = skuKeys[String(sku.sku || sku.sku_id)];
         const shortKeyTag = customKey ? ` (Key: \`${customKey}\`)` : '';
-        msg += `▫️ *${name}* — \`$${Number(price).toFixed(2)} USD\`${shortKeyTag}\n`;
+        msg += `▫️ *${name}* — \`$${Number(price).toFixed(3)} USD\`${shortKeyTag}\n`;
       });
 
       msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
@@ -886,7 +886,7 @@ export function setupBot(
         const price = sku.price || '0.00';
         const customKey = skuKeys[String(sku.sku || sku.sku_id)];
         const shortKeyTag = customKey ? ` (Key: \`${customKey}\`)` : '';
-        msg += `▫️ *${name}* — \`$${Number(price).toFixed(2)} USD\`${shortKeyTag}\n`;
+        msg += `▫️ *${name}* — \`$${Number(price).toFixed(3)} USD\`${shortKeyTag}\n`;
       });
 
       msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
@@ -1117,13 +1117,13 @@ export function setupBot(
       const totalPrice = parseResult.totalPrice;
 
       if (!isApiLinked && userBalance < totalPrice) {
-        const needed = (totalPrice - userBalance).toFixed(2);
+        const needed = (totalPrice - userBalance).toFixed(3);
         return safeReply(
           ctx,
           `⚠️ *Insufficient Balance for Bulk Order!*\n═════════════════════════\n` +
           `├── 📦 Total Orders: *${parseResult.validItems.length} items*\n` +
-          `├── 💰 Total Cost: \`$${totalPrice.toFixed(2)} USD\`\n` +
-          `├── 💳 Your Balance: \`$${userBalance.toFixed(2)} USD\`\n` +
+          `├── 💰 Total Cost: \`$${totalPrice.toFixed(3)} USD\`\n` +
+          `├── 💳 Your Balance: \`$${userBalance.toFixed(3)} USD\`\n` +
           `└── ⚠️ Needed More: \`$${needed} USD\`\n` +
           `═════════════════════════\n` +
           `_ကျေးဇူးပြု၍ Wallet ထဲသို့ ငွေဖြည့်သွင်းပြီးမှ အော်ဒါတင်ပေးပါ။_`,
@@ -1153,24 +1153,24 @@ export function setupBot(
         }
         const qtyStr = item.quantity > 1 ? ` (x${item.quantity})` : '';
         summaryMsg += `▫️ *#${idx + 1} ${escapeMd(item.gameName)}* — ${escapeMd(item.skuName)}${qtyStr}\n` +
-          `   └ 🎯 \`${escapeCode(accountStr)}\` • \`$${item.totalPrice.toFixed(2)}\`\n`;
+          `   └ 🎯 \`${escapeCode(accountStr)}\` • \`$${item.totalPrice.toFixed(3)}\`\n`;
       });
 
       summaryMsg += `═════════════════════════\n` +
         `├── 📦 Total Items: *${parseResult.validItems.length} orders* (${parseResult.totalQuantity} items)\n` +
-        `├── 💰 Total Price: \`$${totalPrice.toFixed(2)} USD\`\n`;
+        `├── 💰 Total Price: \`$${totalPrice.toFixed(3)} USD\`\n`;
 
       if (isApiLinked) {
         summaryMsg += `└── 💳 Payment: \`⚡ Direct API Balance Linked\`\n`;
       } else {
         const after = Math.max(0, userBalance - totalPrice);
-        summaryMsg += `├── 💳 Current Balance: \`$${userBalance.toFixed(2)} USD\`\n` +
-          `└── 💵 Balance After: \`$${after.toFixed(2)} USD\`\n`;
+        summaryMsg += `├── 💳 Current Balance: \`$${userBalance.toFixed(3)} USD\`\n` +
+          `└── 💵 Balance After: \`$${after.toFixed(3)} USD\`\n`;
       }
       summaryMsg += `═════════════════════════`;
 
       const confirmKeyboard = Markup.inlineKeyboard([
-        [Markup.button.callback(`🚀 Confirm & Place ${parseResult.validItems.length} Orders ($${totalPrice.toFixed(2)})`, 'confirm_bulk_orders')],
+        [Markup.button.callback(`🚀 Confirm & Place ${parseResult.validItems.length} Orders ($${totalPrice.toFixed(3)})`, 'confirm_bulk_orders')],
         [Markup.button.callback('❌ Cancel Bulk Order', 'cancel_order')]
       ]);
 
@@ -1203,7 +1203,7 @@ export function setupBot(
             if (oldPrice !== newPrice) {
               const name = (newSku.name || 'Package').replace(/[*_`\[\]]/g, '');
               const indicator = newPrice > oldPrice ? '🔴 🔺' : '🟢 🔻';
-              changes.push(`• ${name}: \`${oldPrice.toFixed(2)}\` ➔ \`${newPrice.toFixed(2)}\` ${indicator}`);
+              changes.push(`• ${name}: \`${oldPrice.toFixed(3)}\` ➔ \`${newPrice.toFixed(3)}\` ${indicator}`);
             }
           }
         }
@@ -1661,8 +1661,8 @@ export function setupBot(
       `═════════════════════════\n` +
       `├── 🆔 Request ID: \`${requestId}\`\n` +
       `├── 👤 User: \`${topupReq.telegramChatId}\`\n` +
-      `├── 💵 Amount Added: \`+$${topupReq.amount.toFixed(2)} USD\`\n` +
-      `├── 💳 User New Balance: \`$${Number(updatedUser?.balance || 0).toFixed(2)} USD\`\n` +
+      `├── 💵 Amount Added: \`+$${topupReq.amount.toFixed(3)} USD\`\n` +
+      `├── 💳 User New Balance: \`$${Number(updatedUser?.balance || 0).toFixed(3)} USD\`\n` +
       `├── 👤 Approved by: \`Admin / Owner\`\n` +
       `└── 📅 Time: \`${new Date().toLocaleTimeString()}\`\n` +
       `═════════════════════════`;
@@ -1673,8 +1673,8 @@ export function setupBot(
     const userSuccessMsg = `🎉 *Balance Top-Up Approved!*\n` +
       `═════════════════════════\n` +
       `├── 🆔 Request ID: \`${requestId}\`\n` +
-      `├── 💰 Added Amount: \`+$${topupReq.amount.toFixed(2)} USD\`\n` +
-      `├── 💳 New Wallet Balance: \`$${Number(updatedUser?.balance || 0).toFixed(2)} USD\`\n` +
+      `├── 💰 Added Amount: \`+$${topupReq.amount.toFixed(3)} USD\`\n` +
+      `├── 💳 New Wallet Balance: \`$${Number(updatedUser?.balance || 0).toFixed(3)} USD\`\n` +
       `└── ✅ Status: *APPROVED*\n` +
       `═════════════════════════\n` +
       `သင့် Wallet ထဲသို့ ငွေဖြည့်သွင်းခြင်း အောင်မြင်ပါပြီ။ အော်ဒါများကို စတင်ဝယ်ယူနိုင်ပါပြီ။`;
@@ -1713,7 +1713,7 @@ export function setupBot(
       `═════════════════════════\n` +
       `├── 🆔 Request ID: \`${requestId}\`\n` +
       `├── 👤 User: \`${topupReq.telegramChatId}\`\n` +
-      `├── 💵 Amount: \`$${topupReq.amount.toFixed(2)} USD\`\n` +
+      `├── 💵 Amount: \`$${topupReq.amount.toFixed(3)} USD\`\n` +
       `├── 👤 Declined by: \`Admin / Owner\`\n` +
       `└── 📅 Time: \`${new Date().toLocaleTimeString()}\`\n` +
       `═════════════════════════`;
@@ -1724,7 +1724,7 @@ export function setupBot(
     const userRejectMsg = `❌ *Top-Up Request Declined*\n` +
       `═════════════════════════\n` +
       `├── 🆔 Request ID: \`${requestId}\`\n` +
-      `├── 💰 Amount: \`$${topupReq.amount.toFixed(2)} USD\`\n` +
+      `├── 💰 Amount: \`$${topupReq.amount.toFixed(3)} USD\`\n` +
       `└── ❌ Status: *DECLINED*\n` +
       `═════════════════════════\n` +
       `Admin မှ ငွေဖြည့်သွင်းမှုအား ပယ်ဖျက်လိုက်ပါသည်။ အသေးစိတ်သိရှိလိုပါက Admin သို့ ဆက်သွယ်ပါ။`;
@@ -1740,7 +1740,7 @@ export function setupBot(
       }
       const asset = await lootbar.queryAsset();
       const bal = asset?.data?.total_amount || asset?.data?.balance || '0.00';
-      return { success: true, balance: Number(bal).toFixed(2) };
+      return { success: true, balance: Number(bal).toFixed(3) };
     } catch (e: any) {
       return { success: false, balance: '0.00', error: e.message || 'Connection error' };
     }
@@ -1756,8 +1756,8 @@ export function setupBot(
       const avail = typeof data?.availableBalance === 'number' ? data.availableBalance : (data?.availableBalance ? parseFloat(data.availableBalance) : bal);
       return {
         success: true,
-        balance: bal.toFixed(2),
-        available: avail.toFixed(2),
+        balance: bal.toFixed(3),
+        available: avail.toFixed(3),
         currency: data?.currency || 'USD'
       };
     } catch (e: any) {
@@ -1775,8 +1775,8 @@ export function setupBot(
       const avail = typeof data?.availableBalance === 'number' ? data.availableBalance : (data?.availableBalance ? parseFloat(data.availableBalance) : bal);
       return {
         success: true,
-        balance: bal.toFixed(2),
-        available: avail.toFixed(2),
+        balance: bal.toFixed(3),
+        available: avail.toFixed(3),
         currency: data?.currency || 'USD'
       };
     } catch (e: any) {
@@ -1794,7 +1794,7 @@ export function setupBot(
     if (!isApiLinked && !isOwner) {
       const msg = `🔒 *Access Restricted: API Balance*\n\n` +
         `တိုက်ရိုက် API Balance စစ်ဆေးခြင်းကို Direct API Linked Reseller (VIP) သို့မဟုတ် Admin သာ ကြည့်ရှုခွင့်ရှိပါသည်။\n\n` +
-        `💰 *သင့် Wallet လက်ကျန်ငွေ:* \`$${Number(user?.balance || 0).toFixed(2)} USD\``;
+        `💰 *သင့် Wallet လက်ကျန်ငွေ:* \`$${Number(user?.balance || 0).toFixed(3)} USD\``;
 
       const keyboard = Markup.inlineKeyboard([
         [
@@ -1982,7 +1982,7 @@ export function setupBot(
         `👤 *Username:* ${usernameDisplay}\n` +
         `📊 *Status:* ✅ \`Authorized\`\n` +
         `⚡ *Account Tier:* \`Standard Member\`\n` +
-        `💰 *Wallet Balance:* \`$${Number(user.balance || 0).toFixed(2)} USD\`\n` +
+        `💰 *Wallet Balance:* \`$${Number(user.balance || 0).toFixed(3)} USD\`\n` +
         `📦 *Ordering Mode:* \`Pre-funded Wallet Balance\`\n` +
         `═════════════════════════`;
 
@@ -2021,7 +2021,7 @@ export function setupBot(
         `_✨ Your account is directly connected to live API funds for instant top-up fulfillment._`;
     } else {
       msg += `⚡ *Account Tier:* \`Admin / Owner\`\n` +
-        `💰 *Wallet Balance:* \`$${Number(user.balance || 0).toFixed(2)} USD\`\n\n` +
+        `💰 *Wallet Balance:* \`$${Number(user.balance || 0).toFixed(3)} USD\`\n\n` +
         `🎮 *LootBar API Live:* \`$${lbRes.balance} USD\`\n` +
         `🌐 *TopupNation API Live:* \`$${tpnRes.balance} USD\``;
     }
@@ -2060,7 +2060,7 @@ export function setupBot(
     if (!isApiLinked && !isOwner) {
       let msg = `💳 *Your Wallet Balance*\n` +
         `═════════════════════════\n` +
-        `💰 *Current Balance:* \`$${Number(user?.balance || 0).toFixed(2)} USD\`\n` +
+        `💰 *Current Balance:* \`$${Number(user?.balance || 0).toFixed(3)} USD\`\n` +
         `⚡ *Account Tier:* \`Standard Member\`\n` +
         `📦 *Ordering Mode:* \`Pre-funded Wallet Balance\`\n` +
         `═════════════════════════\n` +
@@ -2089,7 +2089,7 @@ export function setupBot(
 
     let msg = `⚡ *Direct API Live Balance (VIP / Reseller)*\n` +
       `═════════════════════════\n` +
-      `💰 *Personal Wallet:* \`$${Number(user?.balance || 0).toFixed(2)} USD\`\n` +
+      `💰 *Personal Wallet:* \`$${Number(user?.balance || 0).toFixed(3)} USD\`\n` +
       `🌐 *Linked Provider:* \`${apiProvider}\`\n` +
       `═════════════════════════\n` +
       `🎮 *LootBar API:* \`$${lbRes.balance} USD\` (${lbRes.success ? '✅ Connected' : '⚠️ Offline'})\n` +
@@ -2265,7 +2265,7 @@ export function setupBot(
     if (isApiLinked) {
       intro += `⚡ *Account Tier:* \`Direct API Linked (VIP)\`\n_Note: Your account is currently linked to live API funds, but you can also request wallet balance if needed._\n\n`;
     } else {
-      intro += `💳 *Current Wallet Balance:* \`$${Number(user.balance || 0).toFixed(2)} USD\`\n\n`;
+      intro += `💳 *Current Wallet Balance:* \`$${Number(user.balance || 0).toFixed(3)} USD\`\n\n`;
     }
 
     intro += `ကျေးဇူးပြု၍ ထည့်သွင်းလိုသော USD ပမာဏကို ရွေးချယ်ပါ (သို့မဟုတ် စာရိုက်ထည့်ပါ - ဥပမာ \`15\`, \`30\`, \`100\`):`;
@@ -2321,10 +2321,10 @@ export function setupBot(
     const userConfirmMsg = `✅ *Top-Up Request Submitted!*\n` +
       `═════════════════════════\n` +
       `├── 🆔 Request ID: \`${requestId}\`\n` +
-      `├── 💰 Requested Amount: \`$${amount.toFixed(2)} USD\`\n` +
+      `├── 💰 Requested Amount: \`$${amount.toFixed(3)} USD\`\n` +
       `├── 📸 Payment Slip: \`Attached ✅\`\n` +
       (note ? `├── 📝 Note / Ref: \`${escapeCode(note)}\`\n` : '') +
-      `├── 💳 Current Balance: \`$${Number(user.balance || 0).toFixed(2)} USD\`\n` +
+      `├── 💳 Current Balance: \`$${Number(user.balance || 0).toFixed(3)} USD\`\n` +
       `├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
       `└── ⏳ Status: *PENDING APPROVAL*\n` +
       `═════════════════════════\n` +
@@ -2341,8 +2341,8 @@ export function setupBot(
       `═════════════════════════\n` +
       `├── 🆔 Request ID: \`${requestId}\`\n` +
       `├── 👤 User: \`${chatId}\` (${userDisplay})\n` +
-      `├── 💵 Requested Amount: \`$${amount.toFixed(2)} USD\`\n` +
-      `├── 💳 Current Balance: \`$${Number(user.balance || 0).toFixed(2)} USD\`\n` +
+      `├── 💵 Requested Amount: \`$${amount.toFixed(3)} USD\`\n` +
+      `├── 💳 Current Balance: \`$${Number(user.balance || 0).toFixed(3)} USD\`\n` +
       `├── 📝 Note / Ref: \`${safeNote}\`\n` +
       `└── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
       `═════════════════════════\n` +
@@ -2350,7 +2350,7 @@ export function setupBot(
 
     const adminKeyboard = Markup.inlineKeyboard([
       [
-        Markup.button.callback(`✅ Approve (+$${amount.toFixed(2)})`, `topup_approve_${requestId}`),
+        Markup.button.callback(`✅ Approve (+$${amount.toFixed(3)})`, `topup_approve_${requestId}`),
         Markup.button.callback(`❌ Decline`, `topup_reject_${requestId}`)
       ]
     ]);
@@ -2402,9 +2402,9 @@ export function setupBot(
     ctx.session.topupAmount = amount;
     ctx.session.step = 'INPUT_TOPUP_PHOTO';
 
-    await ctx.answerCbQuery(`Selected $${amount.toFixed(2)} USD`);
+    await ctx.answerCbQuery(`Selected $${amount.toFixed(3)} USD`);
 
-    const promptMsg = `💰 *Selected Top-Up Amount:* \`$${amount.toFixed(2)} USD\`\n\n` +
+    const promptMsg = `💰 *Selected Top-Up Amount:* \`$${amount.toFixed(3)} USD\`\n\n` +
       `📸 *Payment Slip Screenshot (ငွေလွှဲပြေစာ ပုံ ပို့ပေးပါ)*\n` +
       `ငွေဖြည့်သွင်းမှု အတည်ပြုရန်အတွက် ငွေလွှဲပြေစာ Screenshot (ဓာတ်ပုံ) ကို ပေးပို့ပေးပါ:\n` +
       `💡 _(ဓာတ်ပုံနှင့်အတူ Caption ဖြင့် KPay Ref သို့မဟုတ် Note ရေးထည့်နိုင်ပါသည်)_\n\n` +
@@ -2726,7 +2726,7 @@ export function setupBot(
         `├── 🕒 Time: \`${timeStr}\`\n` +
         `├── 📊 Requested: *${b.totalRequested} orders*\n` +
         `├── ✅ Success: *${b.successCount}* | ❌ Failed: *${b.failedCount}*\n` +
-        `├── 💰 Total Spent: \`$${Number(b.totalSpent || 0).toFixed(2)} USD\`\n` +
+        `├── 💰 Total Spent: \`$${Number(b.totalSpent || 0).toFixed(3)} USD\`\n` +
         `└── 💳 Payment: \`${b.isApiLinked ? '⚡ Direct API' : '💰 User Wallet'}\`\n\n`;
 
       detailButtons.push([
@@ -2774,7 +2774,7 @@ export function setupBot(
       `├── 📊 Total Requested: *${batch.totalRequested} orders*\n` +
       `├── ✅ Successful: *${batch.successCount}*\n` +
       `├── ❌ Failed: *${batch.failedCount}*\n` +
-      `├── 💰 Total Spent: \`$${Number(batch.totalSpent || 0).toFixed(2)} USD\`\n` +
+      `├── 💰 Total Spent: \`$${Number(batch.totalSpent || 0).toFixed(3)} USD\`\n` +
       `└── 💳 Source: \`${(batch.source || 'BOT').toUpperCase()}\` (${batch.isApiLinked ? '⚡ Direct API' : '💰 User Wallet'})\n` +
       `═════════════════════════\n\n*Order Lines Breakdown:*\n`;
 
@@ -2782,7 +2782,7 @@ export function setupBot(
       const qtyStr = r.quantity > 1 ? ` (x${r.quantity})` : '';
       if (r.success) {
         msg += `✅ *#${idx + 1} ${escapeMd(r.gameName)}* — ${escapeMd(r.skuName)}${qtyStr}\n` +
-          `   └ 🆔 \`${r.orderId || r.referenceId}\` • \`$${Number(r.price || 0).toFixed(2)}\` • _${r.statusText || 'PROCESSING'}_\n`;
+          `   └ 🆔 \`${r.orderId || r.referenceId}\` • \`$${Number(r.price || 0).toFixed(3)}\` • _${r.statusText || 'PROCESSING'}_\n`;
       } else {
         msg += `❌ *#${idx + 1} ${escapeMd(r.gameName)}* — ${escapeMd(r.skuName)}${qtyStr}\n` +
           `   └ ⚠️ Error: _${escapeMd(r.error || 'Failed')}_\n`;
@@ -3039,7 +3039,7 @@ export function setupBot(
     const nextField = requiredFields[currentIndex];
 
     const skuName = ctx.session.skuName || 'Selected Item';
-    const price = ctx.session.skuPrice !== undefined ? ctx.session.skuPrice.toFixed(2) : '0.00';
+    const price = ctx.session.skuPrice !== undefined ? ctx.session.skuPrice.toFixed(3) : '0.00';
     const gameName = ctx.session.gameName || 'Game';
 
     const infoHeader = `🎮 *Game:* ${gameName}\n🛍 *Product:* \`${skuName}\`\n💰 *Price:* \`$${price} USD\`\n\n`;
@@ -3132,7 +3132,7 @@ export function setupBot(
       ctx.session.topupAmount = parsedAmount;
       ctx.session.step = 'INPUT_TOPUP_PHOTO';
 
-      const promptMsg = `💰 *Selected Top-Up Amount:* \`$${parsedAmount.toFixed(2)} USD\`\n\n` +
+      const promptMsg = `💰 *Selected Top-Up Amount:* \`$${parsedAmount.toFixed(3)} USD\`\n\n` +
         `📸 *Payment Slip Screenshot (ငွေလွှဲပြေစာ ပုံ ပို့ပေးပါ)*\n` +
         `ငွေဖြည့်သွင်းမှု အတည်ပြုရန်အတွက် ငွေလွှဲပြေစာ Screenshot (ဓာတ်ပုံ) ကို ပေးပို့ပေးပါ:\n` +
         `💡 _(ဓာတ်ပုံနှင့်အတူ Caption ဖြင့် KPay Ref သို့မဟုတ် Note ရေးထည့်နိုင်ပါသည်)_\n\n` +
@@ -3151,7 +3151,7 @@ export function setupBot(
       return safeReply(
         ctx,
         `⚠️ *ငွေလွှဲပြေစာ Screenshot (ဓာတ်ပုံ) ပေးပို့ရန် လိုအပ်ပါသည်*\n\n` +
-        `ရွေးချယ်ထားသော ပမာဏ: \`$${amount.toFixed(2)} USD\`\n` +
+        `ရွေးချယ်ထားသော ပမာဏ: \`$${amount.toFixed(3)} USD\`\n` +
         `ငွေဖြည့်သွင်းမှု အတည်ပြုနိုင်ရန်အတွက် ငွေလွှဲထားသော ပြေစာပုံ Screenshot ကို Photo အနေဖြင့် ပေးပို့ပေးပါ (Photo Required).\n\n` +
         `_မပြုလုပ်လိုပါက /cancel ဟု ပို့နိုင်ပါသည်။_`
       );
@@ -3265,7 +3265,7 @@ export function setupBot(
     ]);
 
     if (!isApiLinked && userBalance < price) {
-      const needed = (price - userBalance).toFixed(2);
+      const needed = (price - userBalance).toFixed(3);
       let failMsg = `⚠️ *Insufficient Balance!*\n═════════════════════════\n` +
         `├── 🎮 Game: *${escapeMd(gameName)}*\n` +
         `├── 📦 Package: *${escapeMd(skuName)}*\n`;
@@ -3321,13 +3321,13 @@ export function setupBot(
     if (isApiLinked) {
       lines.push(`└── 💳 Payment: \`⚡ Direct API Balance Linked\``);
     } else {
-      lines.push(`├── 💳 Payment: \`Wallet Balance ($${userBalance.toFixed(2)})\``);
-      lines.push(`└── 💵 Remaining After: \`$${balanceAfter.toFixed(2)}\``);
+      lines.push(`├── 💳 Payment: \`Wallet Balance ($${userBalance.toFixed(3)})\``);
+      lines.push(`└── 💵 Remaining After: \`$${balanceAfter.toFixed(3)}\``);
     }
     lines.push(`═════════════════════════`);
 
     const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback(`✅ Confirm & Pay ($${price.toFixed(2)})`, 'confirm_place_order')],
+      [Markup.button.callback(`✅ Confirm & Pay ($${price.toFixed(3)})`, 'confirm_place_order')],
       [Markup.button.callback('❌ Cancel Order', 'cancel_order')]
     ]);
 
@@ -3468,7 +3468,7 @@ export function setupBot(
       lines.push(`├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\``);
       if (!isApiLinked) {
         const updatedUser = await User.findOne({ telegramChatId: ctx.chat!.id });
-        lines.push(`└── 💳 Remaining Balance: \`$${(updatedUser?.balance || 0).toFixed(2)}\``);
+        lines.push(`└── 💳 Remaining Balance: \`$${(updatedUser?.balance || 0).toFixed(3)}\``);
       } else {
         lines.push(`└── 💳 Payment: \`⚡ Direct API Balance Linked\``);
       }
@@ -3491,7 +3491,7 @@ export function setupBot(
         `├── 🌐 Provider: \`TopupNation\`\n` +
         `├── 🎮 Game: *${safeGame}*\n` +
         `├── 📦 Package: *${safeSku}*\n` +
-        `├── 💰 Price: \`$${orderCost.toFixed(2)} USD\`\n` +
+        `├── 💰 Price: \`$${orderCost.toFixed(3)} USD\`\n` +
         (order.playerName ? `├── 🎯 Player/Account: \`${escapeCode(order.playerName)}\`\n` : '') +
         `├── 💳 Payment: \`${isApiLinked ? 'Direct API Linked' : 'Wallet Balance'}\`\n` +
         `├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
@@ -3549,7 +3549,7 @@ export function setupBot(
       lines.push(`├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\``);
       if (!isApiLinked) {
         const updatedUser = await User.findOne({ telegramChatId: ctx.chat!.id });
-        lines.push(`└── 💳 Remaining Balance: \`$${(updatedUser?.balance || 0).toFixed(2)}\``);
+        lines.push(`└── 💳 Remaining Balance: \`$${(updatedUser?.balance || 0).toFixed(3)}\``);
       } else {
         lines.push(`└── 💳 Payment: \`⚡ Direct API Balance Linked\``);
       }
@@ -3572,7 +3572,7 @@ export function setupBot(
         `├── 🌐 Provider: \`FZR Cards\`\n` +
         `├── 🎮 Game: *${safeGame}*\n` +
         `├── 📦 Package: *${safeSku}*\n` +
-        `├── 💰 Price: \`$${orderCost.toFixed(2)} USD\`\n` +
+        `├── 💰 Price: \`$${orderCost.toFixed(3)} USD\`\n` +
         (order.playerName ? `├── 🎯 Player/Account: \`${escapeCode(order.playerName)}\`\n` : '') +
         `├── 💳 Payment: \`${isApiLinked ? 'Direct API Linked' : 'Wallet Balance'}\`\n` +
         `├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
@@ -3587,7 +3587,7 @@ export function setupBot(
 
     if (!isApiLinked) {
       if (userDoc.balance < orderCost) {
-        return ctx.reply(`❌ Insufficient balance. Cost is $${orderCost.toFixed(2)}, but your balance is $${userDoc.balance.toFixed(2)}.`, mainMenu);
+        return ctx.reply(`❌ Insufficient balance. Cost is $${orderCost.toFixed(3)}, but your balance is $${userDoc.balance.toFixed(3)}.`, mainMenu);
       }
 
       // Atomic Balance Deduction for standard wallet users
@@ -3679,7 +3679,7 @@ export function setupBot(
         lines.push(`├── 💰 Price: \`$${orderCost.toFixed(3)}\``);
         lines.push(`├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\``);
         if (!isApiLinked) {
-          lines.push(`└── 💳 Remaining Balance: \`$${userDoc.balance.toFixed(2)}\``);
+          lines.push(`└── 💳 Remaining Balance: \`$${userDoc.balance.toFixed(3)}\``);
         } else {
           lines.push(`└── 💳 Payment: \`⚡ Direct API Balance Linked\``);
         }
@@ -3706,7 +3706,7 @@ export function setupBot(
           `├── 👤 User: \`${ctx.chat!.id}\` (${safeFromUser})\n` +
           `├── 🎮 Game: *${safeGame}*\n` +
           `├── 📦 Package: *${safeSku}*\n` +
-          `├── 💰 Price: \`$${orderCost.toFixed(2)} USD\`\n` +
+          `├── 💰 Price: \`$${orderCost.toFixed(3)} USD\`\n` +
           (playerName ? `├── 🎯 Player: \`${escapeCode(playerName)}\`\n` : '') +
           (playerId ? `├── 🎯 Player ID: \`${escapeCode(playerId)}\`\n` : '') +
           `├── 💳 Payment: \`${isApiLinked ? 'Direct API Linked' : 'Wallet Balance'}\`\n` +
@@ -3753,7 +3753,7 @@ export function setupBot(
                 `├── 🆔 Order ID: \`${orderId || referenceId}\`\n` +
                 `├── 🎮 Game: *${safeGame}*\n` +
                 `├── ❌ Status: *FAILED*\n` +
-                `└── 💬 Message: _Could not be fulfilled on game server_${!isApiLinked ? ` (Refunded $${orderCost.toFixed(2)} USD)` : ''}\n` +
+                `└── 💬 Message: _Could not be fulfilled on game server_${!isApiLinked ? ` (Refunded $${orderCost.toFixed(3)} USD)` : ''}\n` +
                 `═════════════════════════`
               );
             }
@@ -3769,7 +3769,7 @@ export function setupBot(
           await userDoc.save();
         }
         const msg = orderResponse?.msg || orderResponse?.message || 'LootBar rejected the transaction';
-        await safeReply(ctx, `❌ *Failed to Place Order*\n\nReason: \`${escapeCode(msg)}\`${!isApiLinked ? `\n\nYour balance of $${orderCost.toFixed(2)} has been refunded to your wallet.` : ''}`, mainMenu);
+        await safeReply(ctx, `❌ *Failed to Place Order*\n\nReason: \`${escapeCode(msg)}\`${!isApiLinked ? `\n\nYour balance of $${orderCost.toFixed(3)} has been refunded to your wallet.` : ''}`, mainMenu);
       }
     
     } catch (error: any) {
@@ -3780,7 +3780,7 @@ export function setupBot(
       }
       console.error('Order placement failed:', error);
 
-      await safeReply(ctx, `❌ *Order Error*\n\nReason: \`${escapeCode(error.message || 'Server error')}\`${!isApiLinked ? `\n\nYour balance of $${orderCost.toFixed(2)} has been refunded to your wallet.` : ''}`, mainMenu);
+      await safeReply(ctx, `❌ *Order Error*\n\nReason: \`${escapeCode(error.message || 'Server error')}\`${!isApiLinked ? `\n\nYour balance of $${orderCost.toFixed(3)} has been refunded to your wallet.` : ''}`, mainMenu);
     }
   }
 
@@ -3823,10 +3823,10 @@ export function setupBot(
         `├── 📊 Total Requested: *${summary.totalRequested} orders*\n` +
         `├── ✅ Successful: *${summary.successCount}*\n` +
         `├── ❌ Failed: *${summary.failedCount}*\n` +
-        `├── 💰 Total Spent: \`$${summary.totalSpent.toFixed(2)} USD\`\n`;
+        `├── 💰 Total Spent: \`$${summary.totalSpent.toFixed(3)} USD\`\n`;
 
       if (!summary.isApiLinked) {
-        finalMsg += `└── 💳 Remaining Balance: \`$${summary.userBalanceAfter.toFixed(2)} USD\`\n`;
+        finalMsg += `└── 💳 Remaining Balance: \`$${summary.userBalanceAfter.toFixed(3)} USD\`\n`;
       } else {
         finalMsg += `└── 💳 Payment: \`⚡ Direct API Balance Linked\`\n`;
       }
@@ -3836,7 +3836,7 @@ export function setupBot(
         const qtyStr = r.quantity > 1 ? ` (x${r.quantity})` : '';
         if (r.success) {
           finalMsg += `✅ *#${idx + 1} ${escapeMd(r.gameName)}* — ${escapeMd(r.skuName)}${qtyStr}\n` +
-            `   └ 🆔 \`${r.orderId || r.referenceId}\` • \`$${r.price.toFixed(2)}\` • _${r.statusText || 'PROCESSING'}_\n`;
+            `   └ 🆔 \`${r.orderId || r.referenceId}\` • \`$${r.price.toFixed(3)}\` • _${r.statusText || 'PROCESSING'}_\n`;
         } else {
           finalMsg += `❌ *#${idx + 1} ${escapeMd(r.gameName)}* — ${escapeMd(r.skuName)}${qtyStr}\n` +
             `   └ ⚠️ Error: _${escapeMd(r.error || 'Failed')}_\n`;
@@ -3872,7 +3872,7 @@ export function setupBot(
           `├── 👤 User: \`${ctx.chat!.id}\` (${escapeMd(fromUser)})\n` +
           `├── 📦 Total Orders: *${summary.totalRequested}*\n` +
           `├── ✅ Success: *${summary.successCount}* | ❌ Failed: *${summary.failedCount}*\n` +
-          `├── 💰 Total Spent: \`$${summary.totalSpent.toFixed(2)} USD\`\n` +
+          `├── 💰 Total Spent: \`$${summary.totalSpent.toFixed(3)} USD\`\n` +
           `└── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
           `═════════════════════════`;
         await safeSendMessage(bot.telegram, currentAdminIdForNotify, adminBulkNotify);

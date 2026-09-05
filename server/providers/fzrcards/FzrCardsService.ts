@@ -283,7 +283,7 @@ export class FzrCardsService {
       if (user.balance < totalCost) {
         return {
           success: false,
-          error: `Insufficient wallet balance. Total cost is $${totalCost.toFixed(2)} USD, but your balance is $${user.balance.toFixed(2)} USD.`
+          error: `Insufficient wallet balance. Total cost is $${totalCost.toFixed(3)} USD, but your balance is $${user.balance.toFixed(3)} USD.`
         };
       }
 
@@ -375,10 +375,10 @@ export class FzrCardsService {
       // Notify Telegram
       if (this.telegramNotifier) {
         const notifMsg = internalState === 2
-          ? `🎉 *FZR Cards Top-up Succeeded!*\n\n🎮 *Game:* ${product.name}\n💎 *Package:* ${skuObj.name}\n👤 *Account:* \`${userAccount}\`\n💰 *Total:* $${totalCost.toFixed(2)} USD\n🧾 *Order ID:* \`${providerOrderId}\``
+          ? `🎉 *FZR Cards Top-up Succeeded!*\n\n🎮 *Game:* ${product.name}\n💎 *Package:* ${skuObj.name}\n👤 *Account:* \`${userAccount}\`\n💰 *Total:* $${totalCost.toFixed(3)} USD\n🧾 *Order ID:* \`${providerOrderId}\``
           : internalState === 3
           ? `❌ *FZR Cards Top-up Failed*\n\n🎮 *Game:* ${product.name}\n💎 *Package:* ${skuObj.name}\n⚠️ *Error:* ${response.errorMessage || 'Provider failed'}\n💰 *Status:* Funds returned to your balance.`
-          : `⏳ *FZR Cards Top-up Submitted!*\n\n🎮 *Game:* ${product.name}\n💎 *Package:* ${skuObj.name}\n👤 *Account:* \`${userAccount}\`\n💰 *Total:* $${totalCost.toFixed(2)} USD\n🧾 *Order ID:* \`${providerOrderId}\`\nStatus: Processing...`;
+          : `⏳ *FZR Cards Top-up Submitted!*\n\n🎮 *Game:* ${product.name}\n💎 *Package:* ${skuObj.name}\n👤 *Account:* \`${userAccount}\`\n💰 *Total:* $${totalCost.toFixed(3)} USD\n🧾 *Order ID:* \`${providerOrderId}\`\nStatus: Processing...`;
 
         this.telegramNotifier(telegramChatId, notifMsg);
       }
@@ -401,7 +401,7 @@ export class FzrCardsService {
       if (this.telegramNotifier) {
         this.telegramNotifier(
           telegramChatId,
-          `❌ *FZR Cards Order Failed*\n\n🎮 *Game:* ${product.name}\n💎 *Package:* ${skuObj.name}\n⚠️ *Reason:* ${errorMessage}\n💰 *Balance Refunded:* +$${totalCost.toFixed(2)} USD`
+          `❌ *FZR Cards Order Failed*\n\n🎮 *Game:* ${product.name}\n💎 *Package:* ${skuObj.name}\n⚠️ *Reason:* ${errorMessage}\n💰 *Balance Refunded:* +$${totalCost.toFixed(3)} USD`
         );
       }
 
@@ -447,7 +447,7 @@ export class FzrCardsService {
           const msg = newState === 2
             ? `🎉 *FZR Cards Top-up Succeeded!*\n\n🎮 *Game:* ${order.gameName}\n💎 *Package:* ${order.skuName}\n🧾 *Order ID:* \`${order.orderId}\``
             : newState === 3
-            ? `❌ *FZR Cards Top-up Failed / Cancelled*\n\n🎮 *Game:* ${order.gameName}\n💎 *Package:* ${order.skuName}\n💰 *Status:* $${Number(order.price || 0).toFixed(2)} USD refunded to balance.`
+            ? `❌ *FZR Cards Top-up Failed / Cancelled*\n\n🎮 *Game:* ${order.gameName}\n💎 *Package:* ${order.skuName}\n💰 *Status:* $${Number(order.price || 0).toFixed(3)} USD refunded to balance.`
             : `ℹ️ *FZR Cards Order Update:* ${statusText}`;
 
           this.telegramNotifier(order.telegramChatId, msg);
@@ -507,7 +507,7 @@ export class FzrCardsService {
     if (this.telegramNotifier && order.telegramChatId) {
       const msg = newState === 2
         ? `🎉 *FZR Cards Top-up Succeeded!*\n\n🎮 *Game:* ${order.gameName}\n💎 *Package:* ${order.skuName}\n🧾 *Order ID:* \`${order.orderId}\``
-        : `❌ *FZR Cards Top-up Failed / Refunded*\n\n🎮 *Game:* ${order.gameName}\n💎 *Package:* ${order.skuName}\n💰 *Status:* $${Number(order.price || 0).toFixed(2)} USD refunded to balance.`;
+        : `❌ *FZR Cards Top-up Failed / Refunded*\n\n🎮 *Game:* ${order.gameName}\n💎 *Package:* ${order.skuName}\n💰 *Status:* $${Number(order.price || 0).toFixed(3)} USD refunded to balance.`;
 
       this.telegramNotifier(order.telegramChatId, msg);
     }
@@ -566,7 +566,7 @@ export class FzrCardsService {
                     );
                     
                     if (this.telegramNotifier) {
-                      this.telegramNotifier(order.telegramChatId, `💰 *Refund Issued*\n\n$${Number(order.price || 0).toFixed(2)} USD has been returned to your balance for failed FZR order ${order.orderId}`);
+                      this.telegramNotifier(order.telegramChatId, `💰 *Refund Issued*\n\n$${Number(order.price || 0).toFixed(3)} USD has been returned to your balance for failed FZR order ${order.orderId}`);
                     }
                   }
                 }
