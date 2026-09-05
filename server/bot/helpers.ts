@@ -88,10 +88,10 @@ export async function safeEditMessageText(ctx: Context, text: string, extra: any
   try {
     return await ctx.editMessageText(text, extra);
   } catch (err: any) {
-    console.error('[Bot Error] safeEditMessageText failed:', err.message);
     if (err.description && err.description.includes('message is not modified')) {
       return null;
     }
+    console.error('[Bot Error] safeEditMessageText failed:', err.message);
     try {
       return await ctx.editMessageText(text, { parse_mode: undefined, ...extra, reply_markup: extra.reply_markup });
     } catch (e: any) {
@@ -123,10 +123,10 @@ export async function safeEditMessageCaption(ctx: Context, caption: string, extr
   try {
     return await ctx.editMessageCaption(caption, extra);
   } catch (err: any) {
-    console.error('[Bot Error] safeEditMessageCaption failed:', err.message);
     if (err.description && err.description.includes('message is not modified')) {
       return null;
     }
+    console.error('[Bot Error] safeEditMessageCaption failed:', err.message);
     try {
       return await ctx.editMessageCaption(caption, { parse_mode: undefined, ...extra, reply_markup: extra.reply_markup });
     } catch (e: any) {

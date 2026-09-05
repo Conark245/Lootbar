@@ -53,16 +53,13 @@ export class PricePoller {
 
   private async notifyUsers(provider: string, gameName: string, shortKey: string, changes: string[]) {
     if (!this.telegramNotifier || changes.length === 0) return;
-
+    
     // Get all authorized users
     const users = await User.find({ isAuthorized: true });
     if (!users || users.length === 0) return;
 
-    const message = `📈 *Price Update Alert* (${provider})\n` +
-      `🎮 Game: *${gameName.replace(/[*_`\[\]]/g, '')}* (\`.${shortKey}\`)\n\n` +
-      `The following packages have updated prices:\n` +
-      changes.join('\n') +
-      `\n\n_Note: The Bot has already updated its prices automatically. You will see these new prices when placing an order._`;
+    const gameSafeName = gameName.replace(/[*_`\[\]]/g, '');
+    const message = `📈 *Price Update Alert* (${provider})\n🎮 Game: *${gameSafeName}* (\`.${shortKey}\`)\n\nThe following packages have been modified:\n${changes.join('\n')}\n\n_Note: The Bot has already updated its prices and packages automatically._`;
 
     for (const user of users) {
       await this.telegramNotifier(user.telegramChatId, message);
@@ -96,6 +93,20 @@ export class PricePoller {
                   const indicator = newPrice > oldPrice ? '🔴 🔺' : '🟢 🔻';
                   changes.push(`• ${name}: \`$${oldPrice.toFixed(2)}\` ➔ \`$${newPrice.toFixed(2)}\` ${indicator}`);
                 }
+              } else {
+                // New SKU logic
+                const newPrice = parseFloat(newSku.reseller_price || newSku.price || '0');
+                const name = (newSku.sku_name || newSku.name || 'Package').replace(/[*_`\[\]]/g, '');
+                changes.push(`• 🆕 ${name} (New): \`$${newPrice.toFixed(2)}\``);
+              }
+            }
+
+            // Detect removed SKUs
+            for (const oldSku of game.lastKnownSkus) {
+              const stillExists = latestSkus.find((s: any) => s.sku_id === oldSku.sku_id);
+              if (!stillExists) {
+                const name = (oldSku.sku_name || oldSku.name || 'Package').replace(/[*_`\[\]]/g, '');
+                changes.push(`• 🗑️ ${name} (Removed)`);
               }
             }
 
@@ -120,6 +131,46 @@ export class PricePoller {
     try {
       const liveProducts = await tpnClient.getProducts();
       
+      // Safeguard: Ensure API is returning data before attempting deletes
+      if (!liveProducts || liveProducts.length === 0) return;
+
+      const allDbProducts = await TopupNationProduct.find({});
+
+      // 1. Detect removed games
+      const removedDbProducts = allDbProducts.filter(p => !liveProducts.find((live: any) => String(live.productId) === String(p.productId)));
+      if (removedDbProducts.length > 0 && this.telegramNotifier) {
+        const removedNames = removedDbProducts.map((p: any) => {
+            const safeName = (p.name || 'Game').replace(/[*_`\[\]]/g, '');
+            return `• 🗑️ *${safeName}*`;
+        });
+        const msg = `🗑️ *Games Removed from TopupNation!*\n\nThe following games are no longer available on the API and have been deleted from the Bot:\n${removedNames.slice(0, 30).join('\n')}${removedNames.length > 30 ? '\n...and more' : ''}`;
+        
+        await TopupNationProduct.deleteMany({ _id: { $in: removedDbProducts.map(p => p._id) } });
+
+        const users = await User.find({ isAuthorized: true });
+        for (const u of users) {
+           await this.telegramNotifier(u.telegramChatId, msg);
+           await new Promise(r => setTimeout(r, 50));
+        }
+      }
+
+      // 2. Detect brand new games
+      const newLiveProducts = liveProducts.filter((live: any) => !allDbProducts.find(p => String(p.productId) === String(live.productId)));
+      if (newLiveProducts.length > 0 && this.telegramNotifier) {
+        const newGameNames = newLiveProducts.map((p: any) => {
+            const safeName = (p.name || 'Game').replace(/[*_`\[\]]/g, '');
+            return `• 🎮 *${safeName}*`;
+        });
+        const msg = `🌟 *New Games Available on TopupNation!*\n\nThe following games were just added to the API:\n${newGameNames.slice(0, 30).join('\n')}${newGameNames.length > 30 ? '\n...and more' : ''}\n\n_Note: They have been automatically synced to the database. Configure them in Admin Panel._`;
+        
+        const users = await User.find({ isAuthorized: true });
+        for (const u of users) {
+           await this.telegramNotifier(u.telegramChatId, msg);
+           await new Promise(r => setTimeout(r, 50));
+        }
+        await this.topupNationService.syncCatalog(); // Auto sync them to DB so we don't notify again
+      }
+
       const enabledProducts = await TopupNationProduct.find({ isEnabled: { $ne: false } });
 
       for (const p of enabledProducts) {
@@ -139,6 +190,20 @@ export class PricePoller {
                 const indicator = newPrice > oldPrice ? '🔴 🔺' : '🟢 🔻';
                 changes.push(`• ${name}: \`$${oldPrice.toFixed(2)}\` ➔ \`$${newPrice.toFixed(2)}\` ${indicator}`);
               }
+            } else {
+              // New SKU logic
+              const newPrice = parseFloat(String(newSku.price || '0'));
+              const name = (newSku.name || 'Package').replace(/[*_`\[\]]/g, '');
+              changes.push(`• 🆕 ${name} (New): \`$${newPrice.toFixed(2)}\``);
+            }
+          }
+
+          // Detect removed SKUs
+          for (const oldSku of p.skus || []) {
+            const stillExists = liveMatch.skus.find((s: any) => String(s.sku) === String(oldSku.sku));
+            if (!stillExists) {
+              const name = (oldSku.name || 'Package').replace(/[*_`\[\]]/g, '');
+              changes.push(`• 🗑️ ${name} (Removed)`);
             }
           }
 
@@ -154,12 +219,14 @@ export class PricePoller {
           p.iconUrl = liveMatch.iconUrl;
           p.fields = liveMatch.fields || [];
           p.skus = liveMatch.skus || [];
+          p.markModified('skus');
+          p.markModified('fields');
           p.lastSyncedAt = new Date();
           await p.save();
         }
       }
-    } catch (err) {
-      // Skip silently
+    } catch (err: any) {
+      console.error('Error in checkTopupNationPrices:', err.message || err);
     }
   }
 
@@ -170,6 +237,48 @@ export class PricePoller {
 
     try {
       const liveProducts = await fzrClient.getProducts();
+
+      // Safeguard: Ensure API is returning data before attempting deletes
+      if (!liveProducts || liveProducts.length === 0) return;
+
+      const allDbProducts = await FzrCardsProduct.find({});
+
+      // 1. Detect removed games
+      const removedDbProducts = allDbProducts.filter(p => !liveProducts.find((live: any) => String(live.productId) === String(p.productId)));
+      if (removedDbProducts.length > 0 && this.telegramNotifier) {
+        const removedNames = removedDbProducts.map((p: any) => {
+            const safeName = (p.name || 'Game').replace(/[*_`\[\]]/g, '');
+            return `• 🗑️ *${safeName}*`;
+        });
+        const msg = `🗑️ *Games Removed from FZR Cards!*\n\nThe following games are no longer available on the API and have been deleted from the Bot:\n${removedNames.slice(0, 30).join('\n')}${removedNames.length > 30 ? '\n...and more' : ''}`;
+        
+        await FzrCardsProduct.deleteMany({ _id: { $in: removedDbProducts.map(p => p._id) } });
+
+        const users = await User.find({ isAuthorized: true });
+        for (const u of users) {
+           await this.telegramNotifier(u.telegramChatId, msg);
+           await new Promise(r => setTimeout(r, 50));
+        }
+      }
+
+      // 2. Detect brand new games
+      const newLiveProducts = liveProducts.filter((live: any) => !allDbProducts.find(p => String(p.productId) === String(live.productId)));
+      
+      if (newLiveProducts.length > 0 && this.telegramNotifier) {
+        const newGameNames = newLiveProducts.map((p: any) => {
+            const safeName = (p.name || 'Game').replace(/[*_`\[\]]/g, '');
+            return `• 🎮 *${safeName}*`;
+        });
+        const msg = `🌟 *New Games Available on FZR Cards!*\n\nThe following games were just added to the API:\n${newGameNames.slice(0, 30).join('\n')}${newGameNames.length > 30 ? '\n...and more' : ''}\n\n_Note: They have been automatically synced to the database. Configure them in Admin Panel._`;
+        
+        const users = await User.find({ isAuthorized: true });
+        for (const u of users) {
+           await this.telegramNotifier(u.telegramChatId, msg);
+           await new Promise(r => setTimeout(r, 50));
+        }
+        await this.fzrCardsService?.syncCatalog(); // Auto sync them to DB so we don't notify again
+      }
+
       const enabledProducts = await FzrCardsProduct.find({ isEnabled: { $ne: false } });
 
       for (const p of enabledProducts) {
@@ -189,6 +298,20 @@ export class PricePoller {
                 const indicator = newPrice > oldPrice ? '🔴 🔺' : '🟢 🔻';
                 changes.push(`• ${name}: \`$${oldPrice.toFixed(2)}\` ➔ \`$${newPrice.toFixed(2)}\` ${indicator}`);
               }
+            } else {
+              // New SKU logic
+              const newPrice = parseFloat(String(newSku.price || '0'));
+              const name = (newSku.name || 'Package').replace(/[*_`\[\]]/g, '');
+              changes.push(`• 🆕 ${name} (New): \`$${newPrice.toFixed(2)}\``);
+            }
+          }
+
+          // Detect removed SKUs
+          for (const oldSku of p.skus || []) {
+            const stillExists = liveMatch.skus.find((s: any) => String(s.sku) === String(oldSku.sku));
+            if (!stillExists) {
+              const name = (oldSku.name || 'Package').replace(/[*_`\[\]]/g, '');
+              changes.push(`• 🗑️ ${name} (Removed)`);
             }
           }
 
@@ -204,6 +327,8 @@ export class PricePoller {
           p.iconUrl = liveMatch.iconUrl;
           p.fields = liveMatch.fields || [];
           p.skus = liveMatch.skus || [];
+          p.markModified('skus');
+          p.markModified('fields');
           p.lastSyncedAt = new Date();
           await p.save();
         }

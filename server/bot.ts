@@ -1189,7 +1189,7 @@ export function setupBot(
 
 
   async function syncTopupNationProductLive(product: any, shortKey: string) {
-    if (!topupNation || !topupNation.getClient()?.isConfigured()) return;
+    if (!topupNation || !topupNation.getClient()?.isConfigured()) return product;
     try {
       const liveProduct = await topupNation.getClient().getProduct(product.productId);
       if (liveProduct && liveProduct.skus && liveProduct.skus.length > 0) {
@@ -1216,7 +1216,8 @@ export function setupBot(
         product.iconUrl = liveProduct.iconUrl;
         product.fields = liveProduct.fields || [];
         product.skus = liveProduct.skus || [];
-        product.lastSyncedAt = new Date();
+        product.markModified('skus');
+        product.markModified('fields');
         await product.save();
 
         if (changes.length > 0) {
@@ -1230,15 +1231,23 @@ export function setupBot(
             try {
               await bot.telegram.sendMessage(u.telegramChatId, message, { parse_mode: 'Markdown' });
               await new Promise(resolve => setTimeout(resolve, 50));
-            } catch (e) {
-              // ignore
-            }
+            } catch (e) {}
           }
         }
+        
+        return product; // Return the updated product
       }
     } catch (err) {
-      console.error('Error syncing TPN product live:', err);
+      if (err?.status === 404 || err?.code === 'PRODUCT_NOT_FOUND' || err?.responseData?.error?.code === 'PRODUCT_NOT_FOUND') {
+        console.warn(`[TopupNation] Product ${product.productId} not found on live sync. Disabling locally.`);
+        product.isEnabled = false;
+        product.status = 'DISABLED';
+        await product.save().catch(() => {});
+      } else {
+        console.error('Error syncing TPN product live:', err.message || err);
+      }
     }
+    return product;
   }
 
   // Universal Short Key Listener (e.g. .p, .ml, .ff, /p, etc.)
@@ -1275,7 +1284,7 @@ export function setupBot(
       if (!matchedGame) {
         // Try matching TopupNation products by shortKey
         const tpnProducts = await TopupNationProduct.find({ isEnabled: { $ne: false } });
-        const matchedTpn = tpnProducts.find((p: any) => {
+        let matchedTpn = tpnProducts.find((p: any) => {
           const k = (p.shortKey || '').toLowerCase();
           return k === inputKey || String(p.productId).toLowerCase() === inputKey;
         });
@@ -1286,7 +1295,7 @@ export function setupBot(
           }
 
           const activeShortKey = (matchedTpn.shortKey || inputKey).toLowerCase();
-          await syncTopupNationProductLive(matchedTpn, activeShortKey);
+          matchedTpn = await syncTopupNationProductLive(matchedTpn, activeShortKey);
           if (rawArgs.length === 0) {
             return await handleTopupNationPackageList(ctx, matchedTpn, activeShortKey);
           } else {

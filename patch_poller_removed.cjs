@@ -1,0 +1,344 @@
+const fs = require('fs');
+
+const code = `import { LootBarClient } from './lootbar';
+import { TopupNationService } from './providers/topupnation/TopupNationService';
+import { FzrCardsService } from './providers/fzrcards/FzrCardsService';
+import { SavedGame } from './models/SavedGame';
+import { TopupNationProduct } from './models/TopupNationProduct';
+import { FzrCardsProduct } from './models/FzrCardsProduct';
+import { User } from './models/User';
+import mongoose from 'mongoose';
+
+export class PricePoller {
+  private telegramNotifier?: (chatId: number, message: string) => Promise<void>;
+  private lootbarClient: LootBarClient;
+  private topupNationService: TopupNationService;
+  private fzrCardsService?: FzrCardsService;
+  private isPolling = false;
+
+  constructor(
+    lootbarClient: LootBarClient,
+    topupNationService: TopupNationService,
+    fzrCardsService?: FzrCardsService
+  ) {
+    this.lootbarClient = lootbarClient;
+    this.topupNationService = topupNationService;
+    this.fzrCardsService = fzrCardsService;
+  }
+
+  public setTelegram(telegramBot: any) {
+    this.telegramNotifier = async (chatId: number, message: string) => {
+      try {
+        await telegramBot.telegram.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+      } catch (err) {
+        console.error(\`Failed to notify user \${chatId} about price changes\`, err);
+      }
+    };
+  }
+
+  public async pollPrices() {
+    if (this.isPolling) return;
+    this.isPolling = true;
+
+    try {
+      if (mongoose.connection.readyState !== 1) return; // Need DB
+
+      await this.checkLootbarPrices();
+      await this.checkTopupNationPrices();
+      await this.checkFzrCardsPrices();
+    } catch (err) {
+      console.error('Error polling prices:', err);
+    } finally {
+      this.isPolling = false;
+    }
+  }
+
+  private async notifyUsers(provider: string, gameName: string, shortKey: string, changes: string[]) {
+    if (!this.telegramNotifier || changes.length === 0) return;
+    
+    // Get all authorized users
+    const users = await User.find({ isAuthorized: true });
+    if (!users || users.length === 0) return;
+
+    const gameSafeName = gameName.replace(/[*_\`\\[\\]]/g, '');
+    const message = \`📈 *Price Update Alert* (\${provider})\\n🎮 Game: *\${gameSafeName}* (\\\`.\${shortKey}\\\`)\\n\\nThe following packages have been modified:\\n\${changes.join('\\n')}\\n\\n_Note: The Bot has already updated its prices and packages automatically._\`;
+
+    for (const user of users) {
+      await this.telegramNotifier(user.telegramChatId, message);
+      // Small delay to prevent rate-limiting
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+
+  private async checkLootbarPrices() {
+    if (!this.lootbarClient.isConfigured()) return;
+
+    const enabledGames = await SavedGame.find({ isEnabled: { $ne: false } });
+    
+    for (const game of enabledGames) {
+      try {
+        const response = await this.lootbarClient.getSkus(game.gameId);
+        const latestSkus = response?.data?.items || [];
+        
+        if (latestSkus.length > 0) {
+          if (game.lastKnownSkus && game.lastKnownSkus.length > 0) {
+            const changes: string[] = [];
+            
+            for (const newSku of latestSkus) {
+              const oldSku = game.lastKnownSkus.find((s: any) => s.sku_id === newSku.sku_id);
+              if (oldSku) {
+                const oldPrice = parseFloat(oldSku.reseller_price || oldSku.price || '0');
+                const newPrice = parseFloat(newSku.reseller_price || newSku.price || '0');
+                
+                if (oldPrice !== newPrice) {
+                  const name = (newSku.sku_name || newSku.name || 'Package').replace(/[*_\`\\[\\]]/g, '');
+                  const indicator = newPrice > oldPrice ? '🔴 🔺' : '🟢 🔻';
+                  changes.push(\`• \${name}: \\\`$\${oldPrice.toFixed(2)}\\\` ➔ \\\`$\${newPrice.toFixed(2)}\\\` \${indicator}\`);
+                }
+              } else {
+                // New SKU logic
+                const newPrice = parseFloat(newSku.reseller_price || newSku.price || '0');
+                const name = (newSku.sku_name || newSku.name || 'Package').replace(/[*_\`\\[\\]]/g, '');
+                changes.push(\`• 🆕 \${name} (New): \\\`$\${newPrice.toFixed(2)}\\\`\`);
+              }
+            }
+
+            // Detect removed SKUs
+            for (const oldSku of game.lastKnownSkus) {
+              const stillExists = latestSkus.find((s: any) => s.sku_id === oldSku.sku_id);
+              if (!stillExists) {
+                const name = (oldSku.sku_name || oldSku.name || 'Package').replace(/[*_\`\\[\\]]/g, '');
+                changes.push(\`• 🗑️ \${name} (Removed)\`);
+              }
+            }
+
+            if (changes.length > 0) {
+              await this.notifyUsers('LootBar', game.name, game.shortKey || '', changes);
+            }
+          }
+          
+          game.lastKnownSkus = latestSkus;
+          await game.save();
+        }
+      } catch (err) {
+        // Skip silently on error so it doesn't crash the loop
+      }
+    }
+  }
+
+  private async checkTopupNationPrices() {
+    const tpnClient = this.topupNationService.getClient();
+    if (!tpnClient || !tpnClient.isConfigured()) return;
+
+    try {
+      const liveProducts = await tpnClient.getProducts();
+      
+      // Safeguard: Ensure API is returning data before attempting deletes
+      if (!liveProducts || liveProducts.length === 0) return;
+
+      const allDbProducts = await TopupNationProduct.find({});
+
+      // 1. Detect removed games
+      const removedDbProducts = allDbProducts.filter(p => !liveProducts.find((live: any) => String(live.productId) === String(p.productId)));
+      if (removedDbProducts.length > 0 && this.telegramNotifier) {
+        const removedNames = removedDbProducts.map((p: any) => {
+            const safeName = (p.name || 'Game').replace(/[*_\`\\[\\]]/g, '');
+            return \`• 🗑️ *\${safeName}*\`;
+        });
+        const msg = \`🗑️ *Games Removed from TopupNation!*\\n\\nThe following games are no longer available on the API and have been deleted from the Bot:\\n\${removedNames.slice(0, 30).join('\\n')}\${removedNames.length > 30 ? '\\n...and more' : ''}\`;
+        
+        await TopupNationProduct.deleteMany({ _id: { $in: removedDbProducts.map(p => p._id) } });
+
+        const users = await User.find({ isAuthorized: true });
+        for (const u of users) {
+           await this.telegramNotifier(u.telegramChatId, msg);
+           await new Promise(r => setTimeout(r, 50));
+        }
+      }
+
+      // 2. Detect brand new games
+      const newLiveProducts = liveProducts.filter((live: any) => !allDbProducts.find(p => String(p.productId) === String(live.productId)));
+      if (newLiveProducts.length > 0 && this.telegramNotifier) {
+        const newGameNames = newLiveProducts.map((p: any) => {
+            const safeName = (p.name || 'Game').replace(/[*_\`\\[\\]]/g, '');
+            return \`• 🎮 *\${safeName}*\`;
+        });
+        const msg = \`🌟 *New Games Available on TopupNation!*\\n\\nThe following games were just added to the API:\\n\${newGameNames.slice(0, 30).join('\\n')}\${newGameNames.length > 30 ? '\\n...and more' : ''}\\n\\n_Note: They have been automatically synced to the database. Configure them in Admin Panel._\`;
+        
+        const users = await User.find({ isAuthorized: true });
+        for (const u of users) {
+           await this.telegramNotifier(u.telegramChatId, msg);
+           await new Promise(r => setTimeout(r, 50));
+        }
+        await this.topupNationService.syncCatalog(); // Auto sync them to DB so we don't notify again
+      }
+
+      const enabledProducts = await TopupNationProduct.find({ isEnabled: { $ne: false } });
+
+      for (const p of enabledProducts) {
+        const liveMatch = liveProducts.find((live: any) => String(live.productId) === String(p.productId));
+        if (liveMatch && liveMatch.skus && liveMatch.skus.length > 0) {
+          const changes: string[] = [];
+          
+          // Compare SKUs
+          for (const newSku of liveMatch.skus) {
+            const oldSku = (p.skus || []).find((s: any) => String(s.sku) === String(newSku.sku));
+            if (oldSku) {
+              const oldPrice = parseFloat(String(oldSku.price || '0'));
+              const newPrice = parseFloat(String(newSku.price || '0'));
+              
+              if (oldPrice !== newPrice) {
+                const name = (newSku.name || 'Package').replace(/[*_\`\\[\\]]/g, '');
+                const indicator = newPrice > oldPrice ? '🔴 🔺' : '🟢 🔻';
+                changes.push(\`• \${name}: \\\`$\${oldPrice.toFixed(2)}\\\` ➔ \\\`$\${newPrice.toFixed(2)}\\\` \${indicator}\`);
+              }
+            } else {
+              // New SKU logic
+              const newPrice = parseFloat(String(newSku.price || '0'));
+              const name = (newSku.name || 'Package').replace(/[*_\`\\[\\]]/g, '');
+              changes.push(\`• 🆕 \${name} (New): \\\`$\${newPrice.toFixed(2)}\\\`\`);
+            }
+          }
+
+          // Detect removed SKUs
+          for (const oldSku of p.skus || []) {
+            const stillExists = liveMatch.skus.find((s: any) => String(s.sku) === String(oldSku.sku));
+            if (!stillExists) {
+              const name = (oldSku.name || 'Package').replace(/[*_\`\\[\\]]/g, '');
+              changes.push(\`• 🗑️ \${name} (Removed)\`);
+            }
+          }
+
+          if (changes.length > 0) {
+            await this.notifyUsers('TopupNation', p.name, p.shortKey || '', changes);
+          }
+
+          // Update DB with latest data
+          p.name = liveMatch.name;
+          p.status = liveMatch.status || 'ACTIVE';
+          p.category = liveMatch.category;
+          p.description = liveMatch.description;
+          p.iconUrl = liveMatch.iconUrl;
+          p.fields = liveMatch.fields || [];
+          p.skus = liveMatch.skus || [];
+          p.markModified('skus');
+          p.markModified('fields');
+          p.lastSyncedAt = new Date();
+          await p.save();
+        }
+      }
+    } catch (err: any) {
+      console.error('Error in checkTopupNationPrices:', err.message || err);
+    }
+  }
+
+  private async checkFzrCardsPrices() {
+    if (!this.fzrCardsService) return;
+    const fzrClient = this.fzrCardsService.getClient();
+    if (!fzrClient || !fzrClient.isConfigured()) return;
+
+    try {
+      const liveProducts = await fzrClient.getProducts();
+
+      // Safeguard: Ensure API is returning data before attempting deletes
+      if (!liveProducts || liveProducts.length === 0) return;
+
+      const allDbProducts = await FzrCardsProduct.find({});
+
+      // 1. Detect removed games
+      const removedDbProducts = allDbProducts.filter(p => !liveProducts.find((live: any) => String(live.productId) === String(p.productId)));
+      if (removedDbProducts.length > 0 && this.telegramNotifier) {
+        const removedNames = removedDbProducts.map((p: any) => {
+            const safeName = (p.name || 'Game').replace(/[*_\`\\[\\]]/g, '');
+            return \`• 🗑️ *\${safeName}*\`;
+        });
+        const msg = \`🗑️ *Games Removed from FZR Cards!*\\n\\nThe following games are no longer available on the API and have been deleted from the Bot:\\n\${removedNames.slice(0, 30).join('\\n')}\${removedNames.length > 30 ? '\\n...and more' : ''}\`;
+        
+        await FzrCardsProduct.deleteMany({ _id: { $in: removedDbProducts.map(p => p._id) } });
+
+        const users = await User.find({ isAuthorized: true });
+        for (const u of users) {
+           await this.telegramNotifier(u.telegramChatId, msg);
+           await new Promise(r => setTimeout(r, 50));
+        }
+      }
+
+      // 2. Detect brand new games
+      const newLiveProducts = liveProducts.filter((live: any) => !allDbProducts.find(p => String(p.productId) === String(live.productId)));
+      
+      if (newLiveProducts.length > 0 && this.telegramNotifier) {
+        const newGameNames = newLiveProducts.map((p: any) => {
+            const safeName = (p.name || 'Game').replace(/[*_\`\\[\\]]/g, '');
+            return \`• 🎮 *\${safeName}*\`;
+        });
+        const msg = \`🌟 *New Games Available on FZR Cards!*\\n\\nThe following games were just added to the API:\\n\${newGameNames.slice(0, 30).join('\\n')}\${newGameNames.length > 30 ? '\\n...and more' : ''}\\n\\n_Note: They have been automatically synced to the database. Configure them in Admin Panel._\`;
+        
+        const users = await User.find({ isAuthorized: true });
+        for (const u of users) {
+           await this.telegramNotifier(u.telegramChatId, msg);
+           await new Promise(r => setTimeout(r, 50));
+        }
+        await this.fzrCardsService?.syncCatalog(); // Auto sync them to DB so we don't notify again
+      }
+
+      const enabledProducts = await FzrCardsProduct.find({ isEnabled: { $ne: false } });
+
+      for (const p of enabledProducts) {
+        const liveMatch = liveProducts.find((live: any) => String(live.productId) === String(p.productId));
+        if (liveMatch && liveMatch.skus && liveMatch.skus.length > 0) {
+          const changes: string[] = [];
+
+          // Compare SKUs
+          for (const newSku of liveMatch.skus) {
+            const oldSku = (p.skus || []).find((s: any) => String(s.sku) === String(newSku.sku));
+            if (oldSku) {
+              const oldPrice = parseFloat(String(oldSku.price || '0'));
+              const newPrice = parseFloat(String(newSku.price || '0'));
+
+              if (oldPrice !== newPrice) {
+                const name = (newSku.name || 'Package').replace(/[*_\`\\[\\]]/g, '');
+                const indicator = newPrice > oldPrice ? '🔴 🔺' : '🟢 🔻';
+                changes.push(\`• \${name}: \\\`$\${oldPrice.toFixed(2)}\\\` ➔ \\\`$\${newPrice.toFixed(2)}\\\` \${indicator}\`);
+              }
+            } else {
+              // New SKU logic
+              const newPrice = parseFloat(String(newSku.price || '0'));
+              const name = (newSku.name || 'Package').replace(/[*_\`\\[\\]]/g, '');
+              changes.push(\`• 🆕 \${name} (New): \\\`$\${newPrice.toFixed(2)}\\\`\`);
+            }
+          }
+
+          // Detect removed SKUs
+          for (const oldSku of p.skus || []) {
+            const stillExists = liveMatch.skus.find((s: any) => String(s.sku) === String(oldSku.sku));
+            if (!stillExists) {
+              const name = (oldSku.name || 'Package').replace(/[*_\`\\[\\]]/g, '');
+              changes.push(\`• 🗑️ \${name} (Removed)\`);
+            }
+          }
+
+          if (changes.length > 0) {
+            await this.notifyUsers('FZR Cards', p.name, p.shortKey || '', changes);
+          }
+
+          // Update DB with latest data
+          p.name = liveMatch.name;
+          p.status = liveMatch.status || 'ACTIVE';
+          p.category = liveMatch.category;
+          p.description = liveMatch.description;
+          p.iconUrl = liveMatch.iconUrl;
+          p.fields = liveMatch.fields || [];
+          p.skus = liveMatch.skus || [];
+          p.markModified('skus');
+          p.markModified('fields');
+          p.lastSyncedAt = new Date();
+          await p.save();
+        }
+      }
+    } catch (err) {
+      // Skip silently
+    }
+  }
+}
+`;
+fs.writeFileSync('server/pricePoller.ts', code);

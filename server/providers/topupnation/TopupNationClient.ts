@@ -145,7 +145,10 @@ export class TopupNationClient {
 
       // Map machine-readable error codes cleanly
       const status = error.response?.status;
-      const apiError = error.response?.data?.error || error.response?.data?.message || error.response?.data?.code;
+      let apiError = error.response?.data?.error || error.response?.data?.message || error.response?.data?.code;
+      if (typeof apiError === 'object' && apiError !== null) {
+        apiError = apiError.code || apiError.message || JSON.stringify(apiError);
+      }
       const detailedMessage = error.response?.data?.detail || error.response?.data?.errorMessage || error.message;
 
       const errorMessage = apiError ? `[${apiError}] ${detailedMessage}` : detailedMessage;
