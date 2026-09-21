@@ -98,8 +98,10 @@ export class PricePoller {
             }
           }
           
-          game.lastKnownSkus = latestSkus;
-          await game.save();
+          await SavedGame.updateOne(
+            { _id: game._id },
+            { $set: { lastKnownSkus: latestSkus } }
+          );
         }
       } catch (err) {
         // Skip silently on error so it doesn't crash the loop
@@ -194,18 +196,22 @@ export class PricePoller {
             await this.notifyUsers('TopupNation', p.name, p.shortKey || '', changes);
           }
 
-          // Update DB with latest data
-          p.name = liveMatch.name;
-          p.status = liveMatch.status || 'ACTIVE';
-          p.category = liveMatch.category;
-          p.description = liveMatch.description;
-          p.iconUrl = liveMatch.iconUrl;
-          p.fields = liveMatch.fields || [];
-          p.skus = liveMatch.skus || [];
-          p.markModified('skus');
-          p.markModified('fields');
-          p.lastSyncedAt = new Date();
-          await p.save();
+          // Update DB with latest data via updateOne to prevent VersionError
+          await TopupNationProduct.updateOne(
+            { _id: p._id },
+            {
+              $set: {
+                name: liveMatch.name,
+                status: liveMatch.status || 'ACTIVE',
+                category: liveMatch.category,
+                description: liveMatch.description,
+                iconUrl: liveMatch.iconUrl,
+                fields: liveMatch.fields || [],
+                skus: liveMatch.skus || [],
+                lastSyncedAt: new Date()
+              }
+            }
+          );
         }
       }
     } catch (err: any) {
@@ -303,18 +309,22 @@ export class PricePoller {
             await this.notifyUsers('FZR Cards', p.name, p.shortKey || '', changes);
           }
 
-          // Update DB with latest data
-          p.name = liveMatch.name;
-          p.status = liveMatch.status || 'ACTIVE';
-          p.category = liveMatch.category;
-          p.description = liveMatch.description;
-          p.iconUrl = liveMatch.iconUrl;
-          p.fields = liveMatch.fields || [];
-          p.skus = liveMatch.skus || [];
-          p.markModified('skus');
-          p.markModified('fields');
-          p.lastSyncedAt = new Date();
-          await p.save();
+          // Update DB with latest data via updateOne to prevent VersionError
+          await FzrCardsProduct.updateOne(
+            { _id: p._id },
+            {
+              $set: {
+                name: liveMatch.name,
+                status: liveMatch.status || 'ACTIVE',
+                category: liveMatch.category,
+                description: liveMatch.description,
+                iconUrl: liveMatch.iconUrl,
+                fields: liveMatch.fields || [],
+                skus: liveMatch.skus || [],
+                lastSyncedAt: new Date()
+              }
+            }
+          );
         }
       }
     } catch (err) {

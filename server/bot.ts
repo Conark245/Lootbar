@@ -9,6 +9,8 @@ import { G2BulkProduct } from './models/G2BulkProduct';
 import { FzrCardsProduct } from './models/FzrCardsProduct';
 import { Order } from './models/Order';
 import { OrderLock } from './models/OrderLock';
+import { BotLeaderLock } from './models/BotLeaderLock';
+import mongoose from 'mongoose';
 import { User } from './models/User';
 import { Session } from './models/Session';
 import { AppConfig } from './models/AppConfig';
@@ -4355,35 +4357,136 @@ export function setupBot(
     return await renderOrderHistory(ctx, false);
   });
 
-  // If not serverless, start polling mode in background
+  // If not serverless, manage polling via distributed leader election
   if (!options.isServerless) {
-    const launchBot = async () => {
+    const instanceId = `${process.env.RAILWAY_REPLICA_ID || process.pid}_${Math.random().toString(36).slice(2, 8)}`;
+    let isPolling = false;
+    let isLeader = false;
+    let pollerBackoffUntil = 0;
+    let hasLoggedStandby = false;
+    let botStopped = false;
+
+    const originalStop = bot.stop.bind(bot);
+
+    const stopPolling = () => {
+      if (isPolling) {
+        try { originalStop(); } catch (e) {}
+        isPolling = false;
+      }
+    };
+
+    const startPolling = async () => {
+      if (isPolling || botStopped) return;
       try {
+        isPolling = true;
+        console.log(`[Bot Leader] Instance ${instanceId} starting Telegram bot polling...`);
         await bot.launch({ dropPendingUpdates: true });
+        console.log(`[Bot Leader] Instance ${instanceId} Telegram bot polling active.`);
       } catch (err: any) {
+        isPolling = false;
         if (err?.response?.error_code === 409) {
-          const isProd = process.env.NODE_ENV === 'production' || !!process.env.RAILWAY_ENVIRONMENT_NAME;
-          
-          if (isProd) {
-            console.warn('⚠️ Telegram Bot Polling Conflict (409): Railway/Production instance detected. Retrying to take control...');
-            try { bot.stop(); } catch (e) {}
-            setTimeout(launchBot, 5000);
-          } else {
-            console.warn('⚠️ Telegram Bot Polling Conflict (409): Another instance (e.g., Railway) is active. Stopping local AI Studio polling to prevent conflicts.');
-            try { bot.stop(); } catch (e) {}
-            // DO NOT retry. Let Railway handle it.
-            return;
-          }
+          console.warn(`[Bot Leader] Telegram 409 Conflict: Another instance is currently polling. Stepping down to standby for 30s.`);
+          isLeader = false;
+          pollerBackoffUntil = Date.now() + 30000;
+          stopPolling();
+          await BotLeaderLock.deleteOne({ lockKey: 'telegram_bot_poller', instanceId }).catch(() => {});
         } else {
-          console.error("Failed to launch bot. Retrying in 15 seconds...", err?.message || err);
-          try { bot.stop(); } catch (e) {}
-          setTimeout(launchBot, 15000);
+          console.error('[Bot Leader] Failed to launch bot. Will retry on next heartbeat check:', err?.message || err);
+          stopPolling();
         }
       }
     };
-    
-    launchBot();
-    console.log("Telegram bot initialized in Long-Polling mode (VPS / Continuous Server).");
+
+    const checkLeaderStatus = async () => {
+      if (botStopped) return;
+      if (Date.now() < pollerBackoffUntil) return;
+      if (mongoose.connection.readyState !== 1) return;
+
+      const now = new Date();
+      const staleThreshold = new Date(Date.now() - 25000); // 25s heartbeat expiry
+
+      try {
+        if (isLeader) {
+          // Renew heartbeat
+          const renewed = await BotLeaderLock.findOneAndUpdate(
+            { lockKey: 'telegram_bot_poller', instanceId },
+            { $set: { lastHeartbeat: now } },
+            { returnDocument: 'after' }
+          );
+          if (!renewed) {
+            console.log(`[Bot Leader] Instance ${instanceId} lost leader lock in DB. Stepping down.`);
+            isLeader = false;
+            stopPolling();
+          } else if (!isPolling) {
+            startPolling();
+          }
+          return;
+        }
+
+        // We are NOT currently leader: check if lock is expired
+        const acquired = await BotLeaderLock.findOneAndUpdate(
+          { lockKey: 'telegram_bot_poller', lastHeartbeat: { $lt: staleThreshold } },
+          { $set: { instanceId, lastHeartbeat: now } },
+          { returnDocument: 'after' }
+        );
+
+        if (acquired && acquired.instanceId === instanceId) {
+          console.log(`[Bot Leader] Instance ${instanceId} claimed expired leader lock. Becoming active leader.`);
+          isLeader = true;
+          hasLoggedStandby = false;
+          startPolling();
+          return;
+        }
+
+        // If no lock exists at all, try to create it
+        const existing = await BotLeaderLock.findOne({ lockKey: 'telegram_bot_poller' });
+        if (!existing) {
+          try {
+            await BotLeaderLock.create({ lockKey: 'telegram_bot_poller', instanceId, lastHeartbeat: now });
+            console.log(`[Bot Leader] Instance ${instanceId} initialized leader lock. Becoming active leader.`);
+            isLeader = true;
+            hasLoggedStandby = false;
+            startPolling();
+            return;
+          } catch (createErr: any) {
+            // Concurrent creation race handled by unique index
+          }
+        } else if (!hasLoggedStandby) {
+          console.log(`[Bot Leader] Instance ${instanceId} is in STANDBY (active leader is ${existing.instanceId}). Polling handled by leader.`);
+          hasLoggedStandby = true;
+        }
+      } catch (dbErr: any) {
+        // Transient DB error
+      }
+    };
+
+    // Override bot.stop to properly release leader lock
+    bot.stop = (reason?: string) => {
+      botStopped = true;
+      if (leaderInterval) clearInterval(leaderInterval);
+      stopPolling();
+      if (isLeader) {
+        BotLeaderLock.deleteOne({ lockKey: 'telegram_bot_poller', instanceId }).catch(() => {});
+      }
+      return originalStop(reason);
+    };
+
+    // Start checking immediately and every 10 seconds
+    checkLeaderStatus();
+    const leaderInterval = setInterval(checkLeaderStatus, 10000);
+
+    const onShutdown = async () => {
+      botStopped = true;
+      if (leaderInterval) clearInterval(leaderInterval);
+      stopPolling();
+      if (isLeader) {
+        await BotLeaderLock.deleteOne({ lockKey: 'telegram_bot_poller', instanceId }).catch(() => {});
+      }
+    };
+
+    process.once('SIGINT', onShutdown);
+    process.once('SIGTERM', onShutdown);
+    console.log("Telegram bot initialized with Distributed Leader Election (VPS / Railway).");
   } else {
     console.log("Telegram bot initialized in Webhook / Serverless mode.");
     if (options.webhookUrl) {

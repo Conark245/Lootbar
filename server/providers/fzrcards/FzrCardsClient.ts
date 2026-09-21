@@ -20,6 +20,7 @@ export class FzrCardsClient {
   private client: AxiosInstance;
   private isSubscriptionActive: boolean = true;
   private subscriptionError: string = '';
+  private lastSubscriptionWarnTime: number = 0;
 
   private sanitizeBaseUrl(url?: string): string {
     let base = (url || process.env.FZRCARDS_BASE_URL || 'https://api.fzr.cards/api/v2').trim();
@@ -210,8 +211,12 @@ export class FzrCardsClient {
    * Retrieves all top-up categories/games.
    */
   public async getCategories(): Promise<any[]> {
+    const now = Date.now();
     if (!this.isSubscriptionActive) {
-      console.warn(`[FZR Cards] Skipping category fetch: ${this.subscriptionError || 'Subscription is not active'}`);
+      if (now - this.lastSubscriptionWarnTime > 15 * 60 * 1000) {
+        console.warn(`[FZR Cards] Skipping category fetch: ${this.subscriptionError || 'Subscription is not active'}`);
+        this.lastSubscriptionWarnTime = now;
+      }
       return [];
     }
 
@@ -254,7 +259,10 @@ export class FzrCardsClient {
     } catch (e: any) {
       if (e?.status === 403 && (e?.message?.toLowerCase().includes('subscription') || this.subscriptionError)) {
         this.isSubscriptionActive = false;
-        console.warn(`[FZR Cards] Topup categories unavailable: ${e.message || this.subscriptionError}`);
+        if (now - this.lastSubscriptionWarnTime > 15 * 60 * 1000) {
+          console.warn(`[FZR Cards] Topup categories unavailable: ${e.message || this.subscriptionError}`);
+          this.lastSubscriptionWarnTime = now;
+        }
         return allCategories; // Stop further category requests if subscription is inactive
       } else {
         console.warn('Failed to fetch topup categories:', e?.message || e);

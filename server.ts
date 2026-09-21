@@ -28,11 +28,25 @@ dotenv.config();
 
 // Prevent server crash from unhandled rejections (e.g. Telegram 409 Conflict)
 process.on('unhandledRejection', (reason: any, promise) => {
-  if (reason?.response?.error_code === 409) {
-    console.warn('⚠️ Telegram Bot Polling Conflict (409) caught globally: Another instance is running (e.g. Railway vs Local). Ignoring to prevent crash...');
+  if (reason?.response?.error_code === 409 || reason?.message?.includes('409: Conflict')) {
+    console.warn('⚠️ Telegram Bot Polling Conflict (409) absorbed: Another instance is running. Ignoring to prevent crash...');
   } else {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
   }
+});
+
+// Prevent server crash from transient network socket resets/timeouts
+process.on('uncaughtException', (error: any) => {
+  if (
+    error?.code === 'ECONNRESET' ||
+    error?.code === 'ETIMEDOUT' ||
+    error?.code === 'ENOTFOUND' ||
+    error?.message?.includes('409: Conflict')
+  ) {
+    console.warn(`⚠️ [Transient Network Exception absorbed]:`, error.message || error);
+    return;
+  }
+  console.error('Uncaught Exception:', error);
 });
 
 const app = express();
@@ -40,6 +54,18 @@ const PORT = Number(process.env.PORT) || 3000;
 
 app.use(cors());
 app.get('/favicon.ico', (req, res) => res.status(204).end());
+
+// Cloud / Container Healthcheck endpoints (Railway, Docker, Uptime monitors)
+const healthHandler = (req: express.Request, res: express.Response) => {
+  res.status(200).json({
+    status: 'ok',
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+    db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
+  });
+};
+app.get('/health', healthHandler);
+app.get('/api/health', healthHandler);
 // We need raw body for webhook verification
 app.use(express.json({
   verify: (req: any, res, buf) => {
