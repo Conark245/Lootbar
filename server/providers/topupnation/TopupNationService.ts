@@ -32,7 +32,7 @@ export class TopupNationService {
   }
 
   public async updateProductShortKey(productId: string, shortKey: string): Promise<any> {
-    const cleanKey = shortKey.trim().toLowerCase().replace(/^\./, '');
+    const cleanKey = shortKey ? String(shortKey).trim().toLowerCase().replace(/^[./]+/, '').replace(/[^a-z0-9_-]/g, '') : '';
     return TopupNationProduct.findOneAndUpdate(
       { productId },
       { shortKey: cleanKey },

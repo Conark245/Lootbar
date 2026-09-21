@@ -33,7 +33,7 @@ export class FzrCardsService {
   }
 
   public async updateProductShortKey(productId: string, shortKey: string): Promise<any> {
-    const cleanKey = shortKey.trim().toLowerCase().replace(/^\./, '');
+    const cleanKey = shortKey ? String(shortKey).trim().toLowerCase().replace(/^[./]+/, '').replace(/[^a-z0-9_-]/g, '') : '';
     return FzrCardsProduct.findOneAndUpdate(
       { productId },
       { shortKey: cleanKey },
@@ -133,8 +133,26 @@ export class FzrCardsService {
       throw new Error('FZR Cards API is not configured. Please provide API Key first.');
     }
 
+    const initialSubStatus = this.client.getSubscriptionStatus();
+    if (!initialSubStatus.isActive) {
+      return {
+        total: 0,
+        synced: 0,
+        errors: [initialSubStatus.error || 'FZR Cards subscription is not active. Renew it to use this feature.']
+      };
+    }
+
     const liveProducts = await this.client.getProducts();
     const errors: string[] = [];
+
+    const updatedSubStatus = this.client.getSubscriptionStatus();
+    if (!updatedSubStatus.isActive) {
+      return {
+        total: 0,
+        synced: 0,
+        errors: [updatedSubStatus.error || 'FZR Cards subscription is not active. Renew it to use this feature.']
+      };
+    }
 
     if (liveProducts.length > 0) {
       try {
@@ -244,6 +262,15 @@ export class FzrCardsService {
       existingIdempotencyKey, skipBalanceDeduction
     } = params;
 
+    // 0. Subscription Check
+    const subStatus = this.client.getSubscriptionStatus();
+    if (!subStatus.isActive) {
+      return {
+        success: false,
+        error: subStatus.error || 'FZR Cards subscription is not active. Renew it to use this feature.'
+      };
+    }
+
     // 1. Fetch Product & SKU details
     const product = await this.getProduct(productId);
     if (!product) {
@@ -280,16 +307,17 @@ export class FzrCardsService {
 
     const isApiLinked = !!(user.useDirectApiBalance || user.balanceMode === 'api');
     if (!isApiLinked && !skipBalanceDeduction) {
-      if (user.balance < totalCost) {
+      const deductedUser = await User.findOneAndUpdate(
+        { telegramChatId, balance: { $gte: totalCost } },
+        { $inc: { balance: -totalCost } },
+        { returnDocument: 'after' }
+      );
+      if (!deductedUser) {
         return {
           success: false,
           error: `Insufficient wallet balance. Total cost is $${totalCost.toFixed(3)} USD, but your balance is $${user.balance.toFixed(3)} USD.`
         };
       }
-
-      // Atomically deduct balance
-      user.balance = Math.max(0, user.balance - totalCost);
-      await user.save();
     }
 
     // 4. Generate Idempotency Key & Internal Reference ID
@@ -367,9 +395,8 @@ export class FzrCardsService {
       });
 
       // Rollback wallet if instant failure
-      if (internalState === 3 && !isApiLinked) {
-        user.balance += totalCost;
-        await user.save();
+      if (internalState === 3 && !isApiLinked && !skipBalanceDeduction) {
+        await User.updateOne({ telegramChatId }, { $inc: { balance: totalCost } });
       }
 
       // Notify Telegram
@@ -391,8 +418,7 @@ export class FzrCardsService {
     } catch (err: any) {
       // Rollback user wallet deduction
       if (!isApiLinked && !skipBalanceDeduction) {
-        user.balance += totalCost;
-        await user.save();
+        await User.updateOne({ telegramChatId }, { $inc: { balance: totalCost } });
       }
 
       const errorMessage = err.message || 'FZR Cards Order placement failed';
@@ -588,11 +614,11 @@ export class FzrCardsService {
             }
           }
         } catch (err: any) {
-          console.error(`Error polling FZR order ${order.referenceId}:`, err.message);
+          console.warn(`Error polling FZR order ${order.referenceId}:`, err.message);
         }
       }
-    } catch (err) {
-      console.error("Failed to poll active FZR Cards orders:", err);
+    } catch (err: any) {
+      console.warn("Failed to poll active FZR Cards orders:", err?.message || err);
     }
   }
 }

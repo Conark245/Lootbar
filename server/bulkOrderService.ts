@@ -1,7 +1,8 @@
 import { v4 as uuidv4 } from 'uuid';
-import { LootBarClient } from './lootbar';
+import { LootBarClient } from './providers/lootbar/LootBarClient';
 import { TopupNationService } from './providers/topupnation/TopupNationService';
 import { FzrCardsService } from './providers/fzrcards/FzrCardsService';
+import { G2BulkService } from './providers/g2bulk/G2BulkService';
 import { TopupNationProduct } from './models/TopupNationProduct';
 import { FzrCardsProduct } from './models/FzrCardsProduct';
 import { SavedGame } from './models/SavedGame';
@@ -14,7 +15,7 @@ import { parseCommandArgs } from './bot/helpers';
 export interface BulkOrderItem {
   lineIndex: number;
   rawLine: string;
-  provider: 'lootbar' | 'topupnation' | 'fzrcards';
+  provider: 'lootbar' | 'topupnation' | 'fzrcards' | 'g2bulk';
   gameId: string;
   gameName: string;
   skuId: string;
@@ -44,7 +45,7 @@ export interface BulkParseResult {
 export interface BulkExecuteItemResult {
   lineIndex: number;
   rawLine: string;
-  provider: 'lootbar' | 'topupnation' | 'fzrcards';
+  provider: 'lootbar' | 'topupnation' | 'fzrcards' | 'g2bulk';
   gameName: string;
   skuName: string;
   quantity: number;
@@ -472,9 +473,15 @@ export class BulkOrderService {
     for (const item of items) {
       const orderCost = item.totalPrice;
 
-      // 1. Balance check for standard wallet users
+      // 1. Balance check and atomic deduction for standard wallet users
       if (!isApiLinked) {
-        if (currentBalance < orderCost) {
+        const deductedUser = await User.findOneAndUpdate(
+          { _id: user._id, balance: { $gte: orderCost } },
+          { $inc: { balance: -orderCost } },
+          { returnDocument: 'after' }
+        );
+
+        if (!deductedUser) {
           failedCount++;
           results.push({
             lineIndex: item.lineIndex,
@@ -485,15 +492,12 @@ export class BulkOrderService {
             quantity: item.quantity,
             price: orderCost,
             success: false,
-            error: `Insufficient balance (Need $${orderCost.toFixed(3)}, balance $${currentBalance.toFixed(3)})`
+            error: `Insufficient balance (Need $${orderCost.toFixed(3)})`
           });
           continue;
         }
 
-        // Deduct upfront
-        currentBalance -= orderCost;
-        user.balance = Math.max(0, currentBalance);
-        await user.save();
+        currentBalance = deductedUser.balance;
       }
 
       const referenceId = uuidv4();
@@ -513,9 +517,8 @@ export class BulkOrderService {
 
           if (!fzrResult.success || !fzrResult.order) {
             if (!isApiLinked) {
+              await User.updateOne({ _id: user._id }, { $inc: { balance: orderCost } });
               currentBalance += orderCost;
-              user.balance = currentBalance;
-              await user.save();
             }
             failedCount++;
             results.push({
@@ -562,9 +565,8 @@ export class BulkOrderService {
           if (!tpnResult.success || !tpnResult.order) {
             // Refund if not API linked
             if (!isApiLinked) {
+              await User.updateOne({ _id: user._id }, { $inc: { balance: orderCost } });
               currentBalance += orderCost;
-              user.balance = currentBalance;
-              await user.save();
             }
             failedCount++;
             results.push({
@@ -663,9 +665,8 @@ export class BulkOrderService {
           } else {
             // Failed: Refund balance
             if (!isApiLinked) {
+              await User.updateOne({ _id: user._id }, { $inc: { balance: orderCost } });
               currentBalance += orderCost;
-              user.balance = currentBalance;
-              await user.save();
             }
             failedCount++;
             const errMsg = orderResponse?.message || orderResponse?.error || 'LootBar rejected order';
@@ -684,9 +685,8 @@ export class BulkOrderService {
         }
       } catch (err: any) {
         if (!isApiLinked) {
+          await User.updateOne({ _id: user._id }, { $inc: { balance: orderCost } });
           currentBalance += orderCost;
-          user.balance = currentBalance;
-          await user.save();
         }
         failedCount++;
         results.push({

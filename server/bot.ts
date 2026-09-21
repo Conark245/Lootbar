@@ -1,9 +1,11 @@
 import { Telegraf, Markup, Context } from 'telegraf';
 import { v4 as uuidv4 } from 'uuid';
-import { LootBarClient } from './lootbar';
+import { LootBarClient } from './providers/lootbar/LootBarClient';
 import { TopupNationService } from './providers/topupnation/TopupNationService';
 import { TopupNationProduct } from './models/TopupNationProduct';
 import { FzrCardsService } from './providers/fzrcards/FzrCardsService';
+import { G2BulkService } from './providers/g2bulk/G2BulkService';
+import { G2BulkProduct } from './models/G2BulkProduct';
 import { FzrCardsProduct } from './models/FzrCardsProduct';
 import { Order } from './models/Order';
 import { User } from './models/User';
@@ -13,6 +15,7 @@ import { SavedGame } from './models/SavedGame';
 import { TopupRequest } from './models/TopupRequest';
 import { escapeMd, escapeCode, formatMyanmarDateTime, formatMyanmarTimeOnly, safeReply, safeSendMessage, safeEditMessageText, safeSendPhoto, safeEditMessageCaption,parseCommandArgs } from './bot/helpers';
 import { findLootBarSkuMatch, findTopupNationSkuMatch, findFzrCardsSkuMatch, parseSkuWithQuantity } from './bot/matching';
+
 import { BulkOrderService, BulkOrderItem } from './bulkOrderService';
 
 // Helper to escape text for Telegram Markdown v1
@@ -26,7 +29,7 @@ async function getAdminChatId(defaultId: string | undefined): Promise<string | u
 
 // We augment the session context to keep track of conversation state
 interface SessionData {
-  provider?: 'lootbar' | 'topupnation' | 'fzrcards';
+  provider?: 'lootbar' | 'topupnation' | 'fzrcards' | 'g2bulk';
   step?: string;
   gameId?: string;
   gameName?: string;
@@ -45,11 +48,15 @@ interface SessionData {
   bulkOrders?: BulkOrderItem[];
   bulkTotalPrice?: number;
   bulkRawText?: string;
+  orderInProgress?: boolean;
 }
 
 export interface MyContext extends Context {
   session: SessionData;
 }
+
+// In-flight order lock per user to strictly prevent concurrent / double clicks
+const activeUserOrderLocks = new Map<number | string, number>();
 
 export function setupBot(
   botToken: string, 
@@ -57,13 +64,33 @@ export function setupBot(
   lootbar: LootBarClient,
   options: { isServerless?: boolean; webhookUrl?: string } = {},
   topupNation?: TopupNationService,
-  fzrCards?: FzrCardsService
+  fzrCards?: FzrCardsService,
+  g2bulk?: G2BulkService
 ) {
   const bot = new Telegraf<MyContext>(botToken);
   
   // Global bot error handler to prevent crashing or unhandled rejections
   bot.catch((err: any, ctx: Context) => {
     console.error(`Telegram Bot Error (update: ${ctx.updateType}):`, err?.message || err);
+  });
+
+  // Telegram Update Deduplication Middleware (drops duplicate update deliveries)
+  const recentUpdates = new Map<number, number>();
+  bot.use(async (ctx, next) => {
+    const updateId = ctx.update?.update_id;
+    if (updateId) {
+      if (recentUpdates.has(updateId)) {
+        return; // Dropped duplicate update delivery from Telegram
+      }
+      recentUpdates.set(updateId, Date.now());
+      if (recentUpdates.size > 3000) {
+        const threshold = Date.now() - 600000; // 10 minutes
+        for (const [id, ts] of recentUpdates.entries()) {
+          if (ts < threshold) recentUpdates.delete(id);
+        }
+      }
+    }
+    return next();
   });
   
   // MongoDB Session Middleware
@@ -193,9 +220,9 @@ export function setupBot(
   const mainMenu = Markup.keyboard([
     ['🎮 All Games', '📦 Bulk Order'],
     ['🎮 LootBar Games', '🌐 TopupNation Games'],
-    ['💎 FZR Cards Games', '💰 Request Top-Up'],
-    ['📜 Order History', '💳 Check Balance'],
-    ['👤 My Account']
+    ['💎 FZR Cards Games', '🔥 G2Bulk Games'],
+    ['💰 Request Top-Up', '📜 Order History'],
+    ['💳 Check Balance', '👤 My Account']
   ]).resize();
 
   bot.command('start', async (ctx) => {
@@ -206,6 +233,7 @@ export function setupBot(
       '• *🎮 LootBar Games* — LootBar API Games စာရင်း\n' +
       '• *🌐 TopupNation Games* — TopupNation API Games စာရင်း\n' +
       '• *💎 FZR Cards Games* — FZR Cards API Games စာရင်း\n' +
+      '• *🔥 G2Bulk Games* — G2Bulk API Games စာရင်း\n' +
       '• *📦 Bulk Order* — အော်ဒါများစွာ တစ်ခါတည်း ဝယ်ယူခြင်း\n\n' +
       '⚡ *အသုံးပြုနည်း အမြန်လမ်းညွှန်:*\n' +
       '• Game ၏ Products စာရင်း ကြည့်ရန်: `.<shortKey>` (ဥပမာ `.p`, `.ml`, `.tp`)\n' +
@@ -405,7 +433,63 @@ export function setupBot(
     }
   }
 
-  // Combined or generic Game List handler (shows both providers in text)
+
+  async function renderG2BulkGameList(ctx: MyContext) {
+    try {
+      const products = await G2BulkProduct.find({
+        isEnabled: { $ne: false },
+        status: { $ne: 'DISABLED' }
+      }).sort({ name: 1 });
+
+      if (!products || products.length === 0) {
+        return ctx.reply('⚠️ No G2Bulk games are currently enabled by the Owner. Please contact the administrator.');
+      }
+
+      let msg = `🔥 *G2Bulk API — ရရှိနိုင်သော Games စာရင်း*\n\n` +
+        `အောက်ပါ Game များအား G2Bulk မှတစ်ဆင့် Top-Up ဝယ်ယူနိုင်ပါသည်။ Product စာရင်း ကြည့်ရှုရန် သို့မဟုတ် အော်ဒါတင်ရန် သက်ဆိုင်ရာ *Short Key* ဖြင့် အသုံးပြုနိုင်ပါသည်:\n\n`;
+
+      const numEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+
+      products.forEach((p: any, index: number) => {
+        const shortKey = (p.shortKey || `g${p.productId.slice(0, 4)}`).toLowerCase();
+        const numEmoji = numEmojis[index] || `🔹`;
+
+        const requiredFields = (p.fields || []).filter((f: any) => f.required);
+        let format = `.${shortKey} <PlayerID> <Product>`;
+        let example = `.${shortKey} 123456789 60`;
+
+        if (requiredFields.length === 1) {
+          const fName = requiredFields[0].title || requiredFields[0].name || 'PlayerID';
+          format = `.${shortKey} <${fName}> <Product>`;
+          example = `.${shortKey} 12345678 60`;
+        } else if (requiredFields.length >= 2) {
+          const f1 = requiredFields[0].title || requiredFields[0].name || 'Account';
+          const f2 = requiredFields[1].title || requiredFields[1].name || 'Server';
+          format = `.${shortKey} <${f1}> <${f2}> <Product>`;
+          example = `.${shortKey} 12345678 2001 86`;
+        }
+
+        msg += `${numEmoji} *${p.name}*\n` +
+          `   ▫️ *Short Key:* \`.${shortKey}\`\n` +
+          `   ▫️ *Packages ကြည့်ရန်:* \`.${shortKey}\`\n` +
+          `   ▫️ *Order တင်ရန်:* \`${format}\`\n` +
+          `   ▫️ *ဥပမာ:* \`${example}\`\n\n`;
+      });
+
+      msg += `━━━━━━━━━━━━━━━━━━━━\n` +
+        `💡 *အသုံးပြုနည်း လမ်းညွှန်:*\n` +
+        `• Packages & Prices ကြည့်ရှုရန်: \`.<shortKey>\` (ဥပမာ \`.${products[0]?.shortKey || 'g2b'}\`)\n` +
+        `• တိုက်ရိုက် Order တင်ရန်: \`.<shortKey> <Account> <Product>\``;
+
+      return ctx.reply(msg, { parse_mode: 'Markdown' });
+    } catch (error: any) {
+      console.error('Failed to fetch G2Bulk text game list:', error);
+      return ctx.reply(`An error occurred while fetching the G2Bulk game list: ${error.message}`);
+    }
+  }
+
+  // Combined or generic Game List handler
+// (shows both providers in text)
   async function renderAllGamesList(ctx: MyContext) {
     try {
       const lootbarGames = await SavedGame.find({ isEnabled: { $ne: false } }).sort({ savedAt: -1 });
@@ -417,8 +501,12 @@ export function setupBot(
         isEnabled: { $ne: false }, 
         status: { $ne: 'DISABLED' } 
       }).sort({ name: 1 });
+      const g2bGames = await G2BulkProduct.find({ 
+        isEnabled: { $ne: false }, 
+        status: { $ne: 'DISABLED' } 
+      }).sort({ name: 1 });
 
-      if (lootbarGames.length === 0 && tpnGames.length === 0 && fzrGames.length === 0) {
+      if (lootbarGames.length === 0 && tpnGames.length === 0 && fzrGames.length === 0 && g2bGames.length === 0) {
         return ctx.reply('⚠️ No games are currently enabled by the Owner.');
       }
 
@@ -446,6 +534,15 @@ export function setupBot(
         msg += `💎 *[FZR Cards API Games]*\n`;
         fzrGames.forEach(p => {
           const sk = (p.shortKey || `f${p.productId.slice(0, 4)}`).toLowerCase();
+          msg += `• *${p.name}* ➔ \`.${sk}\`\n`;
+        });
+        msg += `\n`;
+      }
+
+      if (g2bGames.length > 0) {
+        msg += `🔥 *[G2Bulk API Games]*\n`;
+        g2bGames.forEach(p => {
+          const sk = (p.shortKey || `g${p.productId.slice(0, 4)}`).toLowerCase();
           msg += `• *${p.name}* ➔ \`.${sk}\`\n`;
         });
         msg += `\n`;
@@ -1042,6 +1139,179 @@ export function setupBot(
     }
   }
 
+
+  async function handleG2BulkPackageList(ctx: MyContext, product: any, shortKey: string) {
+    try {
+      const productName = product.name || 'Game';
+      const skus = (product.skus || []).filter((s: any) => s.available !== false);
+
+      if (!skus || skus.length === 0) {
+        return ctx.reply(`⚠️ No packages available for *${productName}* from G2Bulk.`, { parse_mode: 'Markdown' });
+      }
+
+      const requiredFields = (product.fields || []).filter((f: any) => f.required);
+      let orderFormatDesc = `.${shortKey} <PlayerID> <Package>`;
+      let exampleDesc = `.${shortKey} 123456789 100`;
+
+      if (requiredFields.length === 1) {
+        const fName = requiredFields[0].title || requiredFields[0].name || 'PlayerID';
+        orderFormatDesc = `.${shortKey} <${fName}> <Package>`;
+        exampleDesc = `.${shortKey} 12345678 100`;
+      } else if (requiredFields.length >= 2) {
+        const f1 = requiredFields[0].title || requiredFields[0].name || 'UserAccount';
+        const f2 = requiredFields[1].title || requiredFields[1].name || 'Server';
+        orderFormatDesc = `.${shortKey} <${f1}> <${f2}> <Package>`;
+        exampleDesc = `.${shortKey} 12345678 2001 100`;
+      }
+
+      let skuKeys: Record<string, string> = {};
+      if (product.skuShortKeys) {
+        skuKeys = typeof product.skuShortKeys.get === 'function'
+          ? Object.fromEntries(product.skuShortKeys)
+          : (product.skuShortKeys || {});
+      }
+
+      let msg = `🔥 *${productName} (G2Bulk) — Packages & Prices*\n\n` +
+        `📦 *ရရှိနိုင်သော Products စာရင်း:*\n`;
+
+      skus.forEach((sku: any) => {
+        const name = sku.name || `Package #${sku.sku}`;
+        const price = sku.price || '0.00';
+        const customKey = skuKeys[String(sku.sku)];
+        const shortKeyTag = customKey ? ` (Key: \`${customKey}\`)` : '';
+        msg += `▫️ *${name}* — \`$${Number(price).toFixed(3)} USD\`${shortKeyTag}\n`;
+      });
+
+      msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
+        `🛒 *Order တင်ရန် Command Format:*\n` +
+        `\`${orderFormatDesc}\`\n\n` +
+        `👉 *ဥပမာ:* \`${exampleDesc}\`\n` +
+        `━━━━━━━━━━━━━━━━━━━━`;
+
+      return ctx.reply(msg, { parse_mode: 'Markdown' });
+    } catch (err: any) {
+      console.error('Error fetching G2Bulk package list:', err);
+      return ctx.reply(`❌ Error fetching package list: ${err.message}`);
+    }
+  }
+
+  async function handleG2BulkDirectOrder(ctx: MyContext, product: any, shortKey: string, args: string[]) {
+    try {
+      const productId = String(product.productId);
+      const productName = product.name || 'Game';
+      const skus = product.skus || [];
+
+      if (!skus || skus.length === 0) {
+        return ctx.reply(`⚠️ No packages available for *${productName}*.`, { parse_mode: 'Markdown' });
+      }
+
+      const requiredFields = (product.fields || []).filter((f: any) => f.required);
+      const minFields = requiredFields.length > 0 ? requiredFields.length : 1;
+
+      if (args.length < minFields) {
+        let formatHelp = `.${shortKey} <Account> <Package>`;
+        let exampleHelp = `.${shortKey} 123456789 100`;
+        if (requiredFields.length === 2) {
+          formatHelp = `.${shortKey} <${requiredFields[0].title || 'Account'}> <${requiredFields[1].title || 'Server'}> <Package>`;
+          exampleHelp = `.${shortKey} 12345678 2001 100`;
+        }
+        return ctx.reply(
+          `🔥 *${productName} (G2Bulk) Quick Order*\n\n` +
+          `📌 *Format:* \`${formatHelp}\`\n` +
+          `💡 *Example:* \`${exampleHelp}\`\n\n` +
+          `To view all packages & prices, send: \`.${shortKey}\``,
+          { parse_mode: 'Markdown' }
+        );
+      }
+
+      // Parse fields — G2Bulk products use player_id / server_id
+      const extraInfo: Record<string, any> = {};
+      if (requiredFields.length === 0) {
+        extraInfo['player_id'] = args[0];
+      } else {
+        for (let i = 0; i < requiredFields.length; i++) {
+          extraInfo[requiredFields[i].name] = args[i];
+        }
+        if (!extraInfo['player_id'] && args[0]) {
+          extraInfo['player_id'] = args[0];
+        }
+      }
+
+      if (args.length === minFields) {
+        ctx.session = {};
+        ctx.session.provider = 'g2bulk';
+        ctx.session.gameId = productId;
+        ctx.session.gameName = productName;
+        ctx.session.extraInfo = extraInfo;
+        ctx.session.skus = skus;
+
+        const buttons = skus.map((sku: any, idx: number) => {
+          const name = sku.name || 'Unknown Item';
+          const price = sku.price ? ` ($${sku.price})` : '';
+          return [Markup.button.callback(`${name}${price}`, `g2b_s_${idx}`)];
+        });
+        buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
+
+        let infoDesc = Object.entries(extraInfo).map(([k, v]) => `• ${k.toUpperCase()}: \`${v}\``).join('\n');
+
+        return ctx.reply(
+          `🔥 *${productName} (G2Bulk)*\n${infoDesc}\n\n` +
+          `👇 ဝယ်ယူလိုသော Package ကို အောက်ပါ Button များမှ ရွေးချယ်နှိပ်ပါ:`,
+          { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) }
+        );
+      }
+
+      const rawProductQuery = args.slice(minFields).join(' ').trim();
+
+      let skuKeys = {};
+      if (product.skuShortKeys) {
+        skuKeys = typeof product.skuShortKeys.get === 'function'
+          ? Object.fromEntries(product.skuShortKeys)
+          : product.skuShortKeys;
+      }
+
+      const parsedResult = parseSkuWithQuantity(skus, rawProductQuery, skuKeys, true);
+      const matchedSku = parsedResult.sku;
+
+      ctx.session = {};
+      ctx.session.quantity = 1; // G2Bulk API does not support quantity
+      ctx.session.provider = 'g2bulk';
+      ctx.session.gameId = productId;
+      ctx.session.gameName = productName;
+      ctx.session.extraInfo = extraInfo;
+      ctx.session.skus = skus;
+
+      if (!matchedSku) {
+        const buttons = skus.map((sku: any, idx: number) => {
+          const name = sku.name || 'Unknown Item';
+          const price = sku.price ? ` ($${sku.price})` : '';
+          return [Markup.button.callback(`${name}${price}`, `g2b_s_${idx}`)];
+        });
+        buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
+
+        let infoDesc = Object.entries(extraInfo).map(([k, v]) => `• ${k.toUpperCase()}: \`${v}\``).join('\n');
+        let promptMsg = rawProductQuery ? `⚠️ Package matching \`${rawProductQuery}\` not found.\n\n` : '';
+
+        return ctx.reply(
+          promptMsg +
+          `🔥 *${productName} (G2Bulk)*\n${infoDesc}\n\n` +
+          `👇 ဝယ်ယူလိုသော Package ကို အောက်ပါ Button များမှ ရွေးချယ်နှိပ်ပါ:`,
+          { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) }
+        );
+      }
+
+      ctx.session.skuId = String(matchedSku.sku);
+      ctx.session.skuName = matchedSku.name || `${productName} Package`;
+      ctx.session.skuPrice = typeof matchedSku.price === 'number' ? matchedSku.price : parseFloat(String(matchedSku.price || '0'));
+
+      await showOrderConfirmation(ctx);
+
+    } catch (err: any) {
+      console.error('G2Bulk direct order error:', err);
+      return ctx.reply(`❌ Error processing order: ${err.message}`);
+    }
+  }
+
   // Multi-line / Bulk Order Flow Handler
   async function handleBulkOrderFlow(ctx: MyContext, text: string) {
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
@@ -1323,6 +1593,26 @@ export function setupBot(
           }
         }
 
+        // Try matching G2Bulk products by shortKey
+        const g2bProducts = await G2BulkProduct.find({ isEnabled: { $ne: false } });
+        const matchedG2b = g2bProducts.find((p: any) => {
+          const k = (p.shortKey || '').toLowerCase();
+          return k === inputKey || String(p.productId).toLowerCase() === inputKey;
+        });
+
+        if (matchedG2b) {
+          if (matchedG2b.isEnabled === false || matchedG2b.status === 'DISABLED') {
+            return ctx.reply(`⚠️ *${matchedG2b.name}* is currently disabled by Admin.`, { parse_mode: 'Markdown' });
+          }
+
+          const activeShortKey = (matchedG2b.shortKey || inputKey).toLowerCase();
+          if (rawArgs.length === 0) {
+            return await handleG2BulkPackageList(ctx, matchedG2b, activeShortKey);
+          } else {
+            return await handleG2BulkDirectOrder(ctx, matchedG2b, activeShortKey, rawArgs);
+          }
+        }
+
         return next(); // Not an enabled game short key, pass along
       }
 
@@ -1451,6 +1741,25 @@ export function setupBot(
         return ctx.reply('⚠️ Session expired. Please type the command again.');
       }
       ctx.session.provider = 'fzrcards';
+      ctx.session.skuId = String(sku.sku);
+      ctx.session.skuName = sku.name || 'Package';
+      ctx.session.skuPrice = typeof sku.price === 'number' ? sku.price : parseFloat(String(sku.price || '0'));
+      await showOrderConfirmation(ctx);
+    } catch (err: any) {
+      return ctx.reply(`❌ Error: ${err.message}`);
+    }
+  });
+
+  bot.action(/^g2b_s_(\d+)$/, async (ctx) => {
+    const idx = parseInt(ctx.match[1], 10);
+    await ctx.answerCbQuery();
+    try {
+      const skus = ctx.session.skus || [];
+      const sku = skus[idx];
+      if (!sku) {
+        return ctx.reply('⚠️ Session expired. Please type the command again.');
+      }
+      ctx.session.provider = 'g2bulk';
       ctx.session.skuId = String(sku.sku);
       ctx.session.skuName = sku.name || 'Package';
       ctx.session.skuPrice = typeof sku.price === 'number' ? sku.price : parseFloat(String(sku.price || '0'));
@@ -1784,261 +2093,37 @@ export function setupBot(
     }
   }
 
-  async function renderDualApiBalance(ctx: MyContext, viewMode: 'both' | 'all' | 'lootbar' | 'topupnation' | 'fzrcards' = 'both', isEdit: boolean = false) {
-    const user = await User.findOne({ telegramChatId: ctx.chat!.id });
-    const currentAdminId = await getAdminChatId(adminChatId);
-    const isOwner = String(ctx.chat!.id) === currentAdminId;
-    const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
-
-    // Security & Privacy Check: Non-API-linked members cannot access API balances
-    if (!isApiLinked && !isOwner) {
-      const msg = `🔒 *Access Restricted: API Balance*\n\n` +
-        `တိုက်ရိုက် API Balance စစ်ဆေးခြင်းကို Direct API Linked Reseller (VIP) သို့မဟုတ် Admin သာ ကြည့်ရှုခွင့်ရှိပါသည်။\n\n` +
-        `💰 *သင့် Wallet လက်ကျန်ငွေ:* \`$${Number(user?.balance || 0).toFixed(3)} USD\``;
-
-      const keyboard = Markup.inlineKeyboard([
-        [
-          Markup.button.callback('💰 Request Balance Top-Up', 'topup_flow_start'),
-          Markup.button.callback('👤 My Account Profile', 'view_my_profile')
-        ]
-      ]);
-
-      if (isEdit) {
-        return await safeEditMessageText(ctx, msg, keyboard);
-      } else {
-        return await safeReply(ctx, msg, keyboard);
+  async function getG2BulkLiveBalance(): Promise<{ success: boolean; balance: string; currency: string; error?: string }> {
+    try {
+      if (!g2bulk || !g2bulk.getClient()?.getStatus().isConfigured) {
+        return { success: false, balance: '0.000', currency: 'USD', error: 'Credentials not configured' };
       }
-    }
-
-    if (viewMode === 'lootbar') {
-      const lbRes = await getLootBarLiveBalance();
-      const msg = `🎮 *LootBar API Live Asset Balance*\n` +
-        `═════════════════════════\n` +
-        `├── 🌐 Provider: \`LootBar API\`\n` +
-        `├── 💰 Live Asset Balance: \`$${lbRes.balance} USD\`\n` +
-        `├── 📊 Connection Status: \`${lbRes.success ? '✅ Live Connected' : '⚠️ Offline'}\`\n` +
-        (!lbRes.success && lbRes.error ? `├── ⚠️ Note: \`${escapeMd(lbRes.error)}\`\n` : '') +
-        `└── 🕒 Synced At: \`${formatMyanmarDateTime(new Date())}\`\n` +
-        `═════════════════════════\n` +
-        `✨ _LootBar API Wallet မှ လက်ကျန်ငွေ အခြေအနေ ဖြစ်ပါသည်။_`;
-
-      const keyboard = Markup.inlineKeyboard([
-        [
-          Markup.button.callback('🔄 Refresh LootBar', 'api_bal_lootbar'),
-          Markup.button.callback('🌐 TopupNation', 'api_bal_topupnation'),
-          Markup.button.callback('⚡ FZR Cards', 'api_bal_fzrcards')
-        ],
-        [
-          Markup.button.callback('📊 View All APIs', 'api_bal_both'),
-          Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')
-        ],
-        [
-          Markup.button.callback('👤 My Account Profile', 'view_my_profile')
-        ]
-      ]);
-
-      if (isEdit) {
-        return await safeEditMessageText(ctx, msg, keyboard);
-      } else {
-        return await safeReply(ctx, msg, keyboard);
-      }
-    }
-
-    if (viewMode === 'topupnation') {
-      const tpnRes = await getTopupNationLiveBalance();
-      const msg = `🌐 *TopupNation API Live Wallet Balance*\n` +
-        `═════════════════════════\n` +
-        `├── 🌐 Provider: \`TopupNation Reseller API\`\n` +
-        `├── 💰 Total Balance: \`$${tpnRes.balance} ${tpnRes.currency}\`\n` +
-        `├── 💵 Available Balance: \`$${tpnRes.available} ${tpnRes.currency}\`\n` +
-        `├── 📊 Connection Status: \`${tpnRes.success ? '✅ Live Connected' : '⚠️ Offline'}\`\n` +
-        (!tpnRes.success && tpnRes.error ? `├── ⚠️ Note: \`${escapeMd(tpnRes.error)}\`\n` : '') +
-        `└── 🕒 Synced At: \`${formatMyanmarDateTime(new Date())}\`\n` +
-        `═════════════════════════\n` +
-        `✨ _TopupNation Reseller API Wallet မှ လက်ကျန်ငွေ ဖြစ်ပါသည်။_`;
-
-      const keyboard = Markup.inlineKeyboard([
-        [
-          Markup.button.callback('🎮 LootBar', 'api_bal_lootbar'),
-          Markup.button.callback('🔄 Refresh TopupNation', 'api_bal_topupnation'),
-          Markup.button.callback('⚡ FZR Cards', 'api_bal_fzrcards')
-        ],
-        [
-          Markup.button.callback('📊 View All APIs', 'api_bal_both'),
-          Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')
-        ],
-        [
-          Markup.button.callback('👤 My Account Profile', 'view_my_profile')
-        ]
-      ]);
-
-      if (isEdit) {
-        return await safeEditMessageText(ctx, msg, keyboard);
-      } else {
-        return await safeReply(ctx, msg, keyboard);
-      }
-    }
-
-    if (viewMode === 'fzrcards') {
-      const fzrRes = await getFzrCardsLiveBalance();
-      const msg = `⚡ *FZR Cards API Live Wallet Balance*\n` +
-        `═════════════════════════\n` +
-        `├── 🌐 Provider: \`FZR Cards Reseller API\`\n` +
-        `├── 💰 Total Balance: \`$${fzrRes.balance} ${fzrRes.currency}\`\n` +
-        `├── 💵 Available Balance: \`$${fzrRes.available} ${fzrRes.currency}\`\n` +
-        `├── 📊 Connection Status: \`${fzrRes.success ? '✅ Live Connected' : '⚠️ Offline'}\`\n` +
-        (!fzrRes.success && fzrRes.error ? `├── ⚠️ Note: \`${escapeMd(fzrRes.error)}\`\n` : '') +
-        `└── 🕒 Synced At: \`${formatMyanmarDateTime(new Date())}\`\n` +
-        `═════════════════════════\n` +
-        `✨ _FZR Cards Reseller API Wallet မှ လက်ကျန်ငွေ ဖြစ်ပါသည်။_`;
-
-      const keyboard = Markup.inlineKeyboard([
-        [
-          Markup.button.callback('🎮 LootBar', 'api_bal_lootbar'),
-          Markup.button.callback('🌐 TopupNation', 'api_bal_topupnation'),
-          Markup.button.callback('🔄 Refresh FZR Cards', 'api_bal_fzrcards')
-        ],
-        [
-          Markup.button.callback('📊 View All APIs', 'api_bal_both'),
-          Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')
-        ],
-        [
-          Markup.button.callback('👤 My Account Profile', 'view_my_profile')
-        ]
-      ]);
-
-      if (isEdit) {
-        return await safeEditMessageText(ctx, msg, keyboard);
-      } else {
-        return await safeReply(ctx, msg, keyboard);
-      }
-    }
-
-    // Default: All APIs
-    const [lbRes, tpnRes, fzrRes] = await Promise.all([
-      getLootBarLiveBalance(),
-      getTopupNationLiveBalance(),
-      getFzrCardsLiveBalance()
-    ]);
-
-    const msg = `⚡ *API Live Balance Overview (Providers လက်ကျန်ငွေ စာရင်း)*\n` +
-      `═════════════════════════\n` +
-      `🎮 *1. LootBar API:*\n` +
-      `├── 💰 Total Asset: \`$${lbRes.balance} USD\`\n` +
-      `└── 📊 Status: \`${lbRes.success ? '✅ Live Connected' : `⚠️ Offline (${escapeMd(lbRes.error)})`}\`\n\n` +
-      `🌐 *2. TopupNation API:*\n` +
-      `├── 💰 Total Balance: \`$${tpnRes.balance} ${tpnRes.currency}\`\n` +
-      `├── 💵 Available: \`$${tpnRes.available} ${tpnRes.currency}\`\n` +
-      `└── 📊 Status: \`${tpnRes.success ? '✅ Live Connected' : `⚠️ Offline (${escapeMd(tpnRes.error)})`}\`\n\n` +
-      `⚡ *3. FZR Cards API:*\n` +
-      `├── 💰 Total Balance: \`$${fzrRes.balance} ${fzrRes.currency}\`\n` +
-      `├── 💵 Available: \`$${fzrRes.available} ${fzrRes.currency}\`\n` +
-      `└── 📊 Status: \`${fzrRes.success ? '✅ Live Connected' : `⚠️ Offline (${escapeMd(fzrRes.error)})`}\`\n` +
-      `═════════════════════════\n` +
-      `💡 _အောက်ပါ ခလုတ်များဖြင့် API တစ်ခုချင်းစီ သီးသန့် ရွေးချယ်စစ်ဆေးနိုင်ပါသည်:_`;
-
-    const keyboard = Markup.inlineKeyboard([
-      [
-        Markup.button.callback('🎮 LootBar', 'api_bal_lootbar'),
-        Markup.button.callback('🌐 TopupNation', 'api_bal_topupnation'),
-        Markup.button.callback('⚡ FZR Cards', 'api_bal_fzrcards')
-      ],
-      [
-        Markup.button.callback('🔄 Refresh All APIs', 'api_bal_both'),
-        Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')
-      ],
-      [
-        Markup.button.callback('👤 My Account Profile', 'view_my_profile')
-      ]
-    ]);
-
-    if (isEdit) {
-      return await safeEditMessageText(ctx, msg, keyboard);
-    } else {
-      return await safeReply(ctx, msg, keyboard);
+      const bal = await g2bulk.getClient().getBalance();
+      return {
+        success: true,
+        balance: bal.toFixed(3),
+        currency: 'USD'
+      };
+    } catch (e: any) {
+      return { success: false, balance: '0.000', currency: 'USD', error: e.message || 'Connection error' };
     }
   }
 
+  
   async function renderAccountProfile(ctx: MyContext, isEdit: boolean = false) {
     const user = await User.findOne({ telegramChatId: ctx.chat!.id });
-    if (!user) return ctx.reply('User not found.');
     
-    const currentAdminId = await getAdminChatId(adminChatId);
-    const isOwner = String(ctx.chat!.id) === currentAdminId;
-    const isApiLinked = !!(user.useDirectApiBalance || user.balanceMode === 'api');
-    const apiProvider = (user.apiProvider || 'both').toUpperCase();
-
-    const usernameDisplay = user.username 
-      ? `@${escapeMd(user.username)}` 
-      : user.firstName 
-        ? escapeMd(user.firstName) 
-        : 'Not set';
-
-    // Standard Member Profile (Hide API balances completely)
-    if (!isApiLinked && !isOwner) {
-      let msg = `👤 *My Account Profile*\n` +
-        `═════════════════════════\n` +
-        `🆔 *Chat ID:* \`${ctx.chat!.id}\`\n` +
-        `👤 *Username:* ${usernameDisplay}\n` +
-        `📊 *Status:* ✅ \`Authorized\`\n` +
-        `⚡ *Account Tier:* \`Standard Member\`\n` +
-        `💰 *Wallet Balance:* \`$${Number(user.balance || 0).toFixed(3)} USD\`\n` +
-        `📦 *Ordering Mode:* \`Pre-funded Wallet Balance\`\n` +
-        `═════════════════════════`;
-
-      const keyboard = Markup.inlineKeyboard([
-        [
-          Markup.button.callback('💰 Request Balance Top-Up', 'topup_flow_start'),
-          Markup.button.callback('📜 Order History', 'view_my_orders')
-        ]
-      ]);
-
-      if (isEdit) {
-        return await safeEditMessageText(ctx, msg, keyboard);
-      } else {
-        return await safeReply(ctx, msg, keyboard);
-      }
-    }
-
-    // Direct API Linked VIP or Owner Profile
-    const [lbRes, tpnRes] = await Promise.all([
-      getLootBarLiveBalance(),
-      getTopupNationLiveBalance()
-    ]);
-
-    let msg = `👤 *My Account Profile*\n` +
+    let msg = `👤 *Your Profile*\n` +
       `═════════════════════════\n` +
-      `🆔 *Chat ID:* \`${ctx.chat!.id}\`\n` +
-      `👤 *Username:* ${usernameDisplay}\n` +
-      `📊 *Status:* ✅ \`Authorized\`\n`;
+      `📛 *Name:* \`${user?.firstName || 'User'}\`\n` +
+      `🆔 *ID:* \`${user?.telegramChatId}\`\n` +
+      `💰 *Wallet Balance:* \`$${Number(user?.balance || 0).toFixed(3)} USD\`\n` +
+      `═════════════════════════\n`;
 
-    if (isApiLinked) {
-      msg += `⚡ *Account Tier:* \`Direct API Linked (VIP / Reseller)\`\n` +
-        `🌐 *Linked Provider:* \`${apiProvider}\`\n` +
-        `💳 *Wallet Mode:* \`Direct API Live Balance (Auto-Sync)\`\n\n` +
-        `🎮 *LootBar API Live:* \`$${lbRes.balance} USD\`\n` +
-        `🌐 *TopupNation API Live:* \`$${tpnRes.balance} USD\`\n\n` +
-        `_✨ Your account is directly connected to live API funds for instant top-up fulfillment._`;
-    } else {
-      msg += `⚡ *Account Tier:* \`Admin / Owner\`\n` +
-        `💰 *Wallet Balance:* \`$${Number(user.balance || 0).toFixed(3)} USD\`\n\n` +
-        `🎮 *LootBar API Live:* \`$${lbRes.balance} USD\`\n` +
-        `🌐 *TopupNation API Live:* \`$${tpnRes.balance} USD\``;
-    }
-    
-    if (isOwner) {
-      msg += `\n\n👑 *Owner Access:* \`Full API Admin\``;
-    }
-    msg += `\n═════════════════════════`;
-    
     const keyboard = Markup.inlineKeyboard([
       [
-        Markup.button.callback('🎮 LootBar Balance', 'api_bal_lootbar'),
-        Markup.button.callback('🌐 TopupNation Balance', 'api_bal_topupnation')
-      ],
-      [
-        Markup.button.callback('📊 Both API Balances', 'api_bal_both'),
-        Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')
+        Markup.button.callback('💳 Check Balance', 'view_my_balance'),
+        Markup.button.callback('📜 Order History', 'view_my_orders')
       ]
     ]);
 
@@ -2050,65 +2135,23 @@ export function setupBot(
   }
 
   async function renderBalance(ctx: MyContext, isEdit: boolean = false) {
-    const currentAdminId = await getAdminChatId(adminChatId);
     const user = await User.findOne({ telegramChatId: ctx.chat!.id });
-    const isOwner = String(ctx.chat!.id) === currentAdminId;
-    const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
-    const apiProvider = (user?.apiProvider || 'both').toUpperCase();
-
-    // Standard Member: ONLY show personal wallet balance (Hide API balances completely)
-    if (!isApiLinked && !isOwner) {
-      let msg = `💳 *Your Wallet Balance*\n` +
-        `═════════════════════════\n` +
-        `💰 *Current Balance:* \`$${Number(user?.balance || 0).toFixed(3)} USD\`\n` +
-        `⚡ *Account Tier:* \`Standard Member\`\n` +
-        `📦 *Ordering Mode:* \`Pre-funded Wallet Balance\`\n` +
-        `═════════════════════════\n` +
-        `_💡 သင့် Wallet ထဲသို့ ငွေဖြည့်သွင်းလိုပါက အောက်ပါ Request Balance Top-Up ခလုတ်ကို နှိပ်ပါ:_`;
-
-      const keyboard = Markup.inlineKeyboard([
-        [
-          Markup.button.callback('💰 Request Balance Top-Up', 'topup_flow_start'),
-          Markup.button.callback('👤 My Account Profile', 'view_my_profile')
-        ]
-      ]);
-
-      if (isEdit) {
-        return await safeEditMessageText(ctx, msg, keyboard);
-      } else {
-        return await safeReply(ctx, msg, keyboard);
-      }
-    }
-
-    // Direct API Linked VIP or Owner: Show Live API Balances
-    const [lbRes, tpnRes, fzrRes] = await Promise.all([
-      getLootBarLiveBalance(),
-      getTopupNationLiveBalance(),
-      getFzrCardsLiveBalance()
-    ]);
-
-    let msg = `⚡ *Direct API Live Balance (VIP / Reseller)*\n` +
-      `═════════════════════════\n` +
-      `💰 *Personal Wallet:* \`$${Number(user?.balance || 0).toFixed(3)} USD\`\n` +
-      `🌐 *Linked Provider:* \`${apiProvider}\`\n` +
-      `═════════════════════════\n` +
-      `🎮 *LootBar API:* \`$${lbRes.balance} USD\` (${lbRes.success ? '✅ Connected' : '⚠️ Offline'})\n` +
-      `🌐 *TopupNation API:* \`$${tpnRes.balance} USD\` (${tpnRes.success ? '✅ Connected' : '⚠️ Offline'})\n` +
-      `⚡ *FZR Cards API:* \`$${fzrRes.balance} USD\` (${fzrRes.success ? '✅ Connected' : '⚠️ Offline'})\n` +
-      `═════════════════════════\n` +
-      `💡 _API Balance တစ်ခုချင်းစီကို သီးသန့် ရွေးချယ်ကြည့်ရှုလိုပါက အောက်ပါခလုတ်များကို နှိပ်ပါ:_`;
+    
+    let msg = `💳 *Your Wallet Balance*
+` +
+      `═════════════════════════
+` +
+      `💰 *Current Balance:* \`$${Number(user?.balance || 0).toFixed(3)} USD\`
+` +
+      `📦 *Ordering Mode:* \`Pre-funded Wallet Balance\`
+` +
+      `═════════════════════════
+` +
+      `_💡 သင့် Wallet ထဲသို့ ငွေဖြည့်သွင်းလိုပါက အောက်ပါ Request Balance Top-Up ခလုတ်ကို နှိပ်ပါ:_`;
 
     const keyboard = Markup.inlineKeyboard([
       [
-        Markup.button.callback('🎮 LootBar', 'api_bal_lootbar'),
-        Markup.button.callback('🌐 TopupNation', 'api_bal_topupnation'),
-        Markup.button.callback('⚡ FZR Cards', 'api_bal_fzrcards')
-      ],
-      [
-        Markup.button.callback('🔄 All APIs', 'api_bal_both'),
-        Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')
-      ],
-      [
+        Markup.button.callback('💰 Request Balance Top-Up', 'topup_flow_start'),
         Markup.button.callback('👤 My Account Profile', 'view_my_profile')
       ]
     ]);
@@ -2121,62 +2164,10 @@ export function setupBot(
   }
 
   // Action Handlers for API Balance Switcher
-  bot.action('api_bal_both', async (ctx) => {
-    const user = await User.findOne({ telegramChatId: ctx.chat!.id });
-    const currentAdminId = await getAdminChatId(adminChatId);
-    const isOwner = String(ctx.chat!.id) === currentAdminId;
-    const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
-
-    if (!isApiLinked && !isOwner) {
-      return await ctx.answerCbQuery('⚠️ API balance access is only for API-linked VIP members.', { show_alert: true });
-    }
-
-    await ctx.answerCbQuery('Refreshing both API balances...');
-    return await renderDualApiBalance(ctx, 'both', true);
-  });
-
-  bot.action('api_bal_lootbar', async (ctx) => {
-    const user = await User.findOne({ telegramChatId: ctx.chat!.id });
-    const currentAdminId = await getAdminChatId(adminChatId);
-    const isOwner = String(ctx.chat!.id) === currentAdminId;
-    const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
-
-    if (!isApiLinked && !isOwner) {
-      return await ctx.answerCbQuery('⚠️ API balance access is only for API-linked VIP members.', { show_alert: true });
-    }
-
-    await ctx.answerCbQuery('Checking LootBar API balance...');
-    return await renderDualApiBalance(ctx, 'lootbar', true);
-  });
-
-  bot.action('api_bal_topupnation', async (ctx) => {
-    const user = await User.findOne({ telegramChatId: ctx.chat!.id });
-    const currentAdminId = await getAdminChatId(adminChatId);
-    const isOwner = String(ctx.chat!.id) === currentAdminId;
-    const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
-
-    if (!isApiLinked && !isOwner) {
-      return await ctx.answerCbQuery('⚠️ API balance access is only for API-linked VIP members.', { show_alert: true });
-    }
-
-    await ctx.answerCbQuery('Checking TopupNation API balance...');
-    return await renderDualApiBalance(ctx, 'topupnation', true);
-  });
-
-  bot.action('api_bal_fzrcards', async (ctx) => {
-    const user = await User.findOne({ telegramChatId: ctx.chat!.id });
-    const currentAdminId = await getAdminChatId(adminChatId);
-    const isOwner = String(ctx.chat!.id) === currentAdminId;
-    const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
-
-    if (!isApiLinked && !isOwner) {
-      return await ctx.answerCbQuery('⚠️ API balance access is only for API-linked VIP members.', { show_alert: true });
-    }
-
-    await ctx.answerCbQuery('Checking FZR Cards API balance...');
-    return await renderDualApiBalance(ctx, 'fzrcards', true);
-  });
-
+  
+  
+  
+  
   bot.action('view_my_balance', async (ctx) => {
     await ctx.answerCbQuery();
     return await renderBalance(ctx, true);
@@ -2228,25 +2219,25 @@ export function setupBot(
       if (!isApiLinked && !isOwner) {
         return await renderBalance(ctx);
       }
-      return await renderDualApiBalance(ctx, 'lootbar');
+      return await renderBalance(ctx);
     }
     if (text.includes('tpn') || text.includes('topupnation')) {
       if (!isApiLinked && !isOwner) {
         return await renderBalance(ctx);
       }
-      return await renderDualApiBalance(ctx, 'topupnation');
+      return await renderBalance(ctx);
     }
     if (text.includes('fzr') || text.includes('fzrcards')) {
       if (!isApiLinked && !isOwner) {
         return await renderBalance(ctx);
       }
-      return await renderDualApiBalance(ctx, 'fzrcards');
+      return await renderBalance(ctx);
     }
     if (text.includes('apibalance') || text.includes('apis') || text.startsWith('/api')) {
       if (!isApiLinked && !isOwner) {
         return await renderBalance(ctx);
       }
-      return await renderDualApiBalance(ctx, 'all');
+      return await renderBalance(ctx);
     }
     return await renderBalance(ctx);
   });
@@ -2897,6 +2888,10 @@ export function setupBot(
     return await renderFzrCardsGameList(ctx);
   });
 
+  bot.hears(['🔥 G2Bulk Games', 'G2Bulk Games', 'G2Bulk', 'g2bulk'], async (ctx) => {
+    return await renderG2BulkGameList(ctx);
+  });
+
   bot.hears(['🌐 TopupNation Games', 'TopupNation Games', 'TopUpNation Games', 'TopupNation', 'tpn'], async (ctx) => {
     return await renderTopupNationGameList(ctx);
   });
@@ -2984,7 +2979,7 @@ export function setupBot(
       games = savedGames.map((g: any) => ({ game_id: String(g.gameId), game_name: g.name }));
     } else {
       const response = await lootbar.getGames();
-      games = response?.data?.items || [];
+      games = (response?.data?.items || []).map((g: any) => ({ game_id: String(g.game_id), game_name: g.name || g.game_name }));
     }
     const buttons = games.map((game: any) => [
       Markup.button.callback(game.game_name || 'Game', `game_${game.game_id}`)
@@ -3391,17 +3386,47 @@ export function setupBot(
   });
 
   bot.action('confirm_place_order', async (ctx) => {
-    await ctx.answerCbQuery();
-    await finalizeOrder(ctx);
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+
+    // Concurrency lock: prevent rapid multi-clicks or duplicate callbacks
+    const lastLock = activeUserOrderLocks.get(chatId);
+    if (lastLock && Date.now() - lastLock < 60000) {
+      return await ctx.answerCbQuery('⚠️ Your order is already being processed! Please wait a moment...', { show_alert: true });
+    }
+
+    if (ctx.session?.orderInProgress || ctx.session?.step === 'PROCESSING' || ctx.session?.step === 'DONE') {
+      return await ctx.answerCbQuery('⚠️ This order was already submitted or is in progress!', { show_alert: true });
+    }
+
+    // Immediately remove inline buttons from the confirmation message so user cannot click again
+    try {
+      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+    } catch {}
+
+    activeUserOrderLocks.set(chatId, Date.now());
+    ctx.session.orderInProgress = true;
+    ctx.session.step = 'PROCESSING';
+
+    await ctx.answerCbQuery('⏳ Processing order...');
+
+    try {
+      await finalizeOrder(ctx);
+    } finally {
+      activeUserOrderLocks.delete(chatId);
+      if (ctx.session) {
+        ctx.session.orderInProgress = false;
+      }
+    }
   });
 
   async function finalizeOrder(ctx: MyContext) {
     const isTopupNation = ctx.session.provider === 'topupnation';
+    const isG2Bulk = ctx.session.provider === 'g2bulk';
     const isFzrCards = ctx.session.provider === 'fzrcards';
-    const providerName = isFzrCards ? 'FZR Cards' : isTopupNation ? 'TopupNation' : 'LootBar';
-    ctx.session.step = 'DONE';
-    await ctx.reply(`⏳ Processing your top-up order with ${providerName} API, please wait...`);
+    const providerName = isG2Bulk ? 'G2Bulk' : isFzrCards ? 'FZR Cards' : isTopupNation ? 'TopupNation' : 'LootBar';
     
+    // Copy order state and clear immediately to avoid reuse
     const referenceId = uuidv4().replace(/-/g, '').substring(0, 32);
     const gameId = ctx.session.gameId!;
     const skuId = ctx.session.skuId!;
@@ -3410,6 +3435,14 @@ export function setupBot(
     const quantity = ctx.session.quantity || 1;
     let playerName = ctx.session.playerName || undefined;
     const extraInfo = ctx.session.extraInfo || {};
+    let orderCost = (ctx.session.skuPrice || 1) * quantity;
+
+    ctx.session.step = 'DONE';
+    ctx.session.gameId = undefined;
+    ctx.session.skuId = undefined;
+    ctx.session.extraInfo = undefined;
+
+    await ctx.reply(`⏳ Processing your top-up order with ${providerName} API, please wait...`);
     
     const userDoc = await User.findOne({ telegramChatId: ctx.chat!.id });
     if (!userDoc) {
@@ -3421,7 +3454,24 @@ export function setupBot(
     const currentTelegramLastName = ctx.from?.last_name || (ctx.chat as any)?.last_name || undefined;
     
     const isApiLinked = !!(userDoc.useDirectApiBalance || userDoc.balanceMode === 'api');
-    let orderCost = (ctx.session.skuPrice || 1) * quantity;
+
+    
+    if (isG2Bulk && g2bulk) {
+      const result = await g2bulk.placeOrder(
+        playerName || (extraInfo.player_id ? String(extraInfo.player_id) : 'Unknown'),
+        userDoc._id.toString(),
+        gameId,
+        skuId,
+        extraInfo,
+        ctx.chat!.id
+      );
+      if (result.success) {
+        if (!result.order) return;
+        return; // Handled by service
+      } else {
+        return await safeReply(ctx, `❌ G2Bulk Order Failed: ${escapeMd(result.error || 'Unknown Error')}`);
+      }
+    }
 
     if (isTopupNation && topupNation) {
       // Execute through TopupNation Service
@@ -3586,13 +3636,16 @@ export function setupBot(
     }
 
     if (!isApiLinked) {
-      if (userDoc.balance < orderCost) {
-        return ctx.reply(`❌ Insufficient balance. Cost is $${orderCost.toFixed(3)}, but your balance is $${userDoc.balance.toFixed(3)}.`, mainMenu);
+      // Atomic Balance Deduction for standard wallet users to avoid race conditions and double charging
+      const deductedUser = await User.findOneAndUpdate(
+        { telegramChatId: ctx.chat!.id, balance: { $gte: orderCost } },
+        { $inc: { balance: -orderCost } },
+        { returnDocument: 'after' }
+      );
+      if (!deductedUser) {
+        return ctx.reply(`❌ Insufficient balance or order already in progress. Cost is $${orderCost.toFixed(3)}, but your balance is insufficient.`, mainMenu);
       }
-
-      // Atomic Balance Deduction for standard wallet users
-      userDoc.balance = Math.max(0, userDoc.balance - orderCost);
-      await userDoc.save();
+      userDoc.balance = deductedUser.balance;
     }
 
     try {
@@ -3763,20 +3816,18 @@ export function setupBot(
         }, 12000);
       
       } else {
-        // Refund balance if order failed
+        // Atomic refund balance if order failed
         if (!isApiLinked) {
-          userDoc.balance += orderCost;
-          await userDoc.save();
+          await User.updateOne({ telegramChatId: ctx.chat!.id }, { $inc: { balance: orderCost } });
         }
         const msg = orderResponse?.msg || orderResponse?.message || 'LootBar rejected the transaction';
         await safeReply(ctx, `❌ *Failed to Place Order*\n\nReason: \`${escapeCode(msg)}\`${!isApiLinked ? `\n\nYour balance of $${orderCost.toFixed(3)} has been refunded to your wallet.` : ''}`, mainMenu);
       }
     
     } catch (error: any) {
-      // Refund balance on exception
+      // Atomic refund balance on exception
       if (!isApiLinked) {
-        userDoc.balance += orderCost;
-        await userDoc.save();
+        await User.updateOne({ telegramChatId: ctx.chat!.id }, { $inc: { balance: orderCost } });
       }
       console.error('Order placement failed:', error);
 
@@ -3786,13 +3837,27 @@ export function setupBot(
 
   // Action: Confirm Bulk Orders Execution
   bot.action('confirm_bulk_orders', async (ctx) => {
-    try {
-      await ctx.answerCbQuery('Processing bulk order...');
-      const bulkItems: BulkOrderItem[] = ctx.session?.bulkOrders || [];
-      if (!bulkItems || bulkItems.length === 0) {
-        return safeReply(ctx, '⚠️ Bulk order session expired or already processed. Please submit again.', mainMenu);
-      }
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
 
+    const lastLock = activeUserOrderLocks.get(chatId);
+    if (lastLock && Date.now() - lastLock < 60000) {
+      return await ctx.answerCbQuery('⚠️ Bulk order is already being processed! Please wait...', { show_alert: true });
+    }
+
+    const bulkItems: BulkOrderItem[] = ctx.session?.bulkOrders || [];
+    if (!bulkItems || bulkItems.length === 0) {
+      return await ctx.answerCbQuery('⚠️ Bulk order already processed or expired!', { show_alert: true });
+    }
+
+    try {
+      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+    } catch {}
+
+    activeUserOrderLocks.set(chatId, Date.now());
+    await ctx.answerCbQuery('Processing bulk order...');
+
+    try {
       const userDoc = await User.findOne({ telegramChatId: ctx.chat!.id });
       if (!userDoc) return safeReply(ctx, '❌ User account not found.', mainMenu);
 
@@ -3880,6 +3945,8 @@ export function setupBot(
     } catch (err: any) {
       console.error('Bulk order execution error:', err);
       return safeReply(ctx, `❌ Bulk Order Execution Error: ${err.message}`, mainMenu);
+    } finally {
+      activeUserOrderLocks.delete(chatId);
     }
   });
 

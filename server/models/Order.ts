@@ -7,7 +7,7 @@ export interface IOrder extends Document {
   telegramUsername?: string;
   telegramFirstName?: string;
   telegramLastName?: string;
-  provider?: 'lootbar' | 'topupnation' | 'fzrcards';
+  provider?: 'lootbar' | 'topupnation' | 'fzrcards' | 'g2bulk';
   providerOrderId?: string;
   providerReceiptNumber?: string;
   providerProductId?: string;
@@ -33,7 +33,7 @@ const orderSchema = new mongoose.Schema({
   telegramUsername: { type: String, index: true },
   telegramFirstName: { type: String },
   telegramLastName: { type: String },
-  provider: { type: String, enum: ['lootbar', 'topupnation', 'fzrcards'], default: 'lootbar', index: true },
+  provider: { type: String, enum: ['lootbar', 'topupnation', 'fzrcards', 'g2bulk'], default: 'lootbar', index: true },
   providerOrderId: { type: String, index: true },
   providerReceiptNumber: { type: String },
   providerProductId: { type: String },

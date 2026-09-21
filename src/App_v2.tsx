@@ -183,6 +183,21 @@ export default function App() {
   const [isSavingTpn, setIsSavingTpn] = useState(false);
   const [copiedWebhook, setCopiedWebhook] = useState(false);
 
+  // G2Bulk API State
+  const [showG2BulkSettings, setShowG2BulkSettings] = useState(false);
+  const [g2bulkConfigured, setG2BulkConfigured] = useState(false);
+  const [g2bulkEnabled, setG2BulkEnabled] = useState(true);
+  const [g2bulkWebhookUrl, setG2BulkWebhookUrl] = useState('');
+  const [g2bulkKey, setG2BulkKey] = useState('');
+  const [isSavingG2Bulk, setIsSavingG2Bulk] = useState(false);
+  const [g2bulkError, setG2BulkError] = useState('');
+  const [g2bulkSuccess, setG2BulkSuccess] = useState('');
+  const [g2bulkProducts, setG2BulkProducts] = useState<any[]>([]);
+  const [isSyncingG2Bulk, setIsSyncingG2Bulk] = useState(false);
+  const [g2bulkSearchQuery, setG2BulkSearchQuery] = useState('');
+  const [g2bulkBalance, setG2BulkBalance] = useState<{ balance: number; currency: string }>({ balance: 0, currency: 'USD' });
+  const [isSavingG2bSku, setIsSavingG2bSku] = useState(false);
+
   // FZR Cards API State
   const [fzrConfigured, setFzrConfigured] = useState<boolean | null>(null);
   const [fzrApiKey, setFzrApiKey] = useState('');
@@ -199,6 +214,7 @@ export default function App() {
   const [fzrError, setFzrError] = useState('');
   const [isSavingFzr, setIsSavingFzr] = useState(false);
   const [showFzrGames, setShowFzrGames] = useState(true);
+  const [showG2BulkGames, setShowG2BulkGames] = useState(true);
 
   const [lbGameSearch, setLbGameSearch] = useState('');
   const [tpnGameSearch, setTpnGameSearch] = useState('');
@@ -304,13 +320,13 @@ export default function App() {
     const key = tpnShortKeyInput[productId];
     if (key === undefined) return;
     try {
-      const res = await fetch(`/api/topupnation/products/${productId}/shortkey`, {
+      const res = await fetch(`/api/topupnation/products/${encodeURIComponent(productId)}/shortkey`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shortKey: key })
       });
       const data = await res.json();
-      if (data?.success) {
+      if (data?.success || res.ok) {
         fetchTpnProducts();
       } else {
         alert(data?.error || 'Failed to update shortKey');
@@ -366,6 +382,159 @@ export default function App() {
       }
     } catch (err: any) {
       alert(`Error toggling product: ${err.message}`);
+    }
+  };
+
+  // G2Bulk Functions
+  const fetchG2BulkStatus = async () => {
+    try {
+      const res = await fetch('/api/settings/g2bulk/status');
+      const data = await res.json();
+      if (data.success) {
+        setG2BulkConfigured(data.isConfigured);
+        setG2BulkEnabled(data.isEnabled);
+        setG2BulkWebhookUrl(data.webhookUrl);
+        if (data.isConfigured) {
+          fetchG2BulkBalance();
+          fetchG2BulkProducts();
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const fetchG2BulkBalance = async () => {
+    try {
+      const res = await fetch('/api/g2bulk/balance');
+      const data = await res.json();
+      if (data.success) {
+        setG2BulkBalance({ balance: data.balance, currency: 'USD' });
+      }
+    } catch (e) { console.error(e); }
+  };
+
+  const fetchG2BulkProducts = async () => {
+    try {
+      const res = await fetch('/api/g2bulk/products');
+      const data = await res.json();
+      if (data.success) {
+        setG2BulkProducts(data.products || []);
+      }
+    } catch (e) { console.error(e); }
+  };
+
+  const handleSaveG2Bulk = async () => {
+    setIsSavingG2Bulk(true);
+    setG2BulkError('');
+    setG2BulkSuccess('');
+    try {
+      const res = await fetch('/api/settings/g2bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: g2bulkKey, isEnabled: g2bulkEnabled })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setG2BulkSuccess('G2Bulk configured successfully!');
+        setG2BulkConfigured(true);
+        fetchG2BulkStatus();
+        setTimeout(() => setShowG2BulkSettings(false), 1500);
+      } else {
+        setG2BulkError(data.error || 'Failed to authenticate');
+      }
+    } catch (err: any) {
+      setG2BulkError(err.message || 'Error occurred');
+    } finally {
+      setIsSavingG2Bulk(false);
+    }
+  };
+
+  const handleSyncG2Bulk = async () => {
+    setIsSyncingG2Bulk(true);
+    try {
+      const res = await fetch('/api/g2bulk/products/sync', { method: 'POST' });
+      if (res.ok) {
+        await fetchG2BulkProducts();
+      }
+    } catch (e) { console.error(e); }
+    setIsSyncingG2Bulk(false);
+  };
+
+  const handleToggleG2BulkProduct = async (productId: string, isEnabled: boolean) => {
+    try {
+      setG2BulkProducts(prev => prev.map(p => p.productId === productId ? { ...p, isEnabled } : p));
+      await fetch(`/api/g2bulk/products/${encodeURIComponent(productId)}/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isEnabled })
+      });
+    } catch (e) { console.error(e); }
+  };
+
+  const handleSaveG2BulkShortKey = async (productId: string, shortKey: string) => {
+    try {
+      const res = await fetch(`/api/g2bulk/products/${encodeURIComponent(productId)}/shortkey`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shortKey })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setG2BulkProducts(prev => prev.map(p => p.productId === productId ? { ...p, shortKey } : p));
+      } else {
+        alert(data.error || 'Failed to save short key');
+      }
+    } catch (e) { console.error(e); }
+  };
+
+  const handleSaveG2BulkSkuShortKeys = async (productId: string, skuShortKeys: Record<string, string>) => {
+    setIsSavingG2bSku(true);
+    try {
+      const res = await fetch(`/api/g2bulk/products/${encodeURIComponent(productId)}/sku-shortkeys`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ skuShortKeys })
+      });
+      const data = await res.json();
+      if (data.success) {
+        const updatedSkus = data?.product?.skuShortKeys || data?.data?.skuShortKeys || skuShortKeys;
+        setG2BulkProducts(prev => prev.map(p => p.productId === productId ? { ...p, skuShortKeys: updatedSkus } : p));
+        setSkuModalGame(null);
+      } else {
+        alert(data.error || 'Failed to save SKU short keys');
+      }
+    } catch (e) { console.error(e); }
+    setIsSavingG2bSku(false);
+  };
+
+  const handleBulkToggleG2Bulk = async (isEnabled: boolean) => {
+    const filtered = g2bulkProducts.filter(p => (p.name || "").toLowerCase().includes(g2bulkSearchQuery.toLowerCase()));
+    const productIds = filtered.map(p => p.productId);
+    if (productIds.length === 0) return;
+    
+    if (!confirm(`Are you sure you want to ${isEnabled ? 'enable' : 'disable'} ${productIds.length} G2Bulk products currently filtered?`)) {
+      return;
+    }
+    
+    try {
+      const res = await fetch('/api/g2bulk/products/bulk-toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productIds, isEnabled })
+      });
+      const data = await res.json();
+      if (data?.success) {
+        setG2BulkProducts(prev => prev.map(p => 
+          productIds.includes(p.productId) 
+            ? { ...p, isEnabled, status: isEnabled ? 'ACTIVE' : 'DISABLED' } 
+            : p
+        ));
+      } else {
+        alert(data?.error || 'Failed to bulk toggle products');
+      }
+    } catch (err: any) {
+      alert(`Error bulk toggling products: ${err.message}`);
     }
   };
 
@@ -455,6 +624,7 @@ export default function App() {
         setShowFzrModal(false);
         setFzrConfigured(true);
         fetchFzrStatus();
+    fetchG2BulkStatus();
         fetchFzrBalance();
         handleSyncFzrProducts();
       }
@@ -469,13 +639,13 @@ export default function App() {
     const key = fzrShortKeyInput[productId];
     if (key === undefined) return;
     try {
-      const res = await fetch(`/api/fzrcards/products/${productId}/shortkey`, {
+      const res = await fetch(`/api/fzrcards/products/${encodeURIComponent(productId)}/shortkey`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shortKey: key })
       });
       const data = await res.json();
-      if (data?.success) {
+      if (data?.success || res.ok) {
         fetchFzrProducts();
       } else {
         alert(data?.error || 'Failed to update shortKey');
@@ -947,7 +1117,7 @@ export default function App() {
   };
 
   
-  const openSkuModal = async (game: any, provider: 'lootbar' | 'topupnation' | 'fzrcards' | boolean) => {
+  const openSkuModal = async (game: any, provider: 'lootbar' | 'topupnation' | 'fzrcards' | 'g2bulk' | boolean) => {
     setSkuModalSuccessMsg('');
     setSkuSearchFilter('');
     
@@ -964,19 +1134,22 @@ export default function App() {
 
     const isTpn = provider === true || provider === 'topupnation';
     const isFzr = provider === 'fzrcards';
+    const isG2b = provider === 'g2bulk';
 
     if (isFzr) {
-      setSkuModalGame({ ...game, isFzr: true, isTpn: false, modalSkus: game.skus || [] });
+      setSkuModalGame({ ...game, isFzr: true, isTpn: false, isG2b: false, modalSkus: game.skus || [] });
     } else if (isTpn) {
-      setSkuModalGame({ ...game, isTpn: true, isFzr: false, modalSkus: game.skus || [] });
+      setSkuModalGame({ ...game, isTpn: true, isFzr: false, isG2b: false, modalSkus: game.skus || [] });
+    } else if (isG2b) {
+      setSkuModalGame({ ...game, isG2b: true, isTpn: false, isFzr: false, modalSkus: game.skus || [] });
     } else {
       const localSkus = game.lastKnownSkus || [];
-      setSkuModalGame({ ...game, isTpn: false, isFzr: false, modalSkus: localSkus });
+      setSkuModalGame({ ...game, isTpn: false, isFzr: false, isG2b: false, modalSkus: localSkus });
       
       // Fetch fresh SKUs from server
       setLoadingModalSkus(true);
       try {
-        const res = await fetch(`/api/saved-games/${game.gameId}/skus`);
+        const res = await fetch(`/api/saved-games/${encodeURIComponent(game.gameId)}/skus`);
         const json = await res.json();
         if (json.success && Array.isArray(json.data) && json.data.length > 0) {
           setSkuModalGame((prev: any) => (prev && prev.gameId === game.gameId) ? { ...prev, modalSkus: json.data } : prev);
@@ -994,8 +1167,8 @@ export default function App() {
     const newKeys = { ...skuShortKeysInput };
     
     skuModalGame.modalSkus.forEach((sku: any) => {
-      const skuId = String(skuModalGame.isTpn || skuModalGame.isFzr ? sku.sku : sku.sku_id);
-      const name = String(skuModalGame.isTpn || skuModalGame.isFzr ? sku.name : (sku.sku_name || '')).trim();
+      const skuId = String(skuModalGame.isTpn || skuModalGame.isFzr || skuModalGame.isG2b ? (sku.sku || sku.sku_id || '') : (sku.sku_id || sku.sku || ''));
+      const name = String(skuModalGame.isTpn || skuModalGame.isFzr || skuModalGame.isG2b ? (sku.name || sku.sku_name || '') : (sku.sku_name || sku.name || '')).trim();
       const lowerName = name.toLowerCase();
 
       // Only auto-generate if currently empty
@@ -1035,14 +1208,14 @@ export default function App() {
       // Clean keys (lowercase, trim, letters/numbers/hyphen/underscore only)
       const cleanKeys: Record<string, string> = {};
       Object.entries(skuShortKeysInput).forEach(([k, v]) => {
-        const cleaned = String(v || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+        const cleaned = String(v || '').trim().toLowerCase().replace(/^[./]+/, '').replace(/[^a-z0-9_-]/g, '');
         if (cleaned) {
           cleanKeys[k] = cleaned;
         }
       });
 
       if (skuModalGame.isFzr) {
-        const res = await fetch(`/api/fzrcards/products/${skuModalGame.productId}/sku-shortkeys`, {
+        const res = await fetch(`/api/fzrcards/products/${encodeURIComponent(skuModalGame.productId)}/sku-shortkeys`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ skuShortKeys: cleanKeys })
@@ -1058,7 +1231,7 @@ export default function App() {
           alert('Error saving: ' + (errData.error || 'Unknown error'));
         }
       } else if (skuModalGame.isTpn) {
-        const res = await fetch(`/api/topupnation/products/${skuModalGame.productId}/sku-shortkeys`, {
+        const res = await fetch(`/api/topupnation/products/${encodeURIComponent(skuModalGame.productId)}/sku-shortkeys`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ skuShortKeys: cleanKeys })
@@ -1073,8 +1246,24 @@ export default function App() {
           const errData = await res.json().catch(() => ({}));
           alert('Error saving: ' + (errData.error || 'Unknown error'));
         }
+      } else if (skuModalGame.isG2b) {
+        const res = await fetch(`/api/g2bulk/products/${encodeURIComponent(skuModalGame.productId)}/sku-shortkeys`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ skuShortKeys: cleanKeys })
+        });
+        if (res.ok) {
+          fetchG2BulkProducts();
+          setSkuModalSuccessMsg('Saved successfully! Package short keys are now active.');
+          setTimeout(() => {
+            setSkuModalGame(null);
+          }, 1000);
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          alert('Error saving: ' + (errData.error || 'Unknown error'));
+        }
       } else {
-        const res = await fetch(`/api/saved-games/${skuModalGame.gameId}`, {
+        const res = await fetch(`/api/saved-games/${encodeURIComponent(skuModalGame.gameId)}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ skuShortKeys: cleanKeys })
@@ -1157,17 +1346,20 @@ export default function App() {
   const updateGameShortKey = async (gameId: string, shortKey: string) => {
     setSavingKeyId(gameId);
     try {
-      const res = await fetch(`/api/saved-games/${gameId}`, {
+      const res = await fetch(`/api/saved-games/${encodeURIComponent(gameId)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shortKey })
       });
       const data = await res.json();
-      if (data.success) {
+      if (data?.success || res.ok) {
         fetchSavedGames();
+      } else {
+        alert(data?.error || 'Failed to update shortKey');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to update shortKey:", err);
+      alert(`Error updating shortKey: ${err.message}`);
     } finally {
       setSavingKeyId(null);
     }
@@ -1293,6 +1485,102 @@ export default function App() {
                 {isSavingTpn ? 'Verifying & Connecting...' : 'Save & Verify TopupNation API'}
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      
+      {/* G2Bulk Settings Modal */}
+      {showG2BulkSettings && (
+        <div className="fixed inset-0 bg-neutral-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="p-6 border-b border-neutral-100 flex justify-between items-center bg-gradient-to-r from-orange-50 to-white">
+              <div>
+                <h1 className="text-2xl font-bold text-neutral-900 tracking-tight">G2Bulk API</h1>
+                <p className="text-neutral-500 mt-1 text-sm">Configure your G2Bulk API credentials and webhook integration</p>
+              </div>
+              <button onClick={() => setShowG2BulkSettings(false)} className="text-neutral-400 hover:text-neutral-600 transition-colors bg-white/50 p-2 rounded-full">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-6">
+              {g2bulkError && (
+                <div className="p-3 bg-red-50 text-red-700 rounded-lg text-sm font-medium border border-red-100 flex items-start">
+                  <svg className="w-5 h-5 mr-2 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                  {g2bulkError}
+                </div>
+              )}
+              {g2bulkSuccess && (
+                <div className="p-3 bg-green-50 text-green-700 rounded-lg text-sm font-medium border border-green-100 flex items-start">
+                  <svg className="w-5 h-5 mr-2 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                  {g2bulkSuccess}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-sm font-semibold text-neutral-800 mb-1.5 flex items-center justify-between">
+                  <span>G2Bulk API Key</span>
+                  {g2bulkConfigured && !g2bulkKey && (
+                     <span className="text-[10px] uppercase tracking-wide font-bold bg-green-100 text-green-800 px-2 py-0.5 rounded-full">Using Env Key</span>
+                  )}
+                </label>
+                <input
+                  type="password"
+                  value={g2bulkKey}
+                  onChange={e => setG2BulkKey(e.target.value)}
+                  className="w-full border-neutral-200 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-sm shadow-sm transition-all"
+                  placeholder={g2bulkConfigured ? "Leave blank to keep current/env key" : "Enter G2Bulk API Key..."}
+                />
+                <p className="text-xs text-neutral-500 mt-1">If set in server `.env`, you can leave this blank.</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-neutral-800 mb-1.5 flex items-center justify-between">
+                  <span>Webhook URL</span>
+                  <span className="text-[10px] uppercase tracking-wide font-bold bg-green-100 text-green-800 px-2 py-0.5 rounded-full">Auto-Generated</span>
+                </label>
+                <div className="flex">
+                  <input
+                    type="text"
+                    value={g2bulkWebhookUrl || 'Save key to generate URL...'}
+                    readOnly
+                    className="w-full border-neutral-200 rounded-l-xl bg-neutral-50 text-neutral-500 text-sm font-mono"
+                  />
+                  <button
+                    onClick={() => {
+                      if (g2bulkWebhookUrl) {
+                        navigator.clipboard.writeText(g2bulkWebhookUrl);
+                        alert('Webhook URL copied to clipboard');
+                      }
+                    }}
+                    disabled={!g2bulkWebhookUrl}
+                    className="px-4 py-2 bg-neutral-100 border border-l-0 border-neutral-200 rounded-r-xl hover:bg-neutral-200 transition-colors text-neutral-600 disabled:opacity-50"
+                  >
+                    Copy
+                  </button>
+                </div>
+                <p className="text-orange-600 mt-1 text-[11px]">Set this URL in G2Bulk to receive instant webhook callbacks.</p>
+              </div>
+
+              <label className="flex items-center space-x-3 p-3 bg-neutral-50 rounded-xl border border-neutral-100 cursor-pointer group">
+                <input
+                  type="checkbox"
+                  checked={g2bulkEnabled}
+                  onChange={e => setG2BulkEnabled(e.target.checked)}
+                  className="w-4 h-4 text-orange-600 border-neutral-300 rounded focus:ring-orange-500"
+                />
+                <span className="text-sm font-medium text-neutral-700 group-hover:text-neutral-900 transition-colors">Enable G2Bulk Integration</span>
+              </label>
+
+              <button
+                onClick={handleSaveG2Bulk}
+                disabled={isSavingG2Bulk}
+                className="w-full bg-orange-600 text-white font-semibold py-2.5 px-4 rounded-xl hover:bg-orange-700 transition-all disabled:opacity-50 shadow-sm shadow-orange-600/20 active:scale-[0.98]"
+              >
+                {isSavingG2Bulk ? 'Verifying & Connecting...' : 'Save & Verify G2Bulk API'}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2364,6 +2652,17 @@ export default function App() {
                 <span className={`w-2 h-2 rounded-full ${fzrConfigured ? 'bg-sky-500' : 'bg-neutral-400'}`}></span>
                 FZR Cards API: {fzrConfigured ? 'Connected' : 'Setup'}
               </button>
+              <button 
+                onClick={() => setShowG2BulkSettings(true)}
+                className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors flex items-center gap-1.5 ${
+                  g2bulkConfigured 
+                    ? 'bg-orange-50 text-orange-700 border-orange-200 hover:bg-orange-100' 
+                    : 'bg-neutral-100 text-neutral-700 border-neutral-200 hover:bg-neutral-200'
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${g2bulkConfigured ? 'bg-orange-500' : 'bg-neutral-400'}`}></span>
+                G2Bulk API: {g2bulkConfigured ? 'Connected' : 'Setup'}
+              </button>
             </div>
           </div>
         </div>
@@ -2411,78 +2710,6 @@ export default function App() {
               </div>
             </div>
             
-            {/* LootBar Balance Card */}
-            <div className="lg:col-span-3 bg-gradient-to-br from-emerald-600 to-teal-700 rounded-xl p-4 shadow-md border border-emerald-500 flex flex-col justify-between text-white relative overflow-hidden">
-              <div className="flex items-center justify-between w-full relative z-10 mb-2">
-                <span className="text-[11px] font-bold text-emerald-100 uppercase tracking-wider">LootBar Balance</span>
-                <button 
-                  onClick={fetchLootbarBalance}
-                  title="Refresh Balance"
-                  className="p-1 hover:bg-white/20 rounded transition-colors text-emerald-100"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-                </button>
-              </div>
-
-              {lootbarBalance ? (
-                <div className="text-2xl font-extrabold relative z-10 flex items-baseline gap-1">
-                  ${lootbarBalance.total_amount || lootbarBalance.balance || '0.00'} 
-                  <span className="text-xs text-emerald-200 font-semibold">USD</span>
-                </div>
-              ) : (
-                <div className="text-xs text-emerald-200 relative z-10 italic">Not connected</div>
-              )}
-            </div>
-
-            {/* TopupNation Balance Card */}
-            <div className="lg:col-span-3 bg-gradient-to-br from-indigo-600 to-violet-700 rounded-xl p-4 shadow-md border border-indigo-500 flex flex-col justify-between text-white relative overflow-hidden">
-              <div className="flex items-center justify-between w-full relative z-10 mb-2">
-                <span className="text-[11px] font-bold text-indigo-100 uppercase tracking-wider">TopupNation</span>
-                <button 
-                  onClick={fetchTpnStatus}
-                  title="Refresh Balance"
-                  className="p-1 hover:bg-white/20 rounded transition-colors text-indigo-100"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-                </button>
-              </div>
-
-              {tpnBalance ? (
-                <div className="text-2xl font-extrabold relative z-10 flex items-baseline gap-1">
-                  ${Number(tpnBalance.balance || 0).toFixed(3)} 
-                  <span className="text-xs text-indigo-200 font-semibold">{tpnBalance.currency || 'USD'}</span>
-                </div>
-              ) : (
-                <div className="text-xs text-indigo-200 relative z-10 italic">
-                  {tpnConfigured ? 'Loading...' : 'Not connected'}
-                </div>
-              )}
-            </div>
-
-            {/* FZR Cards Balance Card */}
-            <div className="lg:col-span-3 bg-gradient-to-br from-sky-600 to-cyan-700 rounded-xl p-4 shadow-md border border-sky-500 flex flex-col justify-between text-white relative overflow-hidden">
-              <div className="flex items-center justify-between w-full relative z-10 mb-2">
-                <span className="text-[11px] font-bold text-sky-100 uppercase tracking-wider">FZR Cards</span>
-                <button 
-                  onClick={fetchFzrStatus}
-                  title="Refresh Balance"
-                  className="p-1 hover:bg-white/20 rounded transition-colors text-sky-100"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-                </button>
-              </div>
-
-              {fzrBalance ? (
-                <div className="text-2xl font-extrabold relative z-10 flex items-baseline gap-1">
-                  ${Number(fzrBalance.balance || fzrBalance.balance_usd || 0).toFixed(3)} 
-                  <span className="text-xs text-sky-200 font-semibold">{fzrBalance.currency || 'USD'}</span>
-                </div>
-              ) : (
-                <div className="text-xs text-sky-200 relative z-10 italic">
-                  {fzrConfigured ? 'Loading...' : 'Not connected'}
-                </div>
-              )}
-            </div>
           </div>
         </div>
 
@@ -2833,6 +3060,168 @@ export default function App() {
                         isEnabled
                           ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200'
                           : 'bg-sky-600 hover:bg-sky-700 text-white border-transparent'
+                      }`}
+                    >
+                      {isEnabled ? 'Disable from Bot' : '✓ Enable for Bot'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          </div>
+          )}
+        </div>
+
+        
+        {/* G2Bulk Products Management */}
+        <div className="bg-white p-8 rounded-xl shadow-sm border border-neutral-200">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-2">
+            <h2 
+              className="text-xl font-bold text-neutral-900 flex items-center gap-2 cursor-pointer select-none hover:text-orange-700 transition-colors"
+              onClick={() => setShowG2BulkGames(!showG2BulkGames)}
+            >
+              <span>🔥</span> G2Bulk Products Catalog
+              <svg className={`w-5 h-5 text-neutral-400 transition-transform ${showG2BulkGames ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </h2>
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={handleSyncG2Bulk}
+                disabled={isSyncingG2Bulk || !g2bulkConfigured}
+                className="px-3.5 py-1.5 bg-orange-600 hover:bg-orange-700 disabled:bg-neutral-300 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5"
+              >
+                <svg className={`w-3.5 h-3.5 ${isSyncingG2Bulk ? 'animate-spin' : ''}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                {isSyncingG2Bulk ? 'Syncing Catalog...' : 'Sync G2Bulk Catalog'}
+              </button>
+            </div>
+          </div>
+          <p className="text-sm text-neutral-500 mb-6">
+            Synced products from G2Bulk. Set custom Short Keys for rapid ordering in Telegram.
+          </p>
+          {showG2BulkGames && (
+            <div className="mt-4">
+              <div className="mb-4 flex flex-col sm:flex-row gap-3 items-start sm:items-center">
+                <input
+                  type="text"
+                  placeholder="Search G2Bulk Games..."
+                  className="px-4 py-2 border border-neutral-300 rounded-lg w-full max-w-sm focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500"
+                  value={g2bulkSearchQuery}
+                  onChange={(e) => setG2BulkSearchQuery(e.target.value)}
+                />
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => handleBulkToggleG2Bulk(true)}
+                    className="px-3 py-1.5 bg-green-50 text-green-700 hover:bg-green-100 border border-green-200 text-xs font-bold rounded-lg transition-colors"
+                  >
+                    Enable All Filtered
+                  </button>
+                  <button 
+                    onClick={() => handleBulkToggleG2Bulk(false)}
+                    className="px-3 py-1.5 bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 text-xs font-bold rounded-lg transition-colors"
+                  >
+                    Disable All Filtered
+                  </button>
+                </div>
+              </div>
+
+          {!g2bulkConfigured ? (
+            <div className="text-center py-10 bg-neutral-50 rounded-lg border border-neutral-200 border-dashed">
+              <p className="text-neutral-500 mb-3 text-sm">G2Bulk API is not connected.</p>
+              <button 
+                onClick={() => setShowG2BulkSettings(true)}
+                className="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white text-sm font-medium rounded-lg transition-colors"
+              >
+                Connect G2Bulk API
+              </button>
+            </div>
+          ) : g2bulkProducts.length === 0 ? (
+            <div className="text-center py-8 bg-neutral-50 rounded-lg border border-neutral-200 text-sm text-neutral-500">
+              No products synced yet. Click <span className="font-semibold text-orange-600">"Sync G2Bulk Catalog"</span> to import products.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {g2bulkProducts.filter(p => (p.name || "").toLowerCase().includes(g2bulkSearchQuery.toLowerCase())).map((p) => {
+                const activeKey = p.shortKey || '';
+                const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+
+                return (
+                  <div 
+                    key={p.productId} 
+                    className={`p-5 bg-white border-2 rounded-2xl transition-all flex flex-col justify-between ${
+                      isEnabled 
+                        ? 'border-orange-500 shadow-md ring-1 ring-orange-500/20' 
+                        : 'border-neutral-200 hover:border-neutral-300 shadow-sm opacity-75'
+                    }`}
+                  >
+                    <div className="mb-3">
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-extrabold text-base text-neutral-900 leading-tight">{p.name}</span>
+                            <span className="text-[10px] bg-orange-50 text-orange-700 font-semibold px-1.5 py-0.5 rounded border border-orange-100">G2Bulk</span>
+                          </div>
+                          <p className="text-xs text-neutral-400 font-mono mt-0.5">ID: {p.productId} • {p.skus?.length || 0} packages</p>
+                        </div>
+                        {isEnabled ? (
+                          <span className="text-[11px] font-bold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-0.5 rounded-full whitespace-nowrap">
+                            ✓ Bot Active
+                          </span>
+                        ) : (
+                          <span className="text-[11px] font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full whitespace-nowrap">
+                            Disabled
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 text-xs text-neutral-700 space-y-1 mb-3">
+                        <div className="flex justify-between items-center">
+                          <span className="font-medium text-neutral-500">Short Key:</span>
+                          <span className="font-mono font-bold text-neutral-900">.{activeKey || `g${p.productId.slice(0, 4)}`}</span>
+                        </div>
+                      </div>
+
+                      <button 
+                        onClick={() => openSkuModal(p, 'g2bulk')} 
+                        className="w-full mb-3 px-3.5 py-2 bg-orange-100/70 hover:bg-orange-200/70 text-orange-900 border border-orange-300 rounded-xl text-xs font-bold flex items-center justify-between transition-colors shadow-xs"
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <span>🏷️</span>
+                          <span>Package Short Keys</span>
+                        </div>
+                        <span className="text-[11px] bg-orange-200/80 px-2 py-0.5 rounded font-mono">
+                          {p.skuShortKeys ? Object.keys(p.skuShortKeys).length : 0} configured
+                        </span>
+                      </button>
+
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1 flex-1">
+                          <span className="text-xs font-bold text-neutral-400">.</span>
+                          <input
+                            type="text"
+                            placeholder="Custom Short Key"
+                            defaultValue={activeKey}
+                            onBlur={(e) => {
+                              const val = e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+                              if (val !== activeKey) {
+                                handleSaveG2BulkShortKey(p.productId, val);
+                              }
+                            }}
+                            className="w-full text-xs font-mono px-2 py-1 border border-neutral-300 rounded focus:ring-1 focus:ring-orange-500 outline-none"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => handleToggleG2BulkProduct(p.productId, !isEnabled)}
+                      className={`w-full py-2 rounded-xl text-xs font-bold transition-all border ${
+                        !isEnabled 
+                          ? 'bg-neutral-50 text-neutral-700 hover:bg-neutral-100 border-neutral-300 shadow-sm' 
+                          : 'bg-orange-600 hover:bg-orange-700 text-white border-transparent'
                       }`}
                     >
                       {isEnabled ? 'Disable from Bot' : '✓ Enable for Bot'}
@@ -3256,18 +3645,12 @@ export default function App() {
                 </div>
               </div>
               <p className="text-sm text-neutral-500 mt-1">
-                Authorize bot users, link selected resellers directly to live API balance, and manage wallet credits
+                Authorize bot users and manage wallet credits
               </p>
             </div>
             
             <div className="flex items-center gap-3">
-              {lootbarBalance && (
-                <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-emerald-50 border border-emerald-200 rounded-lg text-xs font-medium text-emerald-800">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                  <span>Live LootBar API Balance:</span>
-                  <span className="font-bold font-mono text-emerald-900">${lootbarBalance.total_amount || lootbarBalance.balance || '0.00'}</span>
-                </div>
-              )}
+              
               <button 
                 onClick={fetchTelegramUsers}
                 className="text-xs font-semibold px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded-lg transition-colors flex items-center gap-1.5"
@@ -3492,6 +3875,7 @@ export default function App() {
                                   <option value="all">🌐 All APIs (LootBar, TopupNation, FZR)</option>
                                   <option value="both">⚡ Dual (LootBar & TopupNation)</option>
                                   <option value="fzrcards">💎 FZR Cards Only</option>
+                                  <option value="g2bulk">🔥 G2Bulk Only</option>
                                   <option value="lootbar">🎮 LootBar Only</option>
                                   <option value="topupnation">🌐 TopupNation Only</option>
                                 </select>
@@ -3611,28 +3995,6 @@ export default function App() {
               </p>
             </div>
 
-            {/* LIVE API BALANCES IN ORDER HISTORY */}
-            <div className="flex flex-wrap gap-3">
-              {lootbarBalance && (
-                <div className="flex flex-col px-3.5 py-1.5 bg-emerald-50 border border-emerald-200 rounded-lg">
-                  <span className="text-[10px] uppercase font-bold text-emerald-700 tracking-wider">LootBar</span>
-                  <span className="text-base font-mono font-extrabold text-emerald-900">${lootbarBalance.total_amount || lootbarBalance.balance || '0.00'}</span>
-                </div>
-              )}
-              {tpnBalance && (
-                <div className="flex flex-col px-3.5 py-1.5 bg-indigo-50 border border-indigo-200 rounded-lg">
-                  <span className="text-[10px] uppercase font-bold text-indigo-700 tracking-wider">TopupNation</span>
-                  <span className="text-base font-mono font-extrabold text-indigo-900">${Number(tpnBalance.balance || 0).toFixed(3)}</span>
-                </div>
-              )}
-              {fzrBalance && (
-                <div className="flex flex-col px-3.5 py-1.5 bg-sky-50 border border-sky-200 rounded-lg">
-                  <span className="text-[10px] uppercase font-bold text-sky-700 tracking-wider">FZR Cards</span>
-                  <span className="text-base font-mono font-extrabold text-sky-900">${Number(fzrBalance.balance || fzrBalance.balance_usd || 0).toFixed(3)}</span>
-                </div>
-              )}
-            </div>
-
             <div className="flex flex-wrap items-center gap-2.5">
               <button
                 onClick={() => setIsAutoSyncing(!isAutoSyncing)}
@@ -3666,7 +4028,7 @@ export default function App() {
             const active = orders.filter(o => o.state === 0 || o.state === 1 || o.state === 4).length;
             const completed = orders.filter(o => o.state === 2).length;
             const totalVol = orders.reduce((sum, o) => sum + (o.price || 0), 0);
-            const lbCount = orders.filter(o => o.provider !== 'topupnation' && o.provider !== 'fzrcards' && o.extraInfo?.provider !== 'topupnation' && o.extraInfo?.provider !== 'fzrcards').length;
+            const lbCount = orders.filter(o => o.provider !== 'topupnation' && o.provider !== 'fzrcards' && o.provider !== 'g2bulk' && o.extraInfo?.provider !== 'topupnation' && o.extraInfo?.provider !== 'fzrcards' && o.extraInfo?.provider !== 'g2bulk').length;
             const tpnCount = orders.filter(o => o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation').length;
             const fzrCount = orders.filter(o => o.provider === 'fzrcards' || o.extraInfo?.provider === 'fzrcards').length;
 
@@ -3734,7 +4096,7 @@ export default function App() {
                       : 'text-emerald-700 hover:bg-emerald-50'
                   }`}
                 >
-                  🎮 LootBar ({orders.filter(o => o.provider !== 'topupnation' && o.provider !== 'fzrcards' && o.extraInfo?.provider !== 'topupnation' && o.extraInfo?.provider !== 'fzrcards').length})
+                  🎮 LootBar ({orders.filter(o => o.provider !== 'topupnation' && o.provider !== 'fzrcards' && o.provider !== 'g2bulk' && o.extraInfo?.provider !== 'topupnation' && o.extraInfo?.provider !== 'fzrcards' && o.extraInfo?.provider !== 'g2bulk').length})
                 </button>
                 <button
                   onClick={() => setOrderProviderFilter('TOPUPNATION')}
@@ -3755,6 +4117,16 @@ export default function App() {
                   }`}
                 >
                   💎 FZR Cards ({orders.filter(o => o.provider === 'fzrcards' || o.extraInfo?.provider === 'fzrcards').length})
+                </button>
+                <button
+                  onClick={() => setOrderProviderFilter('G2BULK' as any)}
+                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1 ${
+                    (orderProviderFilter as string) === 'G2BULK'
+                      ? 'bg-orange-700 text-white shadow-xs font-semibold'
+                      : 'text-orange-700 hover:bg-orange-50'
+                  }`}
+                >
+                  🔥 G2Bulk ({orders.filter(o => o.provider === 'g2bulk' || o.extraInfo?.provider === 'g2bulk').length})
                 </button>
               </div>
 

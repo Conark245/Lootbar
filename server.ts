@@ -3,11 +3,13 @@ import path from "path";
 import cors from "cors";
 import dotenv from "dotenv";
 import mongoose from "mongoose";
-import { LootBarClient } from "./server/lootbar";
+import { LootBarClient } from "./server/providers/lootbar/LootBarClient";
 import { TopupNationClient } from "./server/providers/topupnation/TopupNationClient";
 import { TopupNationService } from "./server/providers/topupnation/TopupNationService";
 import { FzrCardsClient } from "./server/providers/fzrcards/FzrCardsClient";
 import { FzrCardsService } from "./server/providers/fzrcards/FzrCardsService";
+import { G2BulkClient } from "./server/providers/g2bulk/G2BulkClient";
+import { G2BulkService } from "./server/providers/g2bulk/G2BulkService";
 import { setupBot } from "./server/bot";
 import { PricePoller } from "./server/pricePoller";
 import { connectDB } from "./server/db";
@@ -18,6 +20,7 @@ import { User } from "./server/models/User";
 import { TopupRequest } from "./server/models/TopupRequest";
 import { TopupNationProduct } from "./server/models/TopupNationProduct";
 import { FzrCardsProduct } from "./server/models/FzrCardsProduct";
+import { G2BulkProduct } from "./server/models/G2BulkProduct";
 import { BulkOrderService } from "./server/bulkOrderService";
 import { createServer as createViteServer } from "vite";
 
@@ -73,7 +76,13 @@ const fzrCardsClient = new FzrCardsClient({
 });
 const fzrCardsService = new FzrCardsService(fzrCardsClient);
 
-const pricePoller = new PricePoller(lootbarClient, topupNationService);
+const g2bulkClient = new G2BulkClient({
+  apiKey: process.env.G2BULK_API_KEY || ''
+});
+const g2bulkService = new G2BulkService(g2bulkClient);
+
+
+const pricePoller = new PricePoller(lootbarClient, topupNationService, fzrCardsService, g2bulkService);
 
 // Initialize Telegram Bot State
 let telegramBot: ReturnType<typeof setupBot> | undefined;
@@ -98,11 +107,12 @@ async function initOrRestartTelegramBot(token: string, adminChatId: string) {
     telegramBot = setupBot(token, adminChatId, lootbarClient, {
       isServerless,
       webhookUrl
-    }, topupNationService, fzrCardsService);
+    }, topupNationService, fzrCardsService, g2bulkService);
 
     // Provide Telegram instance to provider services for order status notifications
     topupNationService.setTelegram(telegramBot.telegram, adminChatId);
     fzrCardsService.setTelegram(telegramBot.telegram, adminChatId);
+    g2bulkService.setTelegram(telegramBot.telegram, adminChatId);
     pricePoller.setTelegram(telegramBot);
   } else {
     console.warn("TELEGRAM_BOT_TOKEN is missing or invalid. Bot will not start.");
@@ -141,6 +151,11 @@ connectDB().then(async () => {
       fzrCardsClient.updateCredentials(fzrConfig.value);
       console.log("Loaded FZR Cards credentials from MongoDB");
     }
+
+    const g2bulkConfig = await AppConfig.findOne({ key: 'g2bulk_credentials' });
+    if (g2bulkConfig?.value?.apiKey) {
+      (g2bulkClient as any).apiKey = g2bulkConfig.value.apiKey;
+    }
     
     // Load Telegram configuration from DB
     const adminConfig = await AppConfig.findOne({ key: 'admin_chat_id' });
@@ -173,6 +188,13 @@ setInterval(() => {
 setInterval(() => {
   fzrCardsService.pollActiveOrders().catch((err) => {
     console.error("Error in FZR Cards background poller:", err);
+  });
+}, 15000); // 15 seconds
+
+// Periodic background poller for active G2Bulk orders
+setInterval(() => {
+  g2bulkService.pollActiveOrders().catch((err) => {
+    console.error("Error in G2Bulk background poller:", err);
   });
 }, 15000); // 15 seconds
 
@@ -1082,9 +1104,9 @@ app.patch("/api/saved-games/:gameId", async (req, res) => {
       updateData,
       { returnDocument: 'after' }
     );
-    res.json({ data: saved });
+    res.json({ success: true, data: saved });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -1226,20 +1248,18 @@ app.post("/api/topupnation/products/:productId/sku-shortkeys", async (req, res) 
 
 app.post("/api/topupnation/products/:productId/shortkey", async (req, res) => {
   try {
-    const { productId } = req.params;
+    const productId = decodeURIComponent(req.params.productId);
     const { shortKey } = req.body;
-    if (!shortKey) {
-      return res.status(400).json({ error: "shortKey is required." });
-    }
+    const cleanKey = shortKey !== undefined && shortKey !== null ? String(shortKey).trim().toLowerCase().replace(/^[./]+/, '').replace(/[^a-z0-9_-]/g, '') : '';
 
-    const updated = await topupNationService.updateProductShortKey(productId, shortKey);
+    const updated = await topupNationService.updateProductShortKey(productId, cleanKey);
     if (!updated) {
-      return res.status(404).json({ error: "Product not found." });
+      return res.status(404).json({ success: false, error: "Product not found." });
     }
 
     res.json({ success: true, data: updated });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -1391,10 +1411,15 @@ app.post("/api/fzrcards/products/sync", async (req, res) => {
     if (!fzrCardsClient.isConfigured()) {
       return res.status(400).json({ error: "FZR Cards API is not configured." });
     }
+
+    const subStatus = fzrCardsClient.getSubscriptionStatus();
+    if (!subStatus.isActive) {
+      return res.status(400).json({ success: false, error: subStatus.error || "Subscription is not active. Renew it to use this feature." });
+    }
     
     // Run sync in the background
     fzrCardsService.syncProducts().catch(err => {
-      console.error("[FZR Sync Background Error]:", err);
+      console.warn("[FZR Sync Background Warning]:", err?.message || err);
     });
     
     // Return immediately to avoid request timeout
@@ -1421,20 +1446,18 @@ app.post("/api/fzrcards/products/:productId/sku-shortkeys", async (req, res) => 
 
 app.post("/api/fzrcards/products/:productId/shortkey", async (req, res) => {
   try {
-    const { productId } = req.params;
+    const productId = decodeURIComponent(req.params.productId);
     const { shortKey } = req.body;
-    if (!shortKey) {
-      return res.status(400).json({ error: "shortKey is required." });
-    }
+    const cleanKey = shortKey !== undefined && shortKey !== null ? String(shortKey).trim().toLowerCase().replace(/^[./]+/, '').replace(/[^a-z0-9_-]/g, '') : '';
 
-    const updated = await fzrCardsService.updateProductShortKey(productId, shortKey);
+    const updated = await fzrCardsService.updateProductShortKey(productId, cleanKey);
     if (!updated) {
-      return res.status(404).json({ error: "Product not found." });
+      return res.status(404).json({ success: false, error: "Product not found." });
     }
 
     res.json({ success: true, data: updated });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -1579,6 +1602,153 @@ async function startServer() {
     res.setHeader('Expires', '0');
     next();
   });
+
+  
+// ==========================================
+// G2Bulk Admin API Endpoints
+// ==========================================
+
+app.get('/api/settings/g2bulk/status', async (req, res) => {
+  try {
+    const config = await AppConfig.findOne({ key: 'g2bulk_credentials' });
+    const hasEnvKey = !!process.env.G2BULK_API_KEY;
+    const isConfigured = hasEnvKey || !!config?.value?.apiKey;
+    
+    // If env key exists but no DB config exists, create a default DB config for isEnabled
+    if (hasEnvKey && !config) {
+      await AppConfig.create({
+        key: 'g2bulk_credentials',
+        value: { apiKey: '', isEnabled: true }
+      });
+    }
+
+    res.json({
+      success: true,
+      isConfigured: isConfigured,
+      webhookUrl: `https://${req.headers.host}/api/webhooks/g2bulk`,
+      isEnabled: config?.value?.isEnabled !== false
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/settings/g2bulk', async (req, res) => {
+  try {
+    const { apiKey, isEnabled } = req.body;
+    
+    // Test the API key if provided
+    if (apiKey) {
+        g2bulkClient.updateCredentials({ apiKey });
+        try {
+            await g2bulkClient.getBalance();
+        } catch (e: any) {
+             return res.json({ success: false, error: 'Invalid API Key or API error: ' + e.message });
+        }
+    } else if (process.env.G2BULK_API_KEY) {
+        g2bulkClient.updateCredentials({ apiKey: process.env.G2BULK_API_KEY });
+    }
+    
+    await AppConfig.findOneAndUpdate(
+      { key: 'g2bulk_credentials' },
+      { value: { apiKey, isEnabled } },
+      { upsert: true }
+    );
+    
+    res.json({ success: true, webhookUrl: `https://${req.headers.host}/api/webhooks/g2bulk` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/g2bulk/balance', async (req, res) => {
+  try {
+    const balance = await g2bulkClient.getBalance();
+    res.json({ success: true, data: balance });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/g2bulk/products', async (req, res) => {
+  try {
+    const products = await G2BulkProduct.find({}).sort({ name: 1 });
+    res.json({ success: true, data: products });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/g2bulk/products/sync', async (req, res) => {
+  try {
+    await g2bulkService.syncProducts();
+    const products = await G2BulkProduct.find({}).sort({ name: 1 });
+    res.json({ success: true, data: products });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/g2bulk/products/:productId/toggle', async (req, res) => {
+  try {
+    const { isEnabled } = req.body;
+    await G2BulkProduct.findOneAndUpdate(
+      { productId: req.params.productId },
+      { isEnabled }
+    );
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/g2bulk/products/:productId/shortkey', async (req, res) => {
+  try {
+    const productId = decodeURIComponent(req.params.productId);
+    const { shortKey } = req.body;
+    const cleanKey = shortKey !== undefined && shortKey !== null ? String(shortKey).trim().toLowerCase().replace(/^[./]+/, '').replace(/[^a-z0-9_-]/g, '') : '';
+    const updated = await G2BulkProduct.findOneAndUpdate(
+      { productId },
+      { shortKey: cleanKey },
+      { returnDocument: 'after' }
+    );
+    res.json({ success: true, data: updated, product: updated });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/g2bulk/products/:productId/sku-shortkeys', async (req, res) => {
+  try {
+    const productId = decodeURIComponent(req.params.productId);
+    const { skuShortKeys } = req.body;
+    const cleanedMap: Record<string, string> = {};
+    if (skuShortKeys && typeof skuShortKeys === 'object') {
+      for (const [k, v] of Object.entries(skuShortKeys)) {
+        if (v) cleanedMap[String(k)] = String(v).trim().toLowerCase().replace(/^[./]+/, '').replace(/[^a-z0-9_-]/g, '');
+      }
+    }
+    const updated = await G2BulkProduct.findOneAndUpdate(
+      { productId },
+      { skuShortKeys: cleanedMap },
+      { returnDocument: 'after' }
+    );
+    res.json({ success: true, data: updated, product: updated });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/webhooks/g2bulk', express.json(), async (req, res) => {
+  try {
+    await g2bulkService.handleWebhook(req.body);
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('G2Bulk Webhook Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

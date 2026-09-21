@@ -18,6 +18,8 @@ export class FzrCardsClient {
   private webhookSecret: string;
   private isEnabled: boolean;
   private client: AxiosInstance;
+  private isSubscriptionActive: boolean = true;
+  private subscriptionError: string = '';
 
   private sanitizeBaseUrl(url?: string): string {
     let base = (url || process.env.FZRCARDS_BASE_URL || 'https://api.fzr.cards/api/v2').trim();
@@ -55,6 +57,8 @@ export class FzrCardsClient {
     }
     if (config.webhookSecret !== undefined) this.webhookSecret = config.webhookSecret.trim();
     if (config.isEnabled !== undefined) this.isEnabled = config.isEnabled;
+    this.isSubscriptionActive = true;
+    this.subscriptionError = '';
 
     this.client = axios.create({
       baseURL: this.baseUrl,
@@ -68,6 +72,13 @@ export class FzrCardsClient {
 
   public isConfigured(): boolean {
     return Boolean(this.apiKey && this.apiKey.trim().length > 0);
+  }
+
+  public getSubscriptionStatus(): { isActive: boolean; error?: string } {
+    return {
+      isActive: this.isSubscriptionActive,
+      error: this.subscriptionError || undefined
+    };
   }
 
   public getStatus(): { isConfigured: boolean; isEnabled: boolean; baseUrl: string; hasWebhookSecret: boolean } {
@@ -124,6 +135,11 @@ export class FzrCardsClient {
       const apiError = responseBody?.error || responseBody?.message || responseBody?.detail || responseBody?.code;
       const detailedMessage = typeof apiError === 'string' ? apiError : (error.message || `FZR Cards HTTP Error ${status}`);
 
+      if (status === 403 && (detailedMessage.toLowerCase().includes('subscription') || detailedMessage.toLowerCase().includes('renew'))) {
+        this.isSubscriptionActive = false;
+        this.subscriptionError = detailedMessage;
+      }
+
       const enhancedError: any = new Error(`[FZR Cards ${status || 'Error'}]: ${detailedMessage}`);
       enhancedError.status = status;
       enhancedError.responseData = responseBody;
@@ -146,14 +162,22 @@ export class FzrCardsClient {
         currency: res?.currency || res?.data?.currency || 'USD',
         availableBalance: isNaN(balNum) ? 0 : balNum
       };
-    } catch (err) {
+    } catch (err: any) {
       // Try /me as profile fallback
-      const profile = await this.getProfile();
-      return {
-        balance: profile.balance || 0,
-        currency: profile.currency || 'USD',
-        availableBalance: profile.balance || 0
-      };
+      try {
+        const profile = await this.getProfile();
+        return {
+          balance: profile.balance || 0,
+          currency: profile.currency || 'USD',
+          availableBalance: profile.balance || 0
+        };
+      } catch (pErr: any) {
+        return {
+          balance: 0,
+          currency: 'USD',
+          availableBalance: 0
+        };
+      }
     }
   }
 
@@ -185,8 +209,12 @@ export class FzrCardsClient {
    * GET /topups
    * Retrieves all top-up categories/games.
    */
-  
   public async getCategories(): Promise<any[]> {
+    if (!this.isSubscriptionActive) {
+      console.warn(`[FZR Cards] Skipping category fetch: ${this.subscriptionError || 'Subscription is not active'}`);
+      return [];
+    }
+
     let allCategories: any[] = [];
     
     // Fetch Topups
@@ -223,11 +251,21 @@ export class FzrCardsClient {
           hasMore = false;
         }
       }
-    } catch (e) {
-      console.error('Failed to fetch topup categories:', e);
+    } catch (e: any) {
+      if (e?.status === 403 && (e?.message?.toLowerCase().includes('subscription') || this.subscriptionError)) {
+        this.isSubscriptionActive = false;
+        console.warn(`[FZR Cards] Topup categories unavailable: ${e.message || this.subscriptionError}`);
+        return allCategories; // Stop further category requests if subscription is inactive
+      } else {
+        console.warn('Failed to fetch topup categories:', e?.message || e);
+      }
     }
     
-    // Fetch Giftcards
+    // Fetch Giftcards only if subscription is active
+    if (!this.isSubscriptionActive) {
+      return allCategories;
+    }
+
     try {
       let cursor: string | null = null;
       let page = 1;
@@ -261,8 +299,13 @@ export class FzrCardsClient {
           hasMore = false;
         }
       }
-    } catch (e) {
-      console.error('Failed to fetch giftcard categories:', e);
+    } catch (e: any) {
+      if (e?.status === 403 && (e?.message?.toLowerCase().includes('subscription') || this.subscriptionError)) {
+        this.isSubscriptionActive = false;
+        console.warn(`[FZR Cards] Giftcard categories unavailable: ${e.message || this.subscriptionError}`);
+      } else {
+        console.warn('Failed to fetch giftcard categories:', e?.message || e);
+      }
     }
     
     return allCategories;
