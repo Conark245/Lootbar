@@ -299,6 +299,29 @@ export class FzrCardsService {
     const pricePerUnit = Number(skuObj.price || 0);
     const totalCost = pricePerUnit * quantity;
 
+    // 2.5 Check existing idempotency key before any balance deduction or order processing
+    if (existingIdempotencyKey) {
+      const existingOrder = await Order.findOne({ idempotencyKey: existingIdempotencyKey });
+      if (existingOrder) {
+        console.log(`[FZR Cards Deduplication] Reusing existing order for idempotencyKey: ${existingIdempotencyKey} (Order: ${existingOrder.providerOrderId || existingOrder.referenceId})`);
+        return { success: true, order: existingOrder };
+      }
+    }
+
+    // 2.6 Guard against accidental twin/duplicate orders within 30 seconds for the exact same package
+    const thirtySecsAgo = new Date(Date.now() - 30 * 1000);
+    const existingRecentOrder = await Order.findOne({
+      telegramChatId,
+      provider: 'fzrcards',
+      gameId: String(productId),
+      skuId: String(sku),
+      createdAt: { $gte: thirtySecsAgo }
+    });
+    if (existingRecentOrder) {
+      console.warn(`[FZR Cards] Blocked duplicate order for user ${telegramChatId}. Reusing existing order ${existingRecentOrder.providerOrderId || existingRecentOrder.referenceId}`);
+      return { success: true, order: existingRecentOrder };
+    }
+
     // 3. User Wallet Balance Check & Atomic Deduction
     const user = await User.findOne({ telegramChatId });
     if (!user) {

@@ -8,6 +8,7 @@ import { G2BulkService } from './providers/g2bulk/G2BulkService';
 import { G2BulkProduct } from './models/G2BulkProduct';
 import { FzrCardsProduct } from './models/FzrCardsProduct';
 import { Order } from './models/Order';
+import { OrderLock } from './models/OrderLock';
 import { User } from './models/User';
 import { Session } from './models/Session';
 import { AppConfig } from './models/AppConfig';
@@ -49,6 +50,7 @@ interface SessionData {
   bulkTotalPrice?: number;
   bulkRawText?: string;
   orderInProgress?: boolean;
+  orderIdempotencyKey?: string;
 }
 
 export interface MyContext extends Context {
@@ -57,6 +59,13 @@ export interface MyContext extends Context {
 
 // In-flight order lock per user to strictly prevent concurrent / double clicks
 const activeUserOrderLocks = new Map<number | string, number>();
+
+// Set of processed confirmation message IDs to prevent duplicate callbacks on the same message card
+const processedOrderMessages = new Set<string>();
+
+// Dedup command text to prevent rapid duplicate command sending
+const userLastCommandTime = new Map<number | string, number>();
+const userLastCommandText = new Map<number | string, string>();
 
 export function setupBot(
   botToken: string, 
@@ -824,7 +833,9 @@ export function setupBot(
         let formatHelp = `.${shortKey} <Account> <Package> [xQty]`;
         let exampleHelp = `.${shortKey} 123456789 100\n.${shortKey} 123456789 100 x2`;
         if (requiredFields.length === 2) {
-          formatHelp = `.${shortKey} <${requiredFields[0].title || 'Account'}> <${requiredFields[1].title || 'Server'}> <Package> [xQty]`;
+          const f0 = requiredFields[0].title || requiredFields[0].label || requiredFields[0].name || requiredFields[0].key || 'Account';
+          const f1 = requiredFields[1].title || requiredFields[1].label || requiredFields[1].name || requiredFields[1].key || 'Server';
+          formatHelp = `.${shortKey} <${f0}> <${f1}> <Package> [xQty]`;
           exampleHelp = `.${shortKey} 12345678 2001 100\n.${shortKey} 12345678 2001 100 x3`;
         }
         return ctx.reply(
@@ -844,7 +855,10 @@ export function setupBot(
       } else {
         for (let i = 0; i < requiredFields.length; i++) {
           const field = requiredFields[i];
-          extraInfo[field.name] = args[i];
+          const fieldKey = field?.name || field?.key || field?.field_name || field?.id;
+          if (fieldKey && fieldKey !== 'undefined' && fieldKey !== 'null') {
+            extraInfo[fieldKey] = args[i];
+          }
         }
         if (!extraInfo['userAccount'] && args[0]) {
           extraInfo['userAccount'] = args[0];
@@ -852,6 +866,8 @@ export function setupBot(
         if (!extraInfo['server'] && args[1] && requiredFields.length > 1) {
           extraInfo['server'] = args[1];
         }
+        delete extraInfo['undefined'];
+        delete extraInfo['null'];
       }
 
       // If user provided account details without a product name, show 1-click buttons!
@@ -1528,6 +1544,20 @@ export function setupBot(
     }
     const match = text.match(/^[./]([a-zA-Z0-9_-]+)(\s+.*)?$/i);
     if (!match) return next();
+
+    // Deduplicate rapid identical commands within 3 seconds
+    const chatId = ctx.chat?.id;
+    if (chatId) {
+      const now = Date.now();
+      const lastCmd = userLastCommandText.get(chatId);
+      const lastTime = userLastCommandTime.get(chatId) || 0;
+      if (lastCmd === text && now - lastTime < 3000) {
+        console.warn(`[Command Dedup] Blocked duplicate command within 3s for user ${chatId}: ${text}`);
+        return; // Ignore duplicate command delivery
+      }
+      userLastCommandText.set(chatId, text);
+      userLastCommandTime.set(chatId, now);
+    }
 
     const inputKey = match[1].toLowerCase();
     const rawArgs = match[2] ? parseCommandArgs(match[2]) : [];
@@ -3233,22 +3263,30 @@ export function setupBot(
       }
     }
 
+    // Generate unique idempotency key for this confirmation card
+    const chatId = ctx.chat?.id;
+    const provider = ctx.session.provider || 'ORD';
+    const idempotencyKey = `BOT-${provider.toUpperCase()}-${chatId}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+    ctx.session.orderIdempotencyKey = idempotencyKey;
+
     let playerId = '';
     let serverId = '';
     const otherDetails: { key: string; val: string }[] = [];
 
-    for (const [key, val] of Object.entries(extraInfo)) {
-      if (!isValidValue(val)) continue;
-      if (key === 'paymentSource' || key === 'provider') continue;
+    for (const [rawKey, rawVal] of Object.entries(extraInfo)) {
+      if (!isValidValue(rawVal)) continue;
+      const key = String(rawKey || '').trim();
+      const val = String(rawVal).trim();
       const lk = key.toLowerCase();
+      if (!key || lk === 'undefined' || lk === 'null' || lk === 'paymentsource' || lk === 'provider') continue;
       if (!playerId && (lk === 'uid' || lk === 'userid' || lk === 'user_id' || lk === 'player_id' || lk === 'account_id' || lk === 'useraccount')) {
-        playerId = String(val).trim();
+        playerId = val;
       } else if (!serverId && (lk === 'zoneid' || lk === 'zone_id' || lk === 'server' || lk === 'server_id' || lk === 'serverid')) {
-        serverId = String(val).trim();
+        serverId = val;
       } else if (!playerName && (lk === 'player_name' || lk === 'role_name' || lk === 'nickname' || lk === 'playername' || lk === 'role')) {
-        playerName = String(val).trim();
+        playerName = val;
       } else {
-        otherDetails.push({ key: key.toUpperCase(), val: String(val).trim() });
+        otherDetails.push({ key: key.toUpperCase(), val });
       }
     }
 
@@ -3389,24 +3427,81 @@ export function setupBot(
     const chatId = ctx.chat?.id;
     if (!chatId) return;
 
-    // Concurrency lock: prevent rapid multi-clicks or duplicate callbacks
+    // 1. SYNCHRONOUS IN-MEMORY MUTEX LOCK (Must be checked & claimed immediately before ANY await!)
+    const now = Date.now();
     const lastLock = activeUserOrderLocks.get(chatId);
-    if (lastLock && Date.now() - lastLock < 60000) {
+    if (lastLock && now - lastLock < 60000) {
       return await ctx.answerCbQuery('⚠️ Your order is already being processed! Please wait a moment...', { show_alert: true });
     }
+    activeUserOrderLocks.set(chatId, now);
 
-    if (ctx.session?.orderInProgress || ctx.session?.step === 'PROCESSING' || ctx.session?.step === 'DONE') {
-      return await ctx.answerCbQuery('⚠️ This order was already submitted or is in progress!', { show_alert: true });
+    // 2. MESSAGE-LEVEL DEDUPLICATION (Prevent double callbacks from clicking the same confirmation card)
+    const messageId = ctx.callbackQuery?.message?.message_id;
+    const messageKey = messageId ? `${chatId}_${messageId}` : undefined;
+    if (messageKey) {
+      if (processedOrderMessages.has(messageKey)) {
+        activeUserOrderLocks.delete(chatId);
+        return await ctx.answerCbQuery('⚠️ This order was already submitted or is in progress!', { show_alert: true });
+      }
+      processedOrderMessages.add(messageKey);
+      if (processedOrderMessages.size > 5000) {
+        const toRemove = Array.from(processedOrderMessages).slice(0, 1000);
+        toRemove.forEach(k => processedOrderMessages.delete(k));
+      }
     }
 
-    // Immediately remove inline buttons from the confirmation message so user cannot click again
-    try {
-      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-    } catch {}
-
-    activeUserOrderLocks.set(chatId, Date.now());
+    // 3. IN-MEMORY SESSION STATUS CHECK
+    if (ctx.session?.orderInProgress || ctx.session?.step === 'PROCESSING' || ctx.session?.step === 'DONE') {
+      activeUserOrderLocks.delete(chatId);
+      return await ctx.answerCbQuery('⚠️ This order was already submitted or is in progress!', { show_alert: true });
+    }
     ctx.session.orderInProgress = true;
     ctx.session.step = 'PROCESSING';
+
+    // 4. ATOMIC DATABASE SESSION & ORDER LOCK (Protects multi-instance / cluster environments)
+    let orderLockCreated = false;
+    const extra = ctx.session?.extraInfo || {};
+    const targetAccount = String(extra.userAccount || extra.uid || extra.player_id || ctx.session?.playerName || 'unknown').trim();
+    const dbLockKey = `lock_${chatId}_${ctx.session?.gameId}_${ctx.session?.skuId}_${targetAccount}`;
+
+    try {
+      await OrderLock.create({ lockKey: dbLockKey, telegramChatId: chatId });
+      orderLockCreated = true;
+    } catch (lockErr: any) {
+      if (lockErr?.code === 11000) {
+        console.warn(`[OrderLock] Duplicate order blocked by MongoDB unique lock: ${dbLockKey}`);
+        activeUserOrderLocks.delete(chatId);
+        return await ctx.answerCbQuery('⚠️ Order is already being processed or was just submitted!', { show_alert: true });
+      }
+    }
+
+    try {
+      const lockDoc = await Session.findOneAndUpdate(
+        {
+          chatId,
+          'data.orderInProgress': { $ne: true },
+          'data.step': { $nin: ['PROCESSING', 'DONE'] }
+        },
+        {
+          $set: {
+            'data.orderInProgress': true,
+            'data.step': 'PROCESSING'
+          }
+        }
+      );
+      if (!lockDoc) {
+        activeUserOrderLocks.delete(chatId);
+        if (orderLockCreated) {
+          await OrderLock.deleteOne({ lockKey: dbLockKey }).catch(() => {});
+        }
+        return await ctx.answerCbQuery('⚠️ Order already in progress!', { show_alert: true });
+      }
+    } catch (e) {
+      // Continue with OrderLock if session check encounters transient error
+    }
+
+    // 5. Fire & forget removing inline buttons so UI updates quickly without blocking event loop
+    ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
 
     await ctx.answerCbQuery('⏳ Processing order...');
 
@@ -3428,6 +3523,7 @@ export function setupBot(
     
     // Copy order state and clear immediately to avoid reuse
     const referenceId = uuidv4().replace(/-/g, '').substring(0, 32);
+    const idempotencyKey = ctx.session.orderIdempotencyKey || `BOT-${(ctx.session.provider || 'ORD').toUpperCase()}-${referenceId}`;
     const gameId = ctx.session.gameId!;
     const skuId = ctx.session.skuId!;
     const gameName = ctx.session.gameName || 'Game';
@@ -3441,6 +3537,34 @@ export function setupBot(
     ctx.session.gameId = undefined;
     ctx.session.skuId = undefined;
     ctx.session.extraInfo = undefined;
+    ctx.session.orderIdempotencyKey = undefined;
+
+    // 0. Guard against recent identical order submission (within 30 seconds)
+    const thirtySecsAgo = new Date(Date.now() - 30 * 1000);
+    const existingRecentOrder = await Order.findOne({
+      telegramChatId: ctx.chat!.id,
+      gameId,
+      skuId,
+      createdAt: { $gte: thirtySecsAgo }
+    });
+
+    if (existingRecentOrder) {
+      console.warn(`[Duplicate Guard] Prevented twin order for chat ${ctx.chat!.id}. Reusing order ${existingRecentOrder.orderId || existingRecentOrder.referenceId}`);
+      const safeGame = escapeMd(gameName);
+      const safeSku = escapeMd(skuName);
+      const existingOrderId = existingRecentOrder.providerOrderId || existingRecentOrder.orderId;
+      return await ctx.reply(
+        `⚠️ *Duplicate Order Prevented!*\n` +
+        `═════════════════════════\n` +
+        `အော်ဒါနှစ်ခါ မကျစေရန် စနစ်မှ အလိုအလျောက် တားဆီးပေးထားပါသည်:\n` +
+        `├── 🎮 Game: *${safeGame}*\n` +
+        `├── 📦 Package: *${safeSku}*\n` +
+        `└── 🆔 Existing Order ID: \`${existingOrderId}\`\n` +
+        `═════════════════════════\n` +
+        `_တူညီသောအော်ဒါကို လွန်ခဲ့သော စက္ကန့်အနည်းငယ်က တင်ပြီးဖြစ်သောကြောင့် ထပ်မံဖြတ်တောက်ခြင်း မပြုလုပ်တော့ပါ။_`,
+        { parse_mode: 'Markdown' }
+      );
+    }
 
     await ctx.reply(`⏳ Processing your top-up order with ${providerName} API, please wait...`);
     
@@ -3483,7 +3607,8 @@ export function setupBot(
         productId: gameId,
         sku: skuId,
         fields: extraInfo,
-        quantity: quantity
+        quantity: quantity,
+        existingIdempotencyKey: idempotencyKey
       });
 
       if (!result.success || !result.order) {
@@ -3564,7 +3689,8 @@ export function setupBot(
         productId: gameId,
         sku: skuId,
         fields: extraInfo,
-        quantity: quantity
+        quantity: quantity,
+        existingIdempotencyKey: idempotencyKey
       });
 
       if (!result.success || !result.order) {
@@ -3840,21 +3966,38 @@ export function setupBot(
     const chatId = ctx.chat?.id;
     if (!chatId) return;
 
+    // 1. SYNCHRONOUS IN-MEMORY MUTEX LOCK (Set immediately before any await!)
+    const now = Date.now();
     const lastLock = activeUserOrderLocks.get(chatId);
-    if (lastLock && Date.now() - lastLock < 60000) {
+    if (lastLock && now - lastLock < 60000) {
       return await ctx.answerCbQuery('⚠️ Bulk order is already being processed! Please wait...', { show_alert: true });
+    }
+    activeUserOrderLocks.set(chatId, now);
+
+    // 2. MESSAGE-LEVEL DEDUPLICATION
+    const messageId = ctx.callbackQuery?.message?.message_id;
+    const messageKey = messageId ? `bulk_${chatId}_${messageId}` : undefined;
+    if (messageKey) {
+      if (processedOrderMessages.has(messageKey)) {
+        activeUserOrderLocks.delete(chatId);
+        return await ctx.answerCbQuery('⚠️ This bulk order was already submitted!', { show_alert: true });
+      }
+      processedOrderMessages.add(messageKey);
+      if (processedOrderMessages.size > 5000) {
+        const toRemove = Array.from(processedOrderMessages).slice(0, 1000);
+        toRemove.forEach(k => processedOrderMessages.delete(k));
+      }
     }
 
     const bulkItems: BulkOrderItem[] = ctx.session?.bulkOrders || [];
     if (!bulkItems || bulkItems.length === 0) {
+      activeUserOrderLocks.delete(chatId);
       return await ctx.answerCbQuery('⚠️ Bulk order already processed or expired!', { show_alert: true });
     }
 
-    try {
-      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-    } catch {}
+    // 3. Fire and forget markup removal
+    ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
 
-    activeUserOrderLocks.set(chatId, Date.now());
     await ctx.answerCbQuery('Processing bulk order...');
 
     try {

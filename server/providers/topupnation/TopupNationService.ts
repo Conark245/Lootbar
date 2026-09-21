@@ -247,15 +247,39 @@ export class TopupNationService {
     // 2. Validate Required Dynamic Fields
     for (const f of (product.fields || [])) {
       if (f.required) {
-        const val = fields[f.name] !== undefined ? fields[f.name] : fields[f.name.toLowerCase()];
+        const fieldKey = f.name || f.key || f.field_name || f.id;
+        const val = fields[fieldKey] !== undefined ? fields[fieldKey] : (f.name ? fields[f.name] : undefined);
         if (val === undefined || val === null || String(val).trim() === '') {
-          return { success: false, error: `Required field '${f.title || f.name}' is missing.` };
+          return { success: false, error: `Required field '${f.title || f.label || f.name || f.key || 'Field'}' is missing.` };
         }
       }
     }
 
     const pricePerUnit = Number(skuObj.price || 0);
     const totalCost = pricePerUnit * quantity;
+
+    // 2.5 Check existing idempotency key before any balance deduction or order processing
+    if (existingIdempotencyKey) {
+      const existingOrder = await Order.findOne({ idempotencyKey: existingIdempotencyKey });
+      if (existingOrder) {
+        console.log(`[TopupNation Deduplication] Reusing existing order for idempotencyKey: ${existingIdempotencyKey} (Order: ${existingOrder.providerOrderId || existingOrder.referenceId})`);
+        return { success: true, order: existingOrder };
+      }
+    }
+
+    // 2.6 Guard against accidental twin/duplicate orders within 30 seconds for the exact same package
+    const thirtySecsAgo = new Date(Date.now() - 30 * 1000);
+    const existingRecentOrder = await Order.findOne({
+      telegramChatId,
+      provider: 'topupnation',
+      gameId: String(productId),
+      skuId: String(sku),
+      createdAt: { $gte: thirtySecsAgo }
+    });
+    if (existingRecentOrder) {
+      console.warn(`[TopupNation] Blocked duplicate order for user ${telegramChatId}. Reusing existing order ${existingRecentOrder.providerOrderId || existingRecentOrder.referenceId}`);
+      return { success: true, order: existingRecentOrder };
+    }
 
     // 3. User Wallet Balance Check & Atomic Deduction
     const user = await User.findOne({ telegramChatId });
@@ -265,16 +289,17 @@ export class TopupNationService {
 
     const isApiLinked = !!(user.useDirectApiBalance || user.balanceMode === 'api');
     if (!isApiLinked && !skipBalanceDeduction) {
-      if (user.balance < totalCost) {
+      const deductedUser = await User.findOneAndUpdate(
+        { telegramChatId, balance: { $gte: totalCost } },
+        { $inc: { balance: -totalCost } },
+        { returnDocument: 'after' }
+      );
+      if (!deductedUser) {
         return { 
           success: false, 
           error: `Insufficient wallet balance. Total cost is $${totalCost.toFixed(3)} USD, but your balance is $${user.balance.toFixed(3)} USD.` 
         };
       }
-
-      // Atomically deduct balance
-      user.balance = Math.max(0, user.balance - totalCost);
-      await user.save();
     }
 
     // 4. Generate Idempotency Key & Internal Reference ID
@@ -370,8 +395,7 @@ export class TopupNationService {
     // Final verification that userAccount is present
     if (!orderPayload.userAccount || orderPayload.userAccount.trim() === '') {
       if (!isApiLinked && !skipBalanceDeduction) {
-        user.balance += totalCost;
-        await user.save();
+        await User.findOneAndUpdate({ telegramChatId }, { $inc: { balance: totalCost } });
       }
       return {
         success: false,
@@ -426,8 +450,7 @@ export class TopupNationService {
 
       // Refund balance immediately if the API rejected order placement
       if (!isApiLinked && !skipBalanceDeduction) {
-        user.balance += totalCost;
-        await user.save();
+        await User.findOneAndUpdate({ telegramChatId }, { $inc: { balance: totalCost } });
       }
 
       return { 
