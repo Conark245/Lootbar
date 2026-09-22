@@ -27,8 +27,13 @@ dotenv.config();
 
 // Prevent server crash from unhandled rejections (e.g. Telegram 409 Conflict)
 process.on('unhandledRejection', (reason: any, promise) => {
-  if (reason?.response?.error_code === 409 || reason?.message?.includes('409: Conflict')) {
-    console.warn('⚠️ Telegram Bot Polling Conflict (409) absorbed: Another instance is running. Ignoring to prevent crash...');
+  if (
+    reason?.response?.error_code === 409 ||
+    reason?.code === 409 ||
+    reason?.message?.includes('409') ||
+    reason?.message?.includes('getUpdates')
+  ) {
+    console.warn('⚠️ Telegram Bot Polling Conflict (409) absorbed: Another instance or previous connection is active. Handled safely.');
   } else {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
   }
@@ -40,9 +45,11 @@ process.on('uncaughtException', (error: any) => {
     error?.code === 'ECONNRESET' ||
     error?.code === 'ETIMEDOUT' ||
     error?.code === 'ENOTFOUND' ||
-    error?.message?.includes('409: Conflict')
+    error?.code === 409 ||
+    error?.message?.includes('409') ||
+    error?.message?.includes('getUpdates')
   ) {
-    console.warn(`⚠️ [Transient Network Exception absorbed]:`, error.message || error);
+    console.warn(`⚠️ [Transient Network / Telegram Polling Exception absorbed]:`, error.message || error);
     return;
   }
   console.error('Uncaught Exception:', error);

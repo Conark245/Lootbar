@@ -636,14 +636,14 @@ export function setupBot(
       console.error('Failed to set Telegram Bot Webhook:', err);
     });
   } else {
-    // Polling mode with leadership lock
+    // Polling mode with distributed leadership lock and graceful conflict resolution
     const leaderLockId = uuidv4();
     const lockKey = 'telegram_bot_polling_leader';
 
     async function acquireLeaderLock(): Promise<boolean> {
       try {
         const now = new Date();
-        const staleThreshold = new Date(now.getTime() - 25000);
+        const staleThreshold = new Date(now.getTime() - 18000); // 18s stale threshold
 
         const lock = await BotLeaderLock.findOneAndUpdate(
           {
@@ -659,54 +659,102 @@ export function setupBot(
               lastHeartbeat: now
             }
           },
-          { upsert: true, returnDocument: 'after' }
+          { returnDocument: 'after' }
         );
 
-        return lock.instanceId === leaderLockId;
-      } catch (err: any) {
+        if (lock && lock.instanceId === leaderLockId) {
+          return true;
+        }
+
+        const count = await BotLeaderLock.countDocuments({ lockKey });
+        if (count === 0) {
+          try {
+            await BotLeaderLock.create({
+              lockKey,
+              instanceId: leaderLockId,
+              lastHeartbeat: now
+            });
+            return true;
+          } catch {
+            return false;
+          }
+        }
+
+        return false;
+      } catch {
         return false;
       }
     }
 
     let isPolling = false;
+    let isStarting = false;
 
-    setInterval(async () => {
-      const isLeader = await acquireLeaderLock();
-      if (isLeader && !isPolling) {
-        console.log(`[Bot Leader] Instance ${leaderLockId} acquired polling leadership.`);
-        isPolling = true;
-        bot.launch({
-          dropPendingUpdates: true
-        }).then(() => {
-          console.log('Telegram Bot successfully started via Polling mode');
-        }).catch((err: any) => {
-          console.error('Failed to start Telegram Bot in Polling mode:', err);
-          isPolling = false;
+    async function startPolling() {
+      if (isPolling || isStarting) return;
+      isStarting = true;
+      try {
+        // Reset existing webhook & drop pending updates to clear 409 conflicts
+        await bot.telegram.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
+        
+        // Give previous long-polling connection 1.2s to release cleanly
+        await new Promise(r => setTimeout(r, 1200));
+
+        await bot.launch({
+          dropPendingUpdates: true,
+          allowedUpdates: ['message', 'callback_query']
         });
+        isPolling = true;
+        console.log('Telegram Bot successfully started via Polling mode');
+      } catch (err: any) {
+        isPolling = false;
+        if (
+          err?.response?.error_code === 409 || 
+          err?.message?.includes('409') || 
+          err?.code === 409 || 
+          err?.message?.includes('getUpdates')
+        ) {
+          console.warn('⚠️ [Telegram Bot] 409 Conflict absorbed: Previous connection is releasing. Will automatically retry in next cycle.');
+        } else {
+          console.error('Failed to start Telegram Bot in Polling mode:', err?.message || err);
+        }
+      } finally {
+        isStarting = false;
+      }
+    }
+
+    async function stopPolling() {
+      if (!isPolling) return;
+      isPolling = false;
+      try {
+        bot.stop('Leadership change or shutdown');
+      } catch (e) {}
+    }
+
+    const leaderInterval = setInterval(async () => {
+      const isLeader = await acquireLeaderLock();
+      if (isLeader && !isPolling && !isStarting) {
+        await startPolling();
       } else if (!isLeader && isPolling) {
         console.log(`[Bot Leader] Instance ${leaderLockId} lost polling leadership. Stopping polling...`);
-        isPolling = false;
-        try { bot.stop('Lost leadership'); } catch (e) {}
+        await stopPolling();
       }
-    }, 10000);
+    }, 8000);
 
     acquireLeaderLock().then(isLeader => {
-      if (isLeader && !isPolling) {
-        isPolling = true;
-        bot.launch({
-          dropPendingUpdates: true
-        }).then(() => {
-          console.log('Telegram Bot successfully launched in polling mode.');
-        }).catch((err: any) => {
-          console.error('Failed to launch Telegram Bot:', err);
-          isPolling = false;
-        });
+      if (isLeader && !isPolling && !isStarting) {
+        startPolling();
       }
     });
-  }
 
-  process.once('SIGINT', () => bot.stop('SIGINT'));
-  process.once('SIGTERM', () => bot.stop('SIGTERM'));
+    const cleanup = () => {
+      clearInterval(leaderInterval);
+      stopPolling();
+      BotLeaderLock.deleteOne({ lockKey, instanceId: leaderLockId }).catch(() => {});
+    };
+
+    process.once('SIGINT', cleanup);
+    process.once('SIGTERM', cleanup);
+  }
 
   return bot;
 }
