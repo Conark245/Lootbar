@@ -144,3 +144,50 @@ export function parseCommandArgs(rawText: string): string[] {
     .trim();
   return cleaned.split(/\s+/).filter(Boolean);
 }
+
+/**
+ * Checks whether the given user is configured to use Direct API Balance
+ * for the specified provider (e.g. 'lootbar', 'topupnation', 'g2bulk').
+ * 
+ * Rules:
+ * 1. If user is not in API balance mode (useDirectApiBalance is false and balanceMode !== 'api'), returns false.
+ * 2. If apiProvider is 'all' or undefined, returns true for any provider.
+ * 3. If apiProvider is 'both', returns true for 'lootbar' and 'topupnation'.
+ * 4. Otherwise, returns true only if apiProvider matches the specific provider name.
+ */
+export function isProviderApiLinked(user: any, provider: string): boolean {
+  if (!user) return false;
+  const isApiMode = user.balanceMode === 'api' || !!user.useDirectApiBalance;
+  if (!isApiMode) return false;
+
+  const targetProvider = (provider || 'lootbar').toLowerCase();
+  const userProvider = (user.apiProvider || 'all').toLowerCase();
+
+  if (userProvider === 'all') return true;
+  if (userProvider === 'both') {
+    return targetProvider === 'lootbar' || targetProvider === 'topupnation';
+  }
+  return userProvider === targetProvider;
+}
+
+export function getGameDefaultShortKey(name: string, gameId?: string): string {
+  const n = (name || '').toLowerCase();
+  if (n.includes('pubg')) return 'p';
+  if (n.includes('mobile legends') || n.includes('mlbb')) return 'ml';
+  if (n.includes('free fire')) return 'ff';
+  if (n.includes('genshin')) return 'gi';
+  if (n.includes('honkai') || n.includes('star rail')) return 'hsr';
+  if (n.includes('roblox')) return 'rbx';
+  if (n.includes('arena of valor') || n.includes('aov')) return 'aov';
+  if (n.includes('call of duty') || n.includes('codm')) return 'codm';
+  if (n.includes('clash of clans') || n.includes('coc')) return 'coc';
+  if (n.includes('brawl stars')) return 'bs';
+  
+  const words = n.replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
+  if (words.length > 1) {
+    const initials = words.map(w => w[0]).join('');
+    if (initials.length >= 2) return initials.slice(0, 4);
+  }
+  return n.slice(0, 3) || (gameId ? `g${String(gameId).slice(0, 3)}` : 'game');
+}
+

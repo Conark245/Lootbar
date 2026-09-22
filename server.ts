@@ -6,8 +6,6 @@ import mongoose from "mongoose";
 import { LootBarClient } from "./server/providers/lootbar/LootBarClient";
 import { TopupNationClient } from "./server/providers/topupnation/TopupNationClient";
 import { TopupNationService } from "./server/providers/topupnation/TopupNationService";
-import { FzrCardsClient } from "./server/providers/fzrcards/FzrCardsClient";
-import { FzrCardsService } from "./server/providers/fzrcards/FzrCardsService";
 import { G2BulkClient } from "./server/providers/g2bulk/G2BulkClient";
 import { G2BulkService } from "./server/providers/g2bulk/G2BulkService";
 import { setupBot } from "./server/bot";
@@ -19,9 +17,10 @@ import { AppConfig } from "./server/models/AppConfig";
 import { User } from "./server/models/User";
 import { TopupRequest } from "./server/models/TopupRequest";
 import { TopupNationProduct } from "./server/models/TopupNationProduct";
-import { FzrCardsProduct } from "./server/models/FzrCardsProduct";
 import { G2BulkProduct } from "./server/models/G2BulkProduct";
 import { BulkOrderService } from "./server/bulkOrderService";
+import { isProviderApiLinked } from "./server/bot/helpers";
+import { getNotificationSettings, updateNotificationSettings, INotificationSettings } from "./server/notificationSettings";
 import { createServer as createViteServer } from "vite";
 
 dotenv.config();
@@ -91,24 +90,13 @@ const topupNationClient = new TopupNationClient({
 });
 const topupNationService = new TopupNationService(topupNationClient);
 
-// Initialize FZR Cards Client & Service
-const FZRCARDS_API_KEY = process.env.FZRCARDS_API_KEY || "";
-const FZRCARDS_API_SECRET = process.env.FZRCARDS_API_SECRET || "";
-const FZRCARDS_WEBHOOK_SECRET = process.env.FZRCARDS_WEBHOOK_SECRET || "";
-const fzrCardsClient = new FzrCardsClient({
-  apiKey: FZRCARDS_API_KEY,
-  
-  webhookSecret: FZRCARDS_WEBHOOK_SECRET
-});
-const fzrCardsService = new FzrCardsService(fzrCardsClient);
-
 const g2bulkClient = new G2BulkClient({
   apiKey: process.env.G2BULK_API_KEY || ''
 });
 const g2bulkService = new G2BulkService(g2bulkClient);
 
 
-const pricePoller = new PricePoller(lootbarClient, topupNationService, fzrCardsService, g2bulkService);
+const pricePoller = new PricePoller(lootbarClient, topupNationService, g2bulkService);
 
 // Initialize Telegram Bot State
 let telegramBot: ReturnType<typeof setupBot> | undefined;
@@ -133,11 +121,10 @@ async function initOrRestartTelegramBot(token: string, adminChatId: string) {
     telegramBot = setupBot(token, adminChatId, lootbarClient, {
       isServerless,
       webhookUrl
-    }, topupNationService, fzrCardsService, g2bulkService);
+    }, topupNationService, g2bulkService);
 
     // Provide Telegram instance to provider services for order status notifications
     topupNationService.setTelegram(telegramBot.telegram, adminChatId);
-    fzrCardsService.setTelegram(telegramBot.telegram, adminChatId);
     g2bulkService.setTelegram(telegramBot.telegram, adminChatId);
     pricePoller.setTelegram(telegramBot);
   } else {
@@ -172,12 +159,6 @@ connectDB().then(async () => {
       console.log("Loaded TopupNation credentials from MongoDB");
     }
 
-    const fzrConfig = await AppConfig.findOne({ key: 'fzrcards_credentials' });
-    if (fzrConfig && fzrConfig.value) {
-      fzrCardsClient.updateCredentials(fzrConfig.value);
-      console.log("Loaded FZR Cards credentials from MongoDB");
-    }
-
     const g2bulkConfig = await AppConfig.findOne({ key: 'g2bulk_credentials' });
     if (g2bulkConfig?.value?.apiKey) {
       (g2bulkClient as any).apiKey = g2bulkConfig.value.apiKey;
@@ -207,13 +188,6 @@ connectDB().then(async () => {
 setInterval(() => {
   topupNationService.pollActiveOrders().catch((err) => {
     console.error("Error in TopupNation background poller:", err);
-  });
-}, 15000); // 15 seconds
-
-// Periodic background poller for active FZR Cards orders
-setInterval(() => {
-  fzrCardsService.pollActiveOrders().catch((err) => {
-    console.error("Error in FZR Cards background poller:", err);
   });
 }, 15000); // 15 seconds
 
@@ -333,6 +307,57 @@ app.post("/api/settings/admin", async (req, res) => {
   }
 });
 
+// ==========================================
+// Notification Settings Endpoints
+// ==========================================
+app.get("/api/settings/notifications", async (req, res) => {
+  try {
+    const settings = await getNotificationSettings();
+    res.json({ success: true, settings });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/settings/notifications", async (req, res) => {
+  try {
+    const {
+      lootbarEnabled,
+      topupnationEnabled,
+      g2bulkEnabled,
+      adminOrderAlerts,
+      priceChangeAlerts,
+      priceChangeLootbar,
+      priceChangeTopupnation,
+      priceChangeG2bulk
+    } = req.body;
+    const updated = await updateNotificationSettings({
+      ...(lootbarEnabled !== undefined && { lootbarEnabled: !!lootbarEnabled }),
+      ...(topupnationEnabled !== undefined && { topupnationEnabled: !!topupnationEnabled }),
+      ...(g2bulkEnabled !== undefined && { g2bulkEnabled: !!g2bulkEnabled }),
+      ...(adminOrderAlerts !== undefined && { adminOrderAlerts: !!adminOrderAlerts }),
+      ...(priceChangeAlerts !== undefined && { priceChangeAlerts: !!priceChangeAlerts }),
+      ...(priceChangeLootbar !== undefined && { priceChangeLootbar: !!priceChangeLootbar }),
+      ...(priceChangeTopupnation !== undefined && { priceChangeTopupnation: !!priceChangeTopupnation }),
+      ...(priceChangeG2bulk !== undefined && { priceChangeG2bulk: !!priceChangeG2bulk }),
+    });
+    res.json({ success: true, settings: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/settings/notifications/toggle", async (req, res) => {
+  try {
+    const { key, enabled } = req.body;
+    if (!key) return res.status(400).json({ error: "Notification key is required" });
+    const updated = await updateNotificationSettings({ [key]: !!enabled });
+    res.json({ success: true, settings: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/telegram-users/balance", async (req, res) => {
   const { chatId, amount } = req.body;
   if (!chatId || typeof amount !== 'number') return res.status(400).json({ error: "Chat ID and valid amount required" });
@@ -415,7 +440,7 @@ app.post("/api/telegram-users/toggle-api-balance", async (req, res) => {
   if (!chatId) return res.status(400).json({ error: "Chat ID is required" });
   try {
     const isApiBalance = !!useDirectApiBalance;
-    const selectedProvider = ['lootbar', 'topupnation', 'both'].includes(apiProvider) ? apiProvider : 'both';
+    const selectedProvider = ['lootbar', 'topupnation', 'g2bulk', 'both', 'all'].includes(apiProvider) ? apiProvider : 'both';
 
     const user = await User.findOneAndUpdate(
       { telegramChatId: Number(chatId) },
@@ -688,7 +713,7 @@ app.post("/api/orders/bulk/execute", async (req, res) => {
       items,
       lootbarClient,
       topupNationService,
-      fzrCardsService,
+      g2bulkService,
       { rawText: req.body.rawText, source: 'web' }
     );
 
@@ -775,7 +800,8 @@ async function syncActiveOrders() {
             await order.save();
 
             // Notify only the relevant user who placed this order
-            if (telegramBot) {
+            const notiSettings = await getNotificationSettings();
+            if (telegramBot && notiSettings.lootbarEnabled) {
               const safeGame = (order.gameName || 'Game').replace(/[*_`\[\]]/g, '');
               const safeSku = (order.skuName || 'Top-up').replace(/[*_`\[\]]/g, '');
               const safeOrderNum = (order.orderId || order.referenceId || '').replace(/[*_`\[\]]/g, '');
@@ -810,7 +836,8 @@ async function syncActiveOrders() {
               } else if (newState === 3) {
                 // Failed -> Auto Refund
                 const user = await User.findOne({ telegramChatId: order.telegramChatId });
-                const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
+                const orderProvider = order.provider || (order.extraInfo as any)?.provider || 'lootbar';
+                const isApiLinked = isProviderApiLinked(user, orderProvider);
                 if (user && order.price > 0 && !isApiLinked) {
                   user.balance += order.price;
                   await user.save();
@@ -895,7 +922,27 @@ setInterval(syncActiveOrders, 8000);
 app.get("/api/orders", async (req, res) => {
   try {
     const limit = Math.min(Math.max(Number(req.query.limit) || 500, 1), 1000);
-    const orders = await Order.find().sort({ createdAt: -1 }).limit(limit);
+    const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+    const query: any = {};
+    if (search) {
+      const cleanSearch = search.replace(/^@/, '');
+      const searchRegex = new RegExp(cleanSearch, 'i');
+      const conditions: any[] = [
+        { orderId: searchRegex },
+        { referenceId: searchRegex },
+        { providerOrderId: searchRegex },
+        { telegramUsername: searchRegex },
+        { telegramFirstName: searchRegex },
+        { gameName: searchRegex },
+        { skuName: searchRegex },
+        { playerName: searchRegex }
+      ];
+      if (!isNaN(Number(search))) {
+        conditions.push({ telegramChatId: Number(search) });
+      }
+      query.$or = conditions;
+    }
+    const orders = await Order.find(query).sort({ createdAt: -1 }).limit(limit);
     res.setHeader('Content-Type', 'application/json');
     res.json({ success: true, data: orders });
     // Trigger sync in background non-blocking
@@ -945,15 +992,15 @@ app.post("/api/orders/:referenceId/sync", async (req, res) => {
       return res.json({ success: true, data: order, message: "No change from TopupNation API" });
     }
 
-    const isFzr = order.provider === 'fzrcards' || order.extraInfo?.provider === 'fzrcards';
-    if (isFzr) {
-      if (!fzrCardsClient.isConfigured()) {
-        return res.status(400).json({ error: "FZR Cards API not configured" });
+    const isG2b = order.provider === 'g2bulk' || order.extraInfo?.provider === 'g2bulk';
+    if (isG2b) {
+      if (!g2bulkClient.isConfigured()) {
+        return res.status(400).json({ error: "G2Bulk API not configured" });
       }
       const orderIdToQuery = order.providerOrderId || order.orderId || order.referenceId;
-      const fzrRes = await fzrCardsClient.queryOrder(orderIdToQuery);
-      if (fzrRes && (fzrRes.status || (fzrRes as any).order_status)) {
-        const rawStatus = (fzrRes.status || (fzrRes as any).order_status || '').toUpperCase();
+      const g2bRes = await g2bulkClient.getOrder(orderIdToQuery);
+      if (g2bRes && (g2bRes.status || g2bRes.order_status)) {
+        const rawStatus = String(g2bRes.status || g2bRes.order_status || '').toUpperCase();
         let newState = order.state;
         if (['SUCCESS', 'COMPLETED'].includes(rawStatus)) newState = 2;
         else if (['FAILED', 'REFUNDED', 'CANCELED', 'CANCELLED'].includes(rawStatus)) newState = 3;
@@ -961,12 +1008,11 @@ app.post("/api/orders/:referenceId/sync", async (req, res) => {
         
         order.state = newState;
         order.statusText = rawStatus;
-        if (fzrRes.id || (fzrRes as any).order_id) order.providerOrderId = String(fzrRes.id || (fzrRes as any).order_id);
-        if ((fzrRes as any).receiptNumber || (fzrRes as any).receipt_id) order.providerReceiptNumber = (fzrRes as any).receiptNumber || (fzrRes as any).receipt_id;
+        if (g2bRes.id || g2bRes.order_id) order.providerOrderId = String(g2bRes.id || g2bRes.order_id);
         await order.save();
-        return res.json({ success: true, data: order, apiData: fzrRes });
+        return res.json({ success: true, data: order, apiData: g2bRes });
       }
-      return res.json({ success: true, data: order, message: "No change from FZR Cards API" });
+      return res.json({ success: true, data: order, message: "No change from G2Bulk API" });
     }
 
     if (!lootbarClient.isConfigured()) {
@@ -1166,6 +1212,171 @@ app.post("/api/saved-games/:gameId/toggle", async (req, res) => {
   }
 });
 
+app.post("/api/saved-games/bulk-toggle", async (req, res) => {
+  try {
+    if (!process.env.MONGODB_URI) {
+      return res.status(400).json({ error: "Database not configured" });
+    }
+    const { gameIds, isEnabled, gamesData } = req.body;
+    if (!Array.isArray(gameIds)) {
+      return res.status(400).json({ error: "gameIds array is required." });
+    }
+
+    const enabledVal = Boolean(isEnabled);
+
+    // If enabling and gamesData (name, id) provided, upsert them
+    if (enabledVal && Array.isArray(gamesData) && gamesData.length > 0) {
+      const ops = gamesData.map((g: any) => {
+        const gId = String(g.id || g.game_id || g.gameId);
+        const gName = g.name || g.game_name || 'Game';
+        const shortKey = g.shortKey || getDefaultShortKey(gName, gId);
+        return {
+          updateOne: {
+            filter: { gameId: gId },
+            update: {
+              $set: {
+                name: gName,
+                isEnabled: true
+              },
+              $setOnInsert: {
+                shortKey,
+                savedAt: new Date(),
+                skuShortKeys: {}
+              }
+            },
+            upsert: true
+          }
+        };
+      });
+      await SavedGame.bulkWrite(ops);
+    } else {
+      await SavedGame.updateMany(
+        { gameId: { $in: gameIds.map(String) } },
+        { $set: { isEnabled: enabledVal } }
+      );
+    }
+
+    const allSaved = await SavedGame.find().sort({ savedAt: -1 });
+    res.json({ success: true, count: gameIds.length, data: allSaved });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/saved-games/toggle-all", async (req, res) => {
+  try {
+    if (!process.env.MONGODB_URI) {
+      return res.status(400).json({ error: "Database not configured" });
+    }
+    const { isEnabled, allGamesData } = req.body;
+    const enabledVal = Boolean(isEnabled);
+
+    if (enabledVal) {
+      // Upsert all games from allGamesData if provided, or fetch from LootBar
+      let gamesList = allGamesData;
+      if (!Array.isArray(gamesList) || gamesList.length === 0) {
+        try {
+          const resp = await lootbarClient.getGames();
+          gamesList = resp?.data?.items || [];
+        } catch (e) {
+          gamesList = [];
+        }
+      }
+
+      if (Array.isArray(gamesList) && gamesList.length > 0) {
+        const ops = gamesList.map((g: any) => {
+          const gId = String(g.id || g.game_id || g.gameId);
+          const gName = g.name || g.game_name || 'Game';
+          const shortKey = g.shortKey || getDefaultShortKey(gName, gId);
+          return {
+            updateOne: {
+              filter: { gameId: gId },
+              update: {
+                $set: {
+                  name: gName,
+                  isEnabled: true
+                },
+                $setOnInsert: {
+                  shortKey,
+                  savedAt: new Date(),
+                  skuShortKeys: {}
+                }
+              },
+              upsert: true
+            }
+          };
+        });
+        await SavedGame.bulkWrite(ops);
+      } else {
+        await SavedGame.updateMany({}, { $set: { isEnabled: true } });
+      }
+    } else {
+      await SavedGame.updateMany({}, { $set: { isEnabled: false } });
+    }
+
+    const allSaved = await SavedGame.find().sort({ savedAt: -1 });
+    res.json({ success: true, count: allSaved.length, isEnabled: enabledVal, data: allSaved });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Global Master Toggle across all or selected providers
+app.post("/api/games/global-bulk-toggle", async (req, res) => {
+  try {
+    if (!process.env.MONGODB_URI) {
+      return res.status(400).json({ error: "Database not configured" });
+    }
+    const { isEnabled, provider = 'all', items } = req.body;
+    const enabledVal = Boolean(isEnabled);
+    const results: any = {};
+
+    if (Array.isArray(items) && items.length > 0) {
+      const lbIds = items.filter(it => it.provider === 'lootbar').map(it => String(it.id));
+      const tpnIds = items.filter(it => it.provider === 'topupnation').map(it => String(it.id));
+      const g2bIds = items.filter(it => it.provider === 'g2bulk').map(it => String(it.id));
+
+      if (lbIds.length > 0) {
+        await SavedGame.updateMany({ gameId: { $in: lbIds } }, { $set: { isEnabled: enabledVal } });
+        results.lootbar = lbIds.length;
+      }
+      if (tpnIds.length > 0) {
+        await TopupNationProduct.updateMany(
+          { productId: { $in: tpnIds } },
+          { $set: { isEnabled: enabledVal, status: enabledVal ? 'ACTIVE' : 'DISABLED' } }
+        );
+        results.topupnation = tpnIds.length;
+      }
+      if (g2bIds.length > 0) {
+        await G2BulkProduct.updateMany(
+          { productId: { $in: g2bIds } },
+          { $set: { isEnabled: enabledVal, status: enabledVal ? 'ACTIVE' : 'DISABLED' } }
+        );
+        results.g2bulk = g2bIds.length;
+      }
+
+      return res.json({ success: true, isEnabled: enabledVal, modified: results });
+    }
+
+    if (provider === 'all' || provider === 'lootbar') {
+      await SavedGame.updateMany({}, { $set: { isEnabled: enabledVal } });
+      results.lootbar = await SavedGame.countDocuments();
+    }
+    if (provider === 'all' || provider === 'topupnation') {
+      await TopupNationProduct.updateMany({}, { $set: { isEnabled: enabledVal, status: enabledVal ? 'ACTIVE' : 'DISABLED' } });
+      results.topupnation = await TopupNationProduct.countDocuments();
+    }
+    if (provider === 'all' || provider === 'g2bulk') {
+      await G2BulkProduct.updateMany({}, { $set: { isEnabled: enabledVal, status: enabledVal ? 'ACTIVE' : 'DISABLED' } });
+      results.g2bulk = await G2BulkProduct.countDocuments();
+    }
+
+    res.json({ success: true, isEnabled: enabledVal, provider, modified: results });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ---------------------------------------------------------
 // TopupNation Provider Endpoints
 // ---------------------------------------------------------
@@ -1303,6 +1514,20 @@ app.post("/api/topupnation/products/bulk-toggle", async (req, res) => {
   }
 });
 
+app.post("/api/topupnation/products/toggle-all", async (req, res) => {
+  try {
+    const { isEnabled } = req.body;
+    const enabledVal = Boolean(isEnabled);
+    const result = await TopupNationProduct.updateMany(
+      {},
+      { $set: { isEnabled: enabledVal, status: enabledVal ? 'ACTIVE' : 'DISABLED' } }
+    );
+    res.json({ success: true, count: result.modifiedCount, isEnabled: enabledVal });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/topupnation/products/:productId/toggle", async (req, res) => {
   try {
     const { productId } = req.params;
@@ -1355,204 +1580,6 @@ app.post("/api/webhooks/topupnation", async (req: any, res) => {
 });
 
 // ---------------------------------------------------------
-// FZR Cards Provider Endpoints
-// ---------------------------------------------------------
-
-app.post("/api/settings/fzrcards", async (req, res) => {
-  const { apiKey, webhookSecret, baseUrl } = req.body;
-  if (!apiKey) {
-    return res.status(400).json({ error: "apiKey is required." });
-  }
-
-  try {
-    // 1. Temporarily test credentials
-    const testClient = new FzrCardsClient({
-      apiKey,
-      
-      webhookSecret,
-      baseUrl: baseUrl || "https://api.fzr.cards"
-    });
-    
-    // Test connection with balance check
-    await testClient.getBalance();
-
-    // 2. Update server client
-    fzrCardsClient.updateCredentials({
-      apiKey,
-      
-      webhookSecret,
-      baseUrl: baseUrl || "https://api.fzr.cards"
-    });
-
-    // 3. Save to MongoDB
-    await AppConfig.findOneAndUpdate(
-      { key: 'fzrcards_credentials' },
-      { value: { apiKey,  webhookSecret, baseUrl: baseUrl || "https://api.fzr.cards" } },
-      { upsert: true, returnDocument: 'after' }
-    );
-
-    res.json({ success: true, message: "FZR Cards credentials saved and verified successfully." });
-  } catch (err: any) {
-    res.status(401).json({ error: err.message || "Failed to authenticate with FZR Cards API." });
-  }
-});
-
-app.get("/api/settings/fzrcards/status", async (req, res) => {
-  try {
-    const config = await AppConfig.findOne({ key: 'fzrcards_credentials' });
-    const isConfigured = !!config?.value?.apiKey || fzrCardsClient.isConfigured();
-    res.json({
-      isConfigured,
-      baseUrl: config?.value?.baseUrl || "https://api.fzr.cards",
-      webhookUrl: `${(process.env.APP_URL || "").replace(/\/$/, "")}/api/webhooks/fzrcards`
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/api/fzrcards/balance", async (req, res) => {
-  try {
-    if (!fzrCardsClient.isConfigured()) {
-      return res.json({ success: false, data: null, error: "FZR Cards API is not configured." });
-    }
-    const balanceData = await fzrCardsClient.getBalance();
-    res.json({ success: true, data: balanceData });
-  } catch (err: any) {
-    res.json({ success: false, data: null, error: err.message });
-  }
-});
-
-app.get("/api/fzrcards/products", async (req, res) => {
-  try {
-    const products = await fzrCardsService.getProducts();
-    res.json({ success: true, data: products });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.post("/api/fzrcards/products/sync", async (req, res) => {
-  try {
-    if (!fzrCardsClient.isConfigured()) {
-      return res.status(400).json({ error: "FZR Cards API is not configured." });
-    }
-
-    const subStatus = fzrCardsClient.getSubscriptionStatus();
-    if (!subStatus.isActive) {
-      return res.status(400).json({ success: false, error: subStatus.error || "Subscription is not active. Renew it to use this feature." });
-    }
-    
-    // Run sync in the background
-    fzrCardsService.syncProducts().catch(err => {
-      console.warn("[FZR Sync Background Warning]:", err?.message || err);
-    });
-    
-    // Return immediately to avoid request timeout
-    const allProducts = await fzrCardsService.getProducts();
-    res.json({ success: true, count: 0, total: allProducts.length, data: allProducts, message: 'Sync started in background.' });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.post("/api/fzrcards/products/:productId/sku-shortkeys", async (req, res) => {
-  try {
-    const { skuShortKeys } = req.body;
-    const product = await FzrCardsProduct.findOneAndUpdate(
-      { productId: req.params.productId },
-      { skuShortKeys: skuShortKeys },
-      { returnDocument: 'after' }
-    );
-    res.json({ success: true, data: product });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.post("/api/fzrcards/products/:productId/shortkey", async (req, res) => {
-  try {
-    const productId = decodeURIComponent(req.params.productId);
-    const { shortKey } = req.body;
-    const cleanKey = shortKey !== undefined && shortKey !== null ? String(shortKey).trim().toLowerCase().replace(/^[./]+/, '').replace(/[^a-z0-9_-]/g, '') : '';
-
-    const updated = await fzrCardsService.updateProductShortKey(productId, cleanKey);
-    if (!updated) {
-      return res.status(404).json({ success: false, error: "Product not found." });
-    }
-
-    res.json({ success: true, data: updated });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-
-app.post("/api/fzrcards/products/bulk-toggle", async (req, res) => {
-  try {
-    const { productIds, isEnabled } = req.body;
-    if (!Array.isArray(productIds)) {
-      return res.status(400).json({ error: "productIds array is required." });
-    }
-    const result = await fzrCardsService.bulkToggleProductsEnabled(productIds, isEnabled);
-    res.json({ success: true, count: result.modifiedCount });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post("/api/fzrcards/products/:productId/toggle", async (req, res) => {
-  try {
-    const { productId } = req.params;
-    const { isEnabled } = req.body;
-    const updated = await fzrCardsService.toggleProductEnabled(productId, isEnabled);
-    if (!updated) {
-      return res.status(404).json({ error: "Product not found." });
-    }
-    res.json({ success: true, data: updated });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post("/api/fzrcards/order", async (req, res) => {
-  try {
-    const { telegramChatId, productId, sku, fields, quantity } = req.body;
-    if (!telegramChatId || !productId || !sku || !fields) {
-      return res.status(400).json({ error: "Missing required order parameters." });
-    }
-
-    const result = await fzrCardsService.placeOrder({
-      telegramChatId: Number(telegramChatId),
-      productId: String(productId),
-      sku: String(sku),
-      fields,
-      quantity: Number(quantity) || 1
-    });
-
-    if (!result.success) {
-      return res.status(400).json({ success: false, error: result.error });
-    }
-
-    res.json({ success: true, data: result.order });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.post("/api/webhooks/fzrcards", async (req: any, res) => {
-  const signature = req.header("X-Signature") || req.header("x-signature") || "";
-  const rawBody = req.rawBody || JSON.stringify(req.body);
-
-  const result = await fzrCardsService.handleWebhook(req.body);
-  if (!result.success) {
-    return res.status(400).json({ success: false, error: result.error });
-  }
-
-  res.json({ success: true, message: "Webhook processed successfully." });
-});
-
-// ---------------------------------------------------------
 // Webhook Endpoint (LootBar)
 // ---------------------------------------------------------
 
@@ -1593,7 +1620,8 @@ app.post("/notify", async (req: any, res) => {
       { returnDocument: 'after' }
     );
 
-    if (order && telegramBot) {
+    const notiSettings = await getNotificationSettings();
+    if (order && telegramBot && notiSettings.lootbarEnabled) {
       const stateMessages: Record<number, string> = {
         2: `✅ Your top-up (Ref: ${reference_id}) was completed successfully!`,
         3: `❌ Your top-up (Ref: ${reference_id}) failed. Please contact support.`,
@@ -1723,6 +1751,33 @@ app.post('/api/g2bulk/products/:productId/toggle', async (req, res) => {
       { isEnabled }
     );
     res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/g2bulk/products/bulk-toggle', async (req, res) => {
+  try {
+    const { productIds, isEnabled } = req.body;
+    if (!Array.isArray(productIds)) {
+      return res.status(400).json({ error: "productIds array is required." });
+    }
+    const result = await g2bulkService.bulkToggleProductsEnabled(productIds, isEnabled);
+    res.json({ success: true, count: result.modifiedCount });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/g2bulk/products/toggle-all', async (req, res) => {
+  try {
+    const { isEnabled } = req.body;
+    const enabledVal = Boolean(isEnabled);
+    const result = await G2BulkProduct.updateMany(
+      {},
+      { $set: { isEnabled: enabledVal, status: enabledVal ? 'ACTIVE' : 'DISABLED' } }
+    );
+    res.json({ success: true, count: result.modifiedCount, isEnabled: enabledVal });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

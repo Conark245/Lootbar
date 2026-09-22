@@ -5,7 +5,9 @@ import { TopupNationProduct } from '../../models/TopupNationProduct';
 import { TopupNationWebhookEvent } from '../../models/TopupNationWebhookEvent';
 import { Order, IOrder } from '../../models/Order';
 import { User } from '../../models/User';
+import { isProviderApiLinked } from '../../bot/helpers';
 import { TopupNationWebhookPayload, TopupNationOrderRequest } from './types';
+import { getNotificationSettings } from '../../notificationSettings';
 
 export class TopupNationService {
   private client: TopupNationClient;
@@ -287,7 +289,7 @@ export class TopupNationService {
       return { success: false, error: 'User account not found.' };
     }
 
-    const isApiLinked = !!(user.useDirectApiBalance || user.balanceMode === 'api');
+    const isApiLinked = isProviderApiLinked(user, 'topupnation');
     if (!isApiLinked && !skipBalanceDeduction) {
       const deductedUser = await User.findOneAndUpdate(
         { telegramChatId, balance: { $gte: totalCost } },
@@ -562,7 +564,8 @@ export class TopupNationService {
     }
 
     // Trigger Notification
-    if (this.telegramNotifier) {
+    const notiSettings = await getNotificationSettings();
+    if (this.telegramNotifier && notiSettings.topupnationEnabled) {
       if (newState === 2) {
         const safeGame = (order.gameName || 'Game').replace(/[*_`\[\]]/g, '');
         const safeSku = (order.skuName || 'Top-up').replace(/[*_`\[\]]/g, '');
@@ -651,7 +654,8 @@ export class TopupNationService {
               }
 
               // Send Notification
-              if (this.telegramNotifier) {
+              const pollerNotiSettings = await getNotificationSettings();
+              if (this.telegramNotifier && pollerNotiSettings.topupnationEnabled) {
                 if (newState === 2) {
                   const msg = `🎉 *TopupNation Order Completed!*\n` +
                     `═════════════════════════\n` +

@@ -105,6 +105,19 @@ export default function App() {
   const [showTpnGames, setShowTpnGames] = useState(true);
   const [showLootbarGames, setShowLootbarGames] = useState(true);
 
+  // Multi-select & Filtering for Games / Products
+  const [selectedLbGameIds, setSelectedLbGameIds] = useState<string[]>([]);
+  const [selectedTpnProductIds, setSelectedTpnProductIds] = useState<string[]>([]);
+  const [selectedG2bProductIds, setSelectedG2bProductIds] = useState<string[]>([]);
+  const [selectedActiveGameKeys, setSelectedActiveGameKeys] = useState<{ provider: string; id: string }[]>([]);
+
+  const [lbStatusFilter, setLbStatusFilter] = useState<'ALL' | 'ENABLED' | 'DISABLED'>('ALL');
+  const [tpnStatusFilter, setTpnStatusFilter] = useState<'ALL' | 'ENABLED' | 'DISABLED'>('ALL');
+  const [g2bStatusFilter, setG2bStatusFilter] = useState<'ALL' | 'ENABLED' | 'DISABLED'>('ALL');
+  const [activeProviderFilter, setActiveProviderFilter] = useState<'ALL' | 'LOOTBAR' | 'TOPUPNATION' | 'G2BULK'>('ALL');
+  const [activeStatusFilter, setActiveStatusFilter] = useState<'ALL' | 'ENABLED' | 'DISABLED'>('ALL');
+  const [isBulkGameUpdating, setIsBulkGameUpdating] = useState(false);
+
   
   // Telegram Users State
   const [telegramUsers, setTelegramUsers] = useState<any[]>([]);
@@ -198,29 +211,100 @@ export default function App() {
   const [g2bulkBalance, setG2BulkBalance] = useState<{ balance: number; currency: string }>({ balance: 0, currency: 'USD' });
   const [isSavingG2bSku, setIsSavingG2bSku] = useState(false);
 
-  // FZR Cards API State
-  const [fzrConfigured, setFzrConfigured] = useState<boolean | null>(null);
-  const [fzrApiKey, setFzrApiKey] = useState('');
-  const [fzrApiSecret, setFzrApiSecret] = useState('');
-  const [fzrWebhookSecret, setFzrWebhookSecret] = useState('');
-  const [fzrBaseUrl, setFzrBaseUrl] = useState('https://api.fzr.cards');
-  const [fzrWebhookUrl, setFzrWebhookUrl] = useState('');
-  const [fzrBalance, setFzrBalance] = useState<any>(null);
-  const [fzrProducts, setFzrProducts] = useState<any[]>([]);
-  const [loadingFzrProducts, setLoadingFzrProducts] = useState(false);
-  const [isSyncingFzr, setIsSyncingFzr] = useState(false);
-  const [fzrShortKeyInput, setFzrShortKeyInput] = useState<Record<string, string>>({});
-  const [showFzrModal, setShowFzrModal] = useState(false);
-  const [fzrError, setFzrError] = useState('');
-  const [isSavingFzr, setIsSavingFzr] = useState(false);
-  const [showFzrGames, setShowFzrGames] = useState(true);
   const [showG2BulkGames, setShowG2BulkGames] = useState(true);
 
   const [lbGameSearch, setLbGameSearch] = useState('');
   const [tpnGameSearch, setTpnGameSearch] = useState('');
-  const [fzrGameSearch, setFzrGameSearch] = useState('');
 
   const [activeGameSearch, setActiveGameSearch] = useState('');
+
+  // Notification Settings State
+  const [notiSettings, setNotiSettings] = useState<{
+    lootbarEnabled: boolean;
+    topupnationEnabled: boolean;
+    g2bulkEnabled: boolean;
+    adminOrderAlerts: boolean;
+    priceChangeAlerts: boolean;
+    priceChangeLootbar: boolean;
+    priceChangeTopupnation: boolean;
+    priceChangeG2bulk: boolean;
+  }>({
+    lootbarEnabled: true,
+    topupnationEnabled: true,
+    g2bulkEnabled: true,
+    adminOrderAlerts: true,
+    priceChangeAlerts: true,
+    priceChangeLootbar: true,
+    priceChangeTopupnation: true,
+    priceChangeG2bulk: true,
+  });
+  const [notiSuccessMsg, setNotiSuccessMsg] = useState('');
+  const [togglingNotiKey, setTogglingNotiKey] = useState<string | null>(null);
+  const [showNotiModal, setShowNotiModal] = useState(false);
+
+  const fetchNotificationSettings = () => {
+    fetch('/api/settings/notifications')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.settings) {
+          setNotiSettings(data.settings);
+        }
+      })
+      .catch(err => console.error('Failed to load notification settings:', err));
+  };
+
+  const handleToggleNoti = async (key: 'lootbarEnabled' | 'topupnationEnabled' | 'g2bulkEnabled' | 'adminOrderAlerts' | 'priceChangeAlerts' | 'priceChangeLootbar' | 'priceChangeTopupnation' | 'priceChangeG2bulk') => {
+    const nextVal = !notiSettings[key];
+    setTogglingNotiKey(key);
+    setNotiSettings(prev => ({ ...prev, [key]: nextVal }));
+    try {
+      const res = await fetch('/api/settings/notifications/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, enabled: nextVal })
+      });
+      const data = await res.json();
+      if (data.success && data.settings) {
+        setNotiSettings(data.settings);
+        setNotiSuccessMsg(`Updated: ${key} is now ${nextVal ? 'ENABLED' : 'MUTED'}`);
+        setTimeout(() => setNotiSuccessMsg(''), 3000);
+      }
+    } catch (err) {
+      console.error('Error toggling notification:', err);
+      setNotiSettings(prev => ({ ...prev, [key]: !nextVal }));
+    } finally {
+      setTogglingNotiKey(null);
+    }
+  };
+
+  const handleToggleAllNoti = async (enable: boolean) => {
+    const updated = {
+      lootbarEnabled: enable,
+      topupnationEnabled: enable,
+      g2bulkEnabled: enable,
+      adminOrderAlerts: enable,
+      priceChangeAlerts: enable,
+      priceChangeLootbar: enable,
+      priceChangeTopupnation: enable,
+      priceChangeG2bulk: enable,
+    };
+    setNotiSettings(updated);
+    try {
+      const res = await fetch('/api/settings/notifications', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updated)
+      });
+      const data = await res.json();
+      if (data.success && data.settings) {
+        setNotiSettings(data.settings);
+        setNotiSuccessMsg(enable ? 'All notifications enabled!' : 'All notifications muted!');
+        setTimeout(() => setNotiSuccessMsg(''), 3000);
+      }
+    } catch (err) {
+      console.error('Error updating all notifications:', err);
+    }
+  };
 
 
 
@@ -409,7 +493,7 @@ export default function App() {
       const res = await fetch('/api/g2bulk/balance');
       const data = await res.json();
       if (data.success) {
-        setG2BulkBalance({ balance: data.balance, currency: 'USD' });
+        setG2BulkBalance({ balance: Number(data.balance ?? data.data?.balance ?? 0), currency: 'USD' });
       }
     } catch (e) { console.error(e); }
   };
@@ -419,7 +503,7 @@ export default function App() {
       const res = await fetch('/api/g2bulk/products');
       const data = await res.json();
       if (data.success) {
-        setG2BulkProducts(data.products || []);
+        setG2BulkProducts(data.data || data.products || []);
       }
     } catch (e) { console.error(e); }
   };
@@ -535,172 +619,6 @@ export default function App() {
       }
     } catch (err: any) {
       alert(`Error bulk toggling products: ${err.message}`);
-    }
-  };
-
-  // FZR Cards Functions
-  const fetchFzrStatus = async () => {
-    try {
-      const data = await safeFetchJson('/api/settings/fzrcards/status');
-      if (data) {
-        setFzrConfigured(!!data.isConfigured);
-        if (data.baseUrl) setFzrBaseUrl(data.baseUrl);
-        if (data.webhookUrl) {
-          setFzrWebhookUrl(data.webhookUrl);
-        } else {
-          setFzrWebhookUrl(`${window.location.origin}/api/webhooks/fzrcards`);
-        }
-        if (data.isConfigured) {
-          fetchFzrBalance();
-          fetchFzrProducts();
-        }
-      } else {
-        setFzrConfigured(false);
-        setFzrWebhookUrl(`${window.location.origin}/api/webhooks/fzrcards`);
-      }
-    } catch {
-      setFzrConfigured(false);
-    }
-  };
-
-  const fetchFzrBalance = async () => {
-    const data = await safeFetchJson('/api/fzrcards/balance');
-    if (data?.success && data?.data) {
-      setFzrBalance(data.data);
-    }
-  };
-
-  const fetchFzrProducts = async () => {
-    setLoadingFzrProducts(true);
-    try {
-      const data = await safeFetchJson('/api/fzrcards/products');
-      if (data?.success && Array.isArray(data.data || data.products)) {
-        setFzrProducts(data.data || data.products || []);
-      }
-    } finally {
-      setLoadingFzrProducts(false);
-    }
-  };
-
-  const handleSyncFzrProducts = async () => {
-    setIsSyncingFzr(true);
-    try {
-      const res = await fetch('/api/fzrcards/products/sync', { method: 'POST' });
-      const data = await res.json();
-      if (data?.success) {
-        if (data.message) {
-          alert("Sync started in background! This may take 1-2 minutes. Please refresh the page later to see the new products.");
-        }
-        fetchFzrProducts();
-      } else {
-        alert(`Failed to sync: ${data?.error || 'Unknown error'}`);
-      }
-    } catch (err: any) {
-      alert(`Error syncing products: ${err.message}`);
-    } finally {
-      setIsSyncingFzr(false);
-    }
-  };
-
-  const handleSaveFzrCredentials = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setFzrError('');
-    setIsSavingFzr(true);
-    try {
-      const res = await fetch('/api/settings/fzrcards', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          apiKey: fzrApiKey,
-          apiSecret: fzrApiSecret,
-          webhookSecret: fzrWebhookSecret,
-          baseUrl: fzrBaseUrl
-        })
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        setFzrError(data.error || 'Failed to authenticate with FZR Cards');
-      } else {
-        setShowFzrModal(false);
-        setFzrConfigured(true);
-        fetchFzrStatus();
-    fetchG2BulkStatus();
-        fetchFzrBalance();
-        handleSyncFzrProducts();
-      }
-    } catch (err: any) {
-      setFzrError(err.message || 'Connection error');
-    } finally {
-      setIsSavingFzr(false);
-    }
-  };
-
-  const handleSaveFzrShortKey = async (productId: string) => {
-    const key = fzrShortKeyInput[productId];
-    if (key === undefined) return;
-    try {
-      const res = await fetch(`/api/fzrcards/products/${encodeURIComponent(productId)}/shortkey`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shortKey: key })
-      });
-      const data = await res.json();
-      if (data?.success || res.ok) {
-        fetchFzrProducts();
-      } else {
-        alert(data?.error || 'Failed to update shortKey');
-      }
-    } catch (err: any) {
-      alert(`Error updating shortKey: ${err.message}`);
-    }
-  };
-
-  
-  const handleBulkToggleFzrProducts = async (isEnabled: boolean) => {
-    const filtered = fzrProducts.filter(p => (p.name || "").toLowerCase().includes(fzrGameSearch.toLowerCase()));
-    const productIds = filtered.map(p => p.productId);
-    if (productIds.length === 0) return;
-    
-    if (!confirm(`Are you sure you want to ${isEnabled ? 'enable' : 'disable'} ${productIds.length} FZR Cards products currently filtered?`)) {
-      return;
-    }
-    
-    try {
-      const res = await fetch('/api/fzrcards/products/bulk-toggle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productIds, isEnabled })
-      });
-      const data = await res.json();
-      if (data?.success) {
-        setFzrProducts(prev => prev.map(p => 
-          productIds.includes(p.productId) 
-            ? { ...p, isEnabled, status: isEnabled ? 'ACTIVE' : 'DISABLED' } 
-            : p
-        ));
-      } else {
-        alert(data?.error || 'Failed to bulk toggle products');
-      }
-    } catch (err: any) {
-      alert(`Error bulk toggling products: ${err.message}`);
-    }
-  };
-
-  const handleToggleFzrProduct = async (productId: string, currentEnabled: boolean) => {
-    try {
-      const res = await fetch(`/api/fzrcards/products/${productId}/toggle`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ isEnabled: !currentEnabled })
-      });
-      const data = await res.json();
-      if (data?.success) {
-        setFzrProducts(prev => prev.map(p => p.productId === productId ? { ...p, isEnabled: !currentEnabled, status: !currentEnabled ? 'ACTIVE' : 'DISABLED' } : p));
-      } else {
-        alert(data?.error || 'Failed to toggle product status');
-      }
-    } catch (err: any) {
-      alert(`Error toggling product: ${err.message}`);
     }
   };
 
@@ -941,8 +859,9 @@ export default function App() {
     fetchOrders();
     fetchTpnStatus();
     fetchTpnProducts();
-    fetchFzrStatus();
-    fetchFzrProducts();
+    fetchG2BulkStatus();
+    fetchG2BulkProducts();
+    fetchNotificationSettings();
   }, []);
 
   useEffect(() => {
@@ -1117,7 +1036,7 @@ export default function App() {
   };
 
   
-  const openSkuModal = async (game: any, provider: 'lootbar' | 'topupnation' | 'fzrcards' | 'g2bulk' | boolean) => {
+  const openSkuModal = async (game: any, provider: 'lootbar' | 'topupnation' | 'g2bulk' | boolean) => {
     setSkuModalSuccessMsg('');
     setSkuSearchFilter('');
     
@@ -1133,18 +1052,15 @@ export default function App() {
     setSkuShortKeysInput(existingKeys);
 
     const isTpn = provider === true || provider === 'topupnation';
-    const isFzr = provider === 'fzrcards';
     const isG2b = provider === 'g2bulk';
 
-    if (isFzr) {
-      setSkuModalGame({ ...game, isFzr: true, isTpn: false, isG2b: false, modalSkus: game.skus || [] });
-    } else if (isTpn) {
-      setSkuModalGame({ ...game, isTpn: true, isFzr: false, isG2b: false, modalSkus: game.skus || [] });
+    if (isTpn) {
+      setSkuModalGame({ ...game, isTpn: true, isG2b: false, modalSkus: game.skus || [] });
     } else if (isG2b) {
-      setSkuModalGame({ ...game, isG2b: true, isTpn: false, isFzr: false, modalSkus: game.skus || [] });
+      setSkuModalGame({ ...game, isG2b: true, isTpn: false, modalSkus: game.skus || [] });
     } else {
       const localSkus = game.lastKnownSkus || [];
-      setSkuModalGame({ ...game, isTpn: false, isFzr: false, isG2b: false, modalSkus: localSkus });
+      setSkuModalGame({ ...game, isTpn: false, isG2b: false, modalSkus: localSkus });
       
       // Fetch fresh SKUs from server
       setLoadingModalSkus(true);
@@ -1214,23 +1130,7 @@ export default function App() {
         }
       });
 
-      if (skuModalGame.isFzr) {
-        const res = await fetch(`/api/fzrcards/products/${encodeURIComponent(skuModalGame.productId)}/sku-shortkeys`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ skuShortKeys: cleanKeys })
-        });
-        if (res.ok) {
-          fetchFzrProducts();
-          setSkuModalSuccessMsg('Saved successfully! Package short keys are now active.');
-          setTimeout(() => {
-            setSkuModalGame(null);
-          }, 1000);
-        } else {
-          const errData = await res.json().catch(() => ({}));
-          alert('Error saving: ' + (errData.error || 'Unknown error'));
-        }
-      } else if (skuModalGame.isTpn) {
+      if (skuModalGame.isTpn) {
         const res = await fetch(`/api/topupnation/products/${encodeURIComponent(skuModalGame.productId)}/sku-shortkeys`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1374,6 +1274,221 @@ export default function App() {
         fetchSavedGames();
       })
       .catch(err => console.error("Failed to delete saved game:", err));
+  };
+
+  const handleToggleLootbarGame = async (gameId: string, gameName: string, currentEnabled: boolean) => {
+    try {
+      const savedMatch = savedGames.find(s => String(s.gameId) === String(gameId));
+      if (!savedMatch) {
+        await fetch('/api/saved-games', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ gameId, name: gameName, isEnabled: true })
+        });
+        await fetchSavedGames();
+      } else {
+        const res = await fetch(`/api/saved-games/${gameId}/toggle`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isEnabled: !currentEnabled })
+        });
+        const data = await res.json();
+        if (data?.success) {
+          setSavedGames(prev => prev.map(g => String(g.gameId) === String(gameId) ? { ...g, isEnabled: !currentEnabled } : g));
+        }
+      }
+    } catch (err: any) {
+      alert(`Error toggling game: ${err.message}`);
+    }
+  };
+
+  const handleBulkToggleLootbar = async (isEnabled: boolean, specificIds?: string[]) => {
+    const ids = specificIds !== undefined ? specificIds : selectedLbGameIds;
+    
+    if (ids.length === 0) {
+      // Toggle all LootBar games
+      if (!confirm(`Are you sure you want to ${isEnabled ? 'ENABLE' : 'DISABLE'} ALL LootBar games?`)) return;
+      setIsBulkGameUpdating(true);
+      try {
+        const res = await fetch('/api/saved-games/toggle-all', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isEnabled, allGamesData: games })
+        });
+        const data = await res.json();
+        if (data?.success) {
+          await fetchSavedGames();
+        }
+      } catch (e: any) {
+        alert(e.message);
+      } finally {
+        setIsBulkGameUpdating(false);
+      }
+      return;
+    }
+
+    // Toggle specific selected IDs
+    setIsBulkGameUpdating(true);
+    try {
+      const selectedGamesData = games.filter(g => ids.includes(String(g.id || g.game_id)));
+      const res = await fetch('/api/saved-games/bulk-toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gameIds: ids, isEnabled, gamesData: selectedGamesData })
+      });
+      const data = await res.json();
+      if (data?.success) {
+        await fetchSavedGames();
+        setSelectedLbGameIds([]);
+      }
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setIsBulkGameUpdating(false);
+    }
+  };
+
+  const handleBulkToggleTpn = async (isEnabled: boolean, specificIds?: string[]) => {
+    const ids = specificIds !== undefined ? specificIds : selectedTpnProductIds;
+
+    if (ids.length === 0) {
+      // Toggle all TopupNation products
+      if (!confirm(`Are you sure you want to ${isEnabled ? 'ENABLE' : 'DISABLE'} ALL TopupNation products?`)) return;
+      setIsBulkGameUpdating(true);
+      try {
+        const res = await fetch('/api/topupnation/products/toggle-all', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isEnabled })
+        });
+        const data = await res.json();
+        if (data?.success) {
+          setTpnProducts(prev => prev.map(p => ({ ...p, isEnabled, status: isEnabled ? 'ACTIVE' : 'DISABLED' })));
+        }
+      } catch (e: any) {
+        alert(e.message);
+      } finally {
+        setIsBulkGameUpdating(false);
+      }
+      return;
+    }
+
+    setIsBulkGameUpdating(true);
+    try {
+      const res = await fetch('/api/topupnation/products/bulk-toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productIds: ids, isEnabled })
+      });
+      const data = await res.json();
+      if (data?.success) {
+        setTpnProducts(prev => prev.map(p => ids.includes(p.productId) ? { ...p, isEnabled, status: isEnabled ? 'ACTIVE' : 'DISABLED' } : p));
+        setSelectedTpnProductIds([]);
+      }
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setIsBulkGameUpdating(false);
+    }
+  };
+
+  const handleBulkToggleG2b = async (isEnabled: boolean, specificIds?: string[]) => {
+    const ids = specificIds !== undefined ? specificIds : selectedG2bProductIds;
+
+    if (ids.length === 0) {
+      // Toggle all G2Bulk products
+      if (!confirm(`Are you sure you want to ${isEnabled ? 'ENABLE' : 'DISABLE'} ALL G2Bulk products?`)) return;
+      setIsBulkGameUpdating(true);
+      try {
+        const res = await fetch('/api/g2bulk/products/toggle-all', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isEnabled })
+        });
+        const data = await res.json();
+        if (data?.success) {
+          setG2BulkProducts(prev => prev.map(p => ({ ...p, isEnabled, status: isEnabled ? 'ACTIVE' : 'DISABLED' })));
+        }
+      } catch (e: any) {
+        alert(e.message);
+      } finally {
+        setIsBulkGameUpdating(false);
+      }
+      return;
+    }
+
+    setIsBulkGameUpdating(true);
+    try {
+      const res = await fetch('/api/g2bulk/products/bulk-toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productIds: ids, isEnabled })
+      });
+      const data = await res.json();
+      if (data?.success) {
+        setG2BulkProducts(prev => prev.map(p => ids.includes(p.productId) ? { ...p, isEnabled, status: isEnabled ? 'ACTIVE' : 'DISABLED' } : p));
+        setSelectedG2bProductIds([]);
+      }
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setIsBulkGameUpdating(false);
+    }
+  };
+
+  const handleGlobalBulkToggle = async (isEnabled: boolean, provider: 'all' | 'lootbar' | 'topupnation' | 'g2bulk' = 'all') => {
+    const providerName = provider === 'all' ? 'ALL games across all 3 providers' : `${provider.toUpperCase()} games`;
+    if (!confirm(`Are you sure you want to ${isEnabled ? 'ENABLE' : 'DISABLE'} ${providerName}?`)) {
+      return;
+    }
+    setIsBulkGameUpdating(true);
+    try {
+      const res = await fetch('/api/games/global-bulk-toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isEnabled, provider })
+      });
+      const data = await res.json();
+      if (data?.success) {
+        if (provider === 'all' || provider === 'lootbar') {
+          setSavedGames(prev => prev.map(g => ({ ...g, isEnabled })));
+        }
+        if (provider === 'all' || provider === 'topupnation') {
+          setTpnProducts(prev => prev.map(p => ({ ...p, isEnabled, status: isEnabled ? 'ACTIVE' : 'DISABLED' })));
+        }
+        if (provider === 'all' || provider === 'g2bulk') {
+          setG2BulkProducts(prev => prev.map(p => ({ ...p, isEnabled, status: isEnabled ? 'ACTIVE' : 'DISABLED' })));
+        }
+        await Promise.all([fetchSavedGames(), fetchTpnProducts(), fetchG2BulkProducts()]);
+      } else {
+        alert(data?.error || 'Failed to update games');
+      }
+    } catch (err: any) {
+      alert(`Error: ${err.message}`);
+    } finally {
+      setIsBulkGameUpdating(false);
+    }
+  };
+
+  const handleBulkToggleSelectedActive = async (isEnabled: boolean) => {
+    if (selectedActiveGameKeys.length === 0) return;
+    setIsBulkGameUpdating(true);
+    try {
+      const res = await fetch('/api/games/global-bulk-toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isEnabled, items: selectedActiveGameKeys })
+      });
+      const data = await res.json();
+      if (data?.success) {
+        await Promise.all([fetchSavedGames(), fetchTpnProducts(), fetchG2BulkProducts()]);
+        setSelectedActiveGameKeys([]);
+      }
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setIsBulkGameUpdating(false);
+    }
   };
 
   if (isConfigured === null) {
@@ -1581,111 +1696,6 @@ export default function App() {
                 {isSavingG2Bulk ? 'Verifying & Connecting...' : 'Save & Verify G2Bulk API'}
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* FZR Cards Settings Modal */}
-      {showFzrModal && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white p-8 rounded-2xl shadow-sm border border-neutral-200 w-full max-w-lg relative">
-            <button 
-              onClick={() => setShowFzrModal(false)}
-              className="absolute top-4 right-4 text-neutral-400 hover:text-neutral-600 font-bold text-lg"
-            >
-              ✕
-            </button>
-            <div className="text-center mb-6">
-              <div className="w-12 h-12 bg-sky-50 text-sky-600 rounded-xl flex items-center justify-center mx-auto mb-3 font-bold text-xl">
-                💎
-              </div>
-              <h1 className="text-2xl font-bold text-neutral-900 tracking-tight">FZR Cards Reseller API</h1>
-              <p className="text-neutral-500 mt-1 text-sm">Configure your FZR Cards API credentials and webhook integration</p>
-            </div>
-
-            <form onSubmit={handleSaveFzrCredentials} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-1">API Key</label>
-                <input 
-                  type="text" 
-                  required
-                  placeholder="e.g. fzr_live_..."
-                  value={fzrApiKey}
-                  onChange={e => setFzrApiKey(e.target.value)}
-                  className="w-full px-4 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none font-mono text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-1">API Secret</label>
-                <input 
-                  type="password" 
-                  required
-                  placeholder="••••••••••••••••"
-                  value={fzrApiSecret}
-                  onChange={e => setFzrApiSecret(e.target.value)}
-                  className="w-full px-4 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none font-mono text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-1">Webhook Secret (Optional)</label>
-                <input 
-                  type="password" 
-                  placeholder="Webhook signing secret"
-                  value={fzrWebhookSecret}
-                  onChange={e => setFzrWebhookSecret(e.target.value)}
-                  className="w-full px-4 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none font-mono text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-1">API Base URL</label>
-                <input 
-                  type="text" 
-                  placeholder="https://api.fzr.cards"
-                  value={fzrBaseUrl}
-                  onChange={e => setFzrBaseUrl(e.target.value)}
-                  className="w-full px-4 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none font-mono text-sm text-neutral-600"
-                />
-              </div>
-
-              {fzrWebhookUrl && (
-                <div className="p-3 bg-sky-50 border border-sky-100 rounded-lg text-xs">
-                  <span className="font-semibold text-sky-900 block mb-1">📌 Your Webhook Callback URL:</span>
-                  <div className="flex items-center gap-2">
-                    <code className="bg-white px-2 py-1 rounded border border-sky-200 text-sky-700 flex-1 truncate font-mono">
-                      {fzrWebhookUrl}
-                    </code>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        navigator.clipboard.writeText(fzrWebhookUrl);
-                        alert('Copied webhook URL!');
-                      }}
-                      className="px-2.5 py-1 bg-sky-600 text-white rounded font-medium hover:bg-sky-700 transition-colors"
-                    >
-                      Copy
-                    </button>
-                  </div>
-                  <p className="text-sky-600 mt-1 text-[11px]">Set this URL in FZR Cards Portal to receive instant webhook order status callbacks.</p>
-                </div>
-              )}
-
-              {fzrError && (
-                <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm border border-red-100">
-                  {fzrError}
-                </div>
-              )}
-
-              <button 
-                type="submit" 
-                disabled={isSavingFzr}
-                className="w-full py-2.5 bg-sky-600 hover:bg-sky-700 disabled:bg-neutral-400 text-white font-medium rounded-lg transition-colors mt-4"
-              >
-                {isSavingFzr ? 'Verifying & Connecting...' : 'Save & Verify FZR Cards API'}
-              </button>
-            </form>
           </div>
         </div>
       )}
@@ -2363,9 +2373,9 @@ export default function App() {
                 <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-lg ${
                   skuModalGame.isTpn 
                     ? 'bg-indigo-100 text-indigo-700' 
-                    : skuModalGame.isFzr ? 'bg-sky-100 text-sky-700' : 'bg-emerald-100 text-emerald-700'
+                    : skuModalGame.isG2b ? 'bg-orange-100 text-orange-700' : 'bg-emerald-100 text-emerald-700'
                 }`}>
-                  {skuModalGame.isTpn ? '🌐' : skuModalGame.isFzr ? '💎' : '🎮'}
+                  {skuModalGame.isTpn ? '🌐' : skuModalGame.isG2b ? '🔥' : '🎮'}
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
@@ -2373,18 +2383,18 @@ export default function App() {
                     <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
                       skuModalGame.isTpn 
                         ? 'bg-indigo-100 text-indigo-800' 
-                        : skuModalGame.isFzr ? 'bg-sky-100 text-sky-800' : 'bg-emerald-100 text-emerald-800'
+                        : skuModalGame.isG2b ? 'bg-orange-100 text-orange-800' : 'bg-emerald-100 text-emerald-800'
                     }`}>
-                      {skuModalGame.isTpn ? 'TopupNation' : skuModalGame.isFzr ? 'FZR Cards' : 'LootBar'}
+                      {skuModalGame.isTpn ? 'TopupNation' : skuModalGame.isG2b ? 'G2Bulk' : 'LootBar'}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 mt-0.5">
                     <span className="text-xs text-neutral-500 font-mono">
-                      Game Short Key: <strong className="text-neutral-800 font-bold">.{skuModalGame.shortKey || (skuModalGame.isTpn ? `t${skuModalGame.productId.slice(0, 4)}` : skuModalGame.isFzr ? `f${skuModalGame.productId.slice(0, 4)}` : skuModalGame.gameId)}</strong>
+                      Game Short Key: <strong className="text-neutral-800 font-bold">.{skuModalGame.shortKey || (skuModalGame.isTpn ? `t${skuModalGame.productId.slice(0, 4)}` : skuModalGame.isG2b ? `g${skuModalGame.productId.slice(0, 4)}` : skuModalGame.gameId)}</strong>
                     </span>
                     <span className="text-neutral-300">•</span>
                     <span className="text-xs text-neutral-500">
-                      ID: {skuModalGame.isTpn || skuModalGame.isFzr ? skuModalGame.productId : skuModalGame.gameId}
+                      ID: {skuModalGame.isTpn || skuModalGame.isG2b ? skuModalGame.productId : skuModalGame.gameId}
                     </span>
                   </div>
                 </div>
@@ -2465,9 +2475,9 @@ export default function App() {
                   const filteredSkus = (skuModalGame.modalSkus || []).filter((sku: any) => {
                     if (!skuSearchFilter.trim()) return true;
                     const query = skuSearchFilter.toLowerCase().trim();
-                    const isApiBased = skuModalGame.isTpn || skuModalGame.isFzr;
-                    const name = String(isApiBased ? sku.name : (sku.sku_name || '')).toLowerCase();
-                    const id = String(isApiBased ? sku.sku : sku.sku_id).toLowerCase();
+                    const isApiBased = skuModalGame.isTpn || skuModalGame.isG2b;
+                    const name = String(isApiBased ? (sku.name || sku.productName || '') : (sku.sku_name || '')).toLowerCase();
+                    const id = String(isApiBased ? (sku.sku || sku.skuId || '') : sku.sku_id).toLowerCase();
                     const currentKey = String(skuShortKeysInput[id] || '').toLowerCase();
                     return name.includes(query) || id.includes(query) || currentKey.includes(query);
                   });
@@ -2480,12 +2490,12 @@ export default function App() {
                     );
                   }
 
-                  const activeGameKey = skuModalGame.shortKey || (skuModalGame.isTpn ? `t${skuModalGame.productId.slice(0, 4)}` : skuModalGame.isFzr ? `f${skuModalGame.productId.slice(0, 4)}` : skuModalGame.gameId);
+                  const activeGameKey = skuModalGame.shortKey || (skuModalGame.isTpn ? `t${skuModalGame.productId.slice(0, 4)}` : skuModalGame.isG2b ? `g${skuModalGame.productId.slice(0, 4)}` : skuModalGame.gameId);
 
                   return filteredSkus.map((sku: any) => {
-                    const isApiBased = skuModalGame.isTpn || skuModalGame.isFzr;
-                    const skuId = String(isApiBased ? sku.sku : sku.sku_id);
-                    const name = isApiBased ? sku.name : (sku.sku_name || `Package #${skuId}`);
+                    const isApiBased = skuModalGame.isTpn || skuModalGame.isG2b;
+                    const skuId = String(isApiBased ? (sku.sku || sku.skuId) : sku.sku_id);
+                    const name = isApiBased ? (sku.name || sku.productName) : (sku.sku_name || `Package #${skuId}`);
                     const price = isApiBased 
                       ? `$${sku.price} ${sku.currency || 'USD'}` 
                       : `$${sku.reseller_price || sku.price || '0.00'}`;
@@ -2601,7 +2611,7 @@ export default function App() {
                 <span className="text-xs bg-neutral-100 text-neutral-700 font-semibold px-2 py-0.5 rounded-full">Multi-Provider</span>
               </div>
               <p className="text-neutral-500 text-sm mt-0.5">
-                Manage integrated providers: LootBar API, TopUpNation API & FZR Cards API
+                Manage integrated providers: LootBar API, TopUpNation API & G2Bulk API
               </p>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
@@ -2642,17 +2652,6 @@ export default function App() {
               </button>
 
               <button 
-                onClick={() => setShowFzrModal(true)}
-                className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors flex items-center gap-1.5 ${
-                  fzrConfigured 
-                    ? 'bg-sky-50 text-sky-700 border-sky-200 hover:bg-sky-100' 
-                    : 'bg-neutral-100 text-neutral-700 border-neutral-200 hover:bg-neutral-200'
-                }`}
-              >
-                <span className={`w-2 h-2 rounded-full ${fzrConfigured ? 'bg-sky-500' : 'bg-neutral-400'}`}></span>
-                FZR Cards API: {fzrConfigured ? 'Connected' : 'Setup'}
-              </button>
-              <button 
                 onClick={() => setShowG2BulkSettings(true)}
                 className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors flex items-center gap-1.5 ${
                   g2bulkConfigured 
@@ -2663,49 +2662,410 @@ export default function App() {
                 <span className={`w-2 h-2 rounded-full ${g2bulkConfigured ? 'bg-orange-500' : 'bg-neutral-400'}`}></span>
                 G2Bulk API: {g2bulkConfigured ? 'Connected' : 'Setup'}
               </button>
+
+              <button 
+                onClick={() => setShowNotiModal(true)}
+                className="px-3.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors flex items-center gap-1.5 bg-sky-50 text-sky-800 border-sky-300 hover:bg-sky-100 shadow-xs cursor-pointer"
+              >
+                <span>🔔</span>
+                <span>API Noti: {Object.values(notiSettings).filter(Boolean).length}/5 Active</span>
+              </button>
             </div>
           </div>
         </div>
 
-        {/* Owner Settings & Reseller Balances */}
+        {/* Owner Settings & Notification Controls */}
         <div className="bg-white p-8 rounded-xl shadow-sm border border-neutral-200">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
             {/* Owner settings */}
-            <div className="lg:col-span-3 flex flex-col justify-between">
+            <div className="lg:col-span-4 flex flex-col justify-between border-b lg:border-b-0 lg:border-r border-neutral-200 pb-6 lg:pb-0 lg:pr-6">
               <div>
-                <h2 className="text-lg font-bold text-neutral-900 mb-1">Bot Settings</h2>
-                <p className="text-xs text-neutral-500 mb-3">Telegram bot token and admin ID</p>
+                <div className="flex items-center gap-2 mb-1">
+                  <h2 className="text-lg font-bold text-neutral-900">Bot Settings</h2>
+                  <span className="text-[10px] bg-neutral-100 text-neutral-600 font-semibold px-2 py-0.5 rounded">Core Config</span>
+                </div>
+                <p className="text-xs text-neutral-500 mb-4">Telegram bot credentials and primary administrator ID</p>
                 
-                <div className="space-y-2 mb-3">
+                <div className="space-y-3 mb-4">
                   <div className="flex flex-col">
-                    <label className="text-xs font-semibold text-neutral-600 mb-1">Bot Token</label>
+                    <label className="text-xs font-semibold text-neutral-600 mb-1">Telegram Bot Token</label>
                     <input 
                       type="password" 
-                      placeholder="Bot Token"
+                      placeholder="e.g. 123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
                       value={telegramBotToken}
                       onChange={e => setTelegramBotToken(e.target.value)}
-                      className="w-full px-3 py-1.5 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-xs"
+                      className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-neutral-900 outline-none text-xs"
                     />
                   </div>
                   <div className="flex flex-col">
-                    <label className="text-xs font-semibold text-neutral-600 mb-1">Admin Chat ID</label>
+                    <label className="text-xs font-semibold text-neutral-600 mb-1">Admin Telegram Chat ID</label>
                     <input 
                       type="text" 
-                      placeholder="Owner Chat ID"
+                      placeholder="e.g. 1234567890"
                       value={adminChatId}
                       onChange={e => setAdminChatId(e.target.value)}
-                      className="w-full px-3 py-1.5 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-xs"
+                      className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-neutral-900 outline-none text-xs"
                     />
                   </div>
                 </div>
 
-                <div className="flex justify-end">
-                  <button 
-                    onClick={handleSaveAdmin}
-                    className="px-3 py-1.5 bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-medium rounded-lg transition-colors whitespace-nowrap w-full"
-                  >
-                    Save Bot Settings
-                  </button>
+                <button 
+                  onClick={handleSaveAdmin}
+                  className="px-4 py-2 bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-medium rounded-lg transition-colors whitespace-nowrap w-full flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                >
+                  <span>💾</span>
+                  <span>Save Bot Settings</span>
+                </button>
+              </div>
+            </div>
+
+            {/* API & System Notifications Control */}
+            <div className="lg:col-span-8 flex flex-col justify-between">
+              <div>
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-2">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-lg font-bold text-neutral-900">API Notifications Control</h2>
+                      <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                        {Object.values(notiSettings).filter(Boolean).length}/5 Enabled
+                      </span>
+                    </div>
+                    <p className="text-xs text-neutral-500 mt-0.5">
+                      Noti ကျမဲ့ API များကို အဖွင့်/အပိတ် (Enable/Mute) ပြုလုပ်နိုင်သော ခလုတ်များ
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 mt-1 sm:mt-0">
+                    <button
+                      onClick={() => handleToggleAllNoti(true)}
+                      className="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-emerald-50 text-emerald-700 border border-emerald-300 hover:bg-emerald-100 transition-colors cursor-pointer"
+                    >
+                      ✓ All On
+                    </button>
+                    <button
+                      onClick={() => handleToggleAllNoti(false)}
+                      className="px-2.5 py-1 text-[11px] font-semibold rounded-md bg-neutral-100 text-neutral-600 border border-neutral-300 hover:bg-neutral-200 transition-colors cursor-pointer"
+                    >
+                      ✕ All Off
+                    </button>
+                  </div>
+                </div>
+
+                {notiSuccessMsg && (
+                  <div className="mb-3 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-lg flex items-center gap-2 transition-all">
+                    <span>✅</span>
+                    <span>{notiSuccessMsg}</span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                  {/* LootBar API Toggle */}
+                  <div className={`p-3.5 rounded-xl border transition-all ${
+                    notiSettings.lootbarEnabled 
+                      ? 'bg-emerald-50/50 border-emerald-200' 
+                      : 'bg-neutral-50 border-neutral-200 opacity-75'
+                  }`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center text-sm font-bold">
+                          🎮
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-bold text-neutral-900">LootBar API</span>
+                            <span className={`text-[10px] px-1.5 py-0.2 rounded font-medium ${
+                              notiSettings.lootbarEnabled ? 'bg-emerald-100 text-emerald-800' : 'bg-neutral-200 text-neutral-600'
+                            }`}>
+                              {notiSettings.lootbarEnabled ? 'ACTIVE' : 'MUTED'}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-neutral-500 mt-0.5 leading-snug">
+                            Order completions, failed status refunds & webhook alerts
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleToggleNoti('lootbarEnabled')}
+                        disabled={togglingNotiKey === 'lootbarEnabled'}
+                        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                          notiSettings.lootbarEnabled ? 'bg-emerald-600' : 'bg-neutral-300'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                            notiSettings.lootbarEnabled ? 'translate-x-4' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* TopUpNation API Toggle */}
+                  <div className={`p-3.5 rounded-xl border transition-all ${
+                    notiSettings.topupnationEnabled 
+                      ? 'bg-indigo-50/50 border-indigo-200' 
+                      : 'bg-neutral-50 border-neutral-200 opacity-75'
+                  }`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center text-sm font-bold">
+                          🌐
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-bold text-neutral-900">TopUpNation API</span>
+                            <span className={`text-[10px] px-1.5 py-0.2 rounded font-medium ${
+                              notiSettings.topupnationEnabled ? 'bg-indigo-100 text-indigo-800' : 'bg-neutral-200 text-neutral-600'
+                            }`}>
+                              {notiSettings.topupnationEnabled ? 'ACTIVE' : 'MUTED'}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-neutral-500 mt-0.5 leading-snug">
+                            Webhook callbacks & active order poller status messages
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleToggleNoti('topupnationEnabled')}
+                        disabled={togglingNotiKey === 'topupnationEnabled'}
+                        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                          notiSettings.topupnationEnabled ? 'bg-indigo-600' : 'bg-neutral-300'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                            notiSettings.topupnationEnabled ? 'translate-x-4' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* G2Bulk API Toggle */}
+                  <div className={`p-3.5 rounded-xl border transition-all ${
+                    notiSettings.g2bulkEnabled 
+                      ? 'bg-orange-50/50 border-orange-200' 
+                      : 'bg-neutral-50 border-neutral-200 opacity-75'
+                  }`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-orange-100 text-orange-700 flex items-center justify-center text-sm font-bold">
+                          🔥
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-bold text-neutral-900">G2Bulk API</span>
+                            <span className={`text-[10px] px-1.5 py-0.2 rounded font-medium ${
+                              notiSettings.g2bulkEnabled ? 'bg-orange-100 text-orange-800' : 'bg-neutral-200 text-neutral-600'
+                            }`}>
+                              {notiSettings.g2bulkEnabled ? 'ACTIVE' : 'MUTED'}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-neutral-500 mt-0.5 leading-snug">
+                            Direct order notifications & callback webhook processing
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleToggleNoti('g2bulkEnabled')}
+                        disabled={togglingNotiKey === 'g2bulkEnabled'}
+                        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                          notiSettings.g2bulkEnabled ? 'bg-orange-600' : 'bg-neutral-300'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                            notiSettings.g2bulkEnabled ? 'translate-x-4' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Admin Order Alerts Toggle */}
+                  <div className={`p-3.5 rounded-xl border transition-all ${
+                    notiSettings.adminOrderAlerts 
+                      ? 'bg-purple-50/50 border-purple-200' 
+                      : 'bg-neutral-50 border-neutral-200 opacity-75'
+                  }`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center text-sm font-bold">
+                          🔔
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-bold text-neutral-900">Admin Order Alerts</span>
+                            <span className={`text-[10px] px-1.5 py-0.2 rounded font-medium ${
+                              notiSettings.adminOrderAlerts ? 'bg-purple-100 text-purple-800' : 'bg-neutral-200 text-neutral-600'
+                            }`}>
+                              {notiSettings.adminOrderAlerts ? 'ACTIVE' : 'MUTED'}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-neutral-500 mt-0.5 leading-snug">
+                            Instant Telegram notification to Admin when any user orders
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleToggleNoti('adminOrderAlerts')}
+                        disabled={togglingNotiKey === 'adminOrderAlerts'}
+                        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                          notiSettings.adminOrderAlerts ? 'bg-purple-600' : 'bg-neutral-300'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                            notiSettings.adminOrderAlerts ? 'translate-x-4' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Price Change Alerts Toggle with Per-API selection */}
+                  <div className={`p-4 rounded-xl border transition-all md:col-span-2 ${
+                    notiSettings.priceChangeAlerts 
+                      ? 'bg-teal-50/50 border-teal-200' 
+                      : 'bg-neutral-50 border-neutral-200 opacity-75'
+                  }`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-teal-100 text-teal-700 flex items-center justify-center text-sm font-bold">
+                          🏷️
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-bold text-neutral-900">Price & Catalog Change Alerts</span>
+                            <span className={`text-[10px] px-1.5 py-0.2 rounded font-medium ${
+                              notiSettings.priceChangeAlerts ? 'bg-teal-100 text-teal-800' : 'bg-neutral-200 text-neutral-600'
+                            }`}>
+                              {notiSettings.priceChangeAlerts ? 'ACTIVE' : 'MUTED'}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-neutral-500 mt-0.5 leading-snug">
+                            API စျေးနှုန်း အတက်/အကျ အပြောင်းအလဲများကို Bot User များထံ Auto Alert Noti ပေးပို့သည့်စနစ်
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleToggleNoti('priceChangeAlerts')}
+                        disabled={togglingNotiKey === 'priceChangeAlerts'}
+                        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                          notiSettings.priceChangeAlerts ? 'bg-teal-600' : 'bg-neutral-300'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                            notiSettings.priceChangeAlerts ? 'translate-x-4' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+
+                    {/* Per-API Price Change Noti Toggles */}
+                    <div className={`mt-3 pt-3 border-t border-teal-200/60 transition-opacity ${notiSettings.priceChangeAlerts ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[11px] font-semibold text-neutral-700 flex items-center gap-1">
+                          <span>⚙️</span> Filter Price Alerts by API Provider:
+                        </span>
+                        <span className="text-[10px] text-neutral-500">
+                          API တစ်ခုချင်းစီအလိုက် Noti ရွေးချယ် အဖွင့်/အပိတ်
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        {/* LootBar Price Alert */}
+                        <div className={`flex items-center justify-between p-2 rounded-lg border transition-all ${
+                          notiSettings.priceChangeLootbar && notiSettings.priceChangeAlerts
+                            ? 'bg-amber-50/80 border-amber-200 text-amber-950'
+                            : 'bg-white border-neutral-200 text-neutral-500'
+                        }`}>
+                          <div className="flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                            <span className="text-[11px] font-bold">LootBar</span>
+                            <span className={`text-[9px] px-1 py-0.2 rounded font-medium ${
+                              notiSettings.priceChangeLootbar ? 'bg-amber-100 text-amber-800' : 'bg-neutral-100 text-neutral-500'
+                            }`}>
+                              {notiSettings.priceChangeLootbar ? 'ON' : 'OFF'}
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => handleToggleNoti('priceChangeLootbar')}
+                            disabled={togglingNotiKey === 'priceChangeLootbar' || !notiSettings.priceChangeAlerts}
+                            className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors duration-200 focus:outline-none ${
+                              notiSettings.priceChangeLootbar && notiSettings.priceChangeAlerts ? 'bg-amber-600' : 'bg-neutral-300'
+                            }`}
+                          >
+                            <span
+                              className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow ring-0 transition duration-200 ${
+                                notiSettings.priceChangeLootbar && notiSettings.priceChangeAlerts ? 'translate-x-3' : 'translate-x-0'
+                              }`}
+                            />
+                          </button>
+                        </div>
+
+                        {/* TopupNation Price Alert */}
+                        <div className={`flex items-center justify-between p-2 rounded-lg border transition-all ${
+                          notiSettings.priceChangeTopupnation && notiSettings.priceChangeAlerts
+                            ? 'bg-blue-50/80 border-blue-200 text-blue-950'
+                            : 'bg-white border-neutral-200 text-neutral-500'
+                        }`}>
+                          <div className="flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                            <span className="text-[11px] font-bold">TopupNation</span>
+                            <span className={`text-[9px] px-1 py-0.2 rounded font-medium ${
+                              notiSettings.priceChangeTopupnation ? 'bg-blue-100 text-blue-800' : 'bg-neutral-100 text-neutral-500'
+                            }`}>
+                              {notiSettings.priceChangeTopupnation ? 'ON' : 'OFF'}
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => handleToggleNoti('priceChangeTopupnation')}
+                            disabled={togglingNotiKey === 'priceChangeTopupnation' || !notiSettings.priceChangeAlerts}
+                            className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors duration-200 focus:outline-none ${
+                              notiSettings.priceChangeTopupnation && notiSettings.priceChangeAlerts ? 'bg-blue-600' : 'bg-neutral-300'
+                            }`}
+                          >
+                            <span
+                              className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow ring-0 transition duration-200 ${
+                                notiSettings.priceChangeTopupnation && notiSettings.priceChangeAlerts ? 'translate-x-3' : 'translate-x-0'
+                              }`}
+                            />
+                          </button>
+                        </div>
+
+                        {/* G2Bulk Price Alert */}
+                        <div className={`flex items-center justify-between p-2 rounded-lg border transition-all ${
+                          notiSettings.priceChangeG2bulk && notiSettings.priceChangeAlerts
+                            ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950'
+                            : 'bg-white border-neutral-200 text-neutral-500'
+                        }`}>
+                          <div className="flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                            <span className="text-[11px] font-bold">G2Bulk</span>
+                            <span className={`text-[9px] px-1 py-0.2 rounded font-medium ${
+                              notiSettings.priceChangeG2bulk ? 'bg-emerald-100 text-emerald-800' : 'bg-neutral-100 text-neutral-500'
+                            }`}>
+                              {notiSettings.priceChangeG2bulk ? 'ON' : 'OFF'}
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => handleToggleNoti('priceChangeG2bulk')}
+                            disabled={togglingNotiKey === 'priceChangeG2bulk' || !notiSettings.priceChangeAlerts}
+                            className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors duration-200 focus:outline-none ${
+                              notiSettings.priceChangeG2bulk && notiSettings.priceChangeAlerts ? 'bg-emerald-600' : 'bg-neutral-300'
+                            }`}
+                          >
+                            <span
+                              className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow ring-0 transition duration-200 ${
+                                notiSettings.priceChangeG2bulk && notiSettings.priceChangeAlerts ? 'translate-x-3' : 'translate-x-0'
+                              }`}
+                            />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2713,14 +3073,65 @@ export default function App() {
           </div>
         </div>
 
+        {/* MASTER GLOBAL GAME CONTROL BANNER */}
+        <div className="bg-gradient-to-r from-neutral-900 via-neutral-800 to-neutral-900 p-6 sm:p-7 rounded-2xl shadow-md border border-neutral-700 text-white">
+          <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-5">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <span className="text-xl">⚡</span>
+                <h2 className="text-lg sm:text-xl font-black tracking-tight text-white">Master Bot Game & Catalog Controller</h2>
+                <span className="text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full font-bold">
+                  {savedGames.filter(g => g.isEnabled !== false).length + tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length + g2bulkProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length} Total Active in Bot
+                </span>
+              </div>
+              <p className="text-xs sm:text-sm text-neutral-300">
+                Instantly enable or disable games across all providers (LootBar, TopUpNation, G2Bulk) with one click or select individually.
+              </p>
+              <div className="flex items-center gap-3 pt-2 flex-wrap text-xs font-medium text-neutral-400">
+                <span className="inline-flex items-center gap-1 bg-neutral-800/80 px-2.5 py-1 rounded-lg border border-neutral-700">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                  LootBar: <strong className="text-white font-mono">{savedGames.filter(g => g.isEnabled !== false).length}/{games.length || savedGames.length}</strong>
+                </span>
+                <span className="inline-flex items-center gap-1 bg-neutral-800/80 px-2.5 py-1 rounded-lg border border-neutral-700">
+                  <span className="w-2 h-2 rounded-full bg-indigo-400"></span>
+                  TopUpNation: <strong className="text-white font-mono">{tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length}/{tpnProducts.length}</strong>
+                </span>
+                <span className="inline-flex items-center gap-1 bg-neutral-800/80 px-2.5 py-1 rounded-lg border border-neutral-700">
+                  <span className="w-2 h-2 rounded-full bg-orange-400"></span>
+                  G2Bulk: <strong className="text-white font-mono">{g2bulkProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length}/{g2bulkProducts.length}</strong>
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5 w-full lg:w-auto">
+              <button
+                disabled={isBulkGameUpdating}
+                onClick={() => handleGlobalBulkToggle(true, 'all')}
+                className="flex-1 sm:flex-none px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-neutral-700 text-white font-bold text-xs sm:text-sm rounded-xl transition-all shadow-sm flex items-center justify-center gap-2 active:scale-95"
+              >
+                <span>⚡</span>
+                <span>Enable ALL (All Providers)</span>
+              </button>
+              <button
+                disabled={isBulkGameUpdating}
+                onClick={() => handleGlobalBulkToggle(false, 'all')}
+                className="flex-1 sm:flex-none px-4 py-2.5 bg-rose-600 hover:bg-rose-500 disabled:bg-neutral-700 text-white font-bold text-xs sm:text-sm rounded-xl transition-all shadow-sm flex items-center justify-center gap-2 active:scale-95"
+              >
+                <span>🔒</span>
+                <span>Disable ALL (All Providers)</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
         {/* TopupNation Products Management */}
-        <div className="bg-white p-8 rounded-xl shadow-sm border border-neutral-200">
+        <div className="bg-white p-6 sm:p-8 rounded-xl shadow-sm border border-neutral-200">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-2">
             <h2 
               className="text-xl font-bold text-neutral-900 flex items-center gap-2 cursor-pointer select-none hover:text-indigo-700 transition-colors"
               onClick={() => setShowTpnGames(!showTpnGames)}
             >
-              <span>🌐</span> TopUpNation Products Catalog
+              <span>🌐</span> TopUpNation Products Catalog ({tpnProducts.length})
               <svg className={`w-5 h-5 text-neutral-400 transition-transform ${showTpnGames ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
               </svg>
@@ -2738,34 +3149,91 @@ export default function App() {
               </button>
             </div>
           </div>
-          <p className="text-sm text-neutral-500 mb-6">
+          <p className="text-sm text-neutral-500 mb-4">
             Synced products from TopupNation. Set custom Short Keys for rapid ordering in Telegram (e.g. <span className="font-mono font-semibold text-neutral-800">.tp</span> or <span className="font-mono font-semibold text-neutral-800">.tml</span>).
           </p>
           {showTpnGames && (
             <div className="mt-4">
-              <div className="mb-4 flex flex-col sm:flex-row gap-3 items-start sm:items-center">
-                <input
-                  type="text"
-                  placeholder="Search TopUpNation Games..."
-                  className="px-4 py-2 border border-neutral-300 rounded-lg w-full max-w-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                  value={tpnGameSearch}
-                  onChange={(e) => setTpnGameSearch(e.target.value)}
-                />
-                <div className="flex gap-2">
+              {/* Controls & Filter Bar */}
+              <div className="mb-4 flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
+                <div className="flex flex-col sm:flex-row gap-2.5 flex-1">
+                  <input
+                    type="text"
+                    placeholder="Search TopUpNation Games & ID..."
+                    className="px-3.5 py-2 border border-neutral-300 rounded-lg w-full max-w-sm text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                    value={tpnGameSearch}
+                    onChange={(e) => setTpnGameSearch(e.target.value)}
+                  />
+                  <div className="inline-flex rounded-lg border border-neutral-200 bg-neutral-100 p-0.5 text-xs font-semibold">
+                    <button
+                      onClick={() => setTpnStatusFilter('ALL')}
+                      className={`px-3 py-1.5 rounded-md transition-all ${tpnStatusFilter === 'ALL' ? 'bg-white text-neutral-900 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
+                    >
+                      All ({tpnProducts.length})
+                    </button>
+                    <button
+                      onClick={() => setTpnStatusFilter('ENABLED')}
+                      className={`px-3 py-1.5 rounded-md transition-all ${tpnStatusFilter === 'ENABLED' ? 'bg-white text-indigo-700 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
+                    >
+                      Enabled ({tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length})
+                    </button>
+                    <button
+                      onClick={() => setTpnStatusFilter('DISABLED')}
+                      className={`px-3 py-1.5 rounded-md transition-all ${tpnStatusFilter === 'DISABLED' ? 'bg-white text-rose-700 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
+                    >
+                      Disabled ({tpnProducts.filter(p => p.isEnabled === false || p.status === 'DISABLED').length})
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
                   <button 
-                    onClick={() => handleBulkToggleTpnProducts(true)}
-                    className="px-3 py-1.5 bg-green-50 text-green-700 hover:bg-green-100 border border-green-200 text-xs font-bold rounded-lg transition-colors"
+                    disabled={isBulkGameUpdating}
+                    onClick={() => handleBulkToggleTpn(true, [])}
+                    className="px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 text-xs font-bold rounded-lg transition-colors flex items-center gap-1"
                   >
-                    Enable All Filtered
+                    <span>⚡</span> Enable All TopUpNation
                   </button>
                   <button 
-                    onClick={() => handleBulkToggleTpnProducts(false)}
-                    className="px-3 py-1.5 bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 text-xs font-bold rounded-lg transition-colors"
+                    disabled={isBulkGameUpdating}
+                    onClick={() => handleBulkToggleTpn(false, [])}
+                    className="px-3 py-1.5 bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 text-xs font-bold rounded-lg transition-colors flex items-center gap-1"
                   >
-                    Disable All Filtered
+                    <span>🔒</span> Disable All TopUpNation
                   </button>
                 </div>
               </div>
+
+              {/* Multi-selection bar for TopupNation */}
+              {selectedTpnProductIds.length > 0 && (
+                <div className="mb-4 p-3 bg-indigo-50 border border-indigo-200 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-indigo-900">{selectedTpnProductIds.length} item(s) selected</span>
+                    <button 
+                      onClick={() => setSelectedTpnProductIds([])}
+                      className="text-neutral-500 hover:text-neutral-800 underline ml-1"
+                    >
+                      Clear Selection
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      disabled={isBulkGameUpdating}
+                      onClick={() => handleBulkToggleTpn(true)}
+                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg transition-colors shadow-xs flex items-center gap-1"
+                    >
+                      ✓ Enable Selected ({selectedTpnProductIds.length})
+                    </button>
+                    <button
+                      disabled={isBulkGameUpdating}
+                      onClick={() => handleBulkToggleTpn(false)}
+                      className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg transition-colors shadow-xs flex items-center gap-1"
+                    >
+                      ✕ Disable Selected ({selectedTpnProductIds.length})
+                    </button>
+                  </div>
+                </div>
+              )}
 
           {!tpnConfigured ? (
             <div className="text-center py-10 bg-neutral-50 rounded-lg border border-neutral-200 border-dashed">
@@ -2784,304 +3252,180 @@ export default function App() {
               No products synced yet. Click <span className="font-semibold text-indigo-600">"Sync TopupNation Catalog"</span> to import products.
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {tpnProducts.filter(p => (p.name || "").toLowerCase().includes(tpnGameSearch.toLowerCase())).map((p) => {
-                const activeKey = p.shortKey || '';
-                const currentInput = tpnShortKeyInput[p.productId] !== undefined ? tpnShortKeyInput[p.productId] : activeKey;
-                const isModified = currentInput !== activeKey;
-                const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+            <>
+              {/* Select all filtered helper */}
+              <div className="flex justify-between items-center text-xs text-neutral-500 mb-3 px-1">
+                <span>
+                  Showing {tpnProducts.filter(p => {
+                    const matchesSearch = (p.name || "").toLowerCase().includes(tpnGameSearch.toLowerCase()) || (p.productId || "").toLowerCase().includes(tpnGameSearch.toLowerCase());
+                    const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+                    if (tpnStatusFilter === 'ENABLED') return matchesSearch && isEnabled;
+                    if (tpnStatusFilter === 'DISABLED') return matchesSearch && !isEnabled;
+                    return matchesSearch;
+                  }).length} products
+                </span>
+                <button
+                  onClick={() => {
+                    const filtered = tpnProducts.filter(p => {
+                      const matchesSearch = (p.name || "").toLowerCase().includes(tpnGameSearch.toLowerCase()) || (p.productId || "").toLowerCase().includes(tpnGameSearch.toLowerCase());
+                      const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+                      if (tpnStatusFilter === 'ENABLED') return matchesSearch && isEnabled;
+                      if (tpnStatusFilter === 'DISABLED') return matchesSearch && !isEnabled;
+                      return matchesSearch;
+                    }).map(p => p.productId);
 
-                return (
-                  <div 
-                    key={p.productId} 
-                    className={`p-5 bg-white border-2 rounded-2xl transition-all flex flex-col justify-between ${
-                      isEnabled 
-                        ? 'border-indigo-500 shadow-md ring-1 ring-indigo-500/20' 
-                        : 'border-neutral-200 hover:border-neutral-300 shadow-sm opacity-75'
-                    }`}
-                  >
-                    <div className="mb-3">
-                      <div className="flex items-start justify-between gap-2 mb-2">
-                        <div>
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-extrabold text-base text-neutral-900 leading-tight">{p.name}</span>
-                            <span className="text-[10px] bg-indigo-50 text-indigo-700 font-semibold px-1.5 py-0.5 rounded border border-indigo-100">TopupNation</span>
-                          </div>
-                          <p className="text-xs text-neutral-400 font-mono mt-0.5">ID: {p.productId} • {p.skus?.length || 0} packages</p>
-                        </div>
-                        {isEnabled ? (
-                          <span className="text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-full whitespace-nowrap">
-                            ✓ Bot Active
-                          </span>
-                        ) : (
-                          <span className="text-[11px] font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full whitespace-nowrap">
-                            Disabled
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 text-xs text-neutral-700 space-y-1 mb-3">
-                        <div className="flex justify-between items-center">
-                          <span className="font-medium text-neutral-500">Short Key:</span>
-                          <span className="font-mono font-bold text-neutral-900">.{activeKey || `t${p.productId.slice(0, 4)}`}</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span className="font-medium text-neutral-500">View Products:</span>
-                          <span className="font-mono text-neutral-700">.{activeKey || `t${p.productId.slice(0, 4)}`}</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span className="font-medium text-neutral-500">Order Format:</span>
-                          <span className="font-mono text-neutral-700">.{activeKey || `t${p.productId.slice(0, 4)}`} &lt;PlayerID&gt; &lt;Product&gt;</span>
-                        </div>
-                      </div>
-
-                      {/* Package Short Keys Button */}
-                      <button 
-                        onClick={() => openSkuModal(p, 'topupnation')} 
-                        className="w-full mb-3 px-3.5 py-2 bg-indigo-100/70 hover:bg-indigo-200/70 text-indigo-900 border border-indigo-300 rounded-xl text-xs font-bold flex items-center justify-between transition-colors shadow-xs"
-                      >
-                        <div className="flex items-center gap-1.5">
-                          <span>🏷️</span>
-                          <span>Package Short Keys</span>
-                        </div>
-                        <span className="text-[11px] bg-indigo-200/80 px-2 py-0.5 rounded font-mono">
-                          {p.skuShortKeys ? Object.keys(p.skuShortKeys).length : 0} configured
-                        </span>
-                      </button>
-
-                      <div className="flex items-center gap-2">
-                        <div className="flex items-center gap-1 flex-1">
-                          <span className="text-xs font-bold text-neutral-400">.</span>
-                          <input
-                            type="text"
-                            placeholder="Custom Short Key (e.g. tp)"
-                            value={currentInput}
-                            onChange={(e) => {
-                              const val = e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '');
-                              setTpnShortKeyInput(prev => ({ ...prev, [p.productId]: val }));
-                            }}
-                            className="w-full text-xs font-mono px-2 py-1 border border-neutral-300 rounded focus:ring-1 focus:ring-indigo-500 outline-none"
-                          />
-                        </div>
-                        {isModified && (
-                          <button
-                            onClick={() => handleSaveTpnShortKey(p.productId)}
-                            className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded transition-colors"
-                          >
-                            Save Key
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => handleToggleTpnProduct(p.productId, isEnabled)}
-                      className={`w-full py-2 text-xs font-bold rounded-xl transition-colors border flex justify-center items-center gap-1.5 ${
-                        isEnabled
-                          ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200'
-                          : 'bg-indigo-600 hover:bg-indigo-700 text-white border-transparent'
-                      }`}
-                    >
-                      {isEnabled ? 'Disable from Bot' : '✓ Enable for Bot'}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          </div>
-          )}
-        </div>
-
-        {/* FZR Cards Products Management */}
-        <div className="bg-white p-8 rounded-xl shadow-sm border border-neutral-200">
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-2">
-            <h2 
-              className="text-xl font-bold text-neutral-900 flex items-center gap-2 cursor-pointer select-none hover:text-sky-700 transition-colors"
-              onClick={() => setShowFzrGames(!showFzrGames)}
-            >
-              <span>💎</span> FZR Cards Products Catalog
-              <svg className={`w-5 h-5 text-neutral-400 transition-transform ${showFzrGames ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-              </svg>
-            </h2>
-            <div className="flex items-center gap-2">
-              <button 
-                onClick={handleSyncFzrProducts}
-                disabled={isSyncingFzr || !fzrConfigured}
-                className="px-3.5 py-1.5 bg-sky-600 hover:bg-sky-700 disabled:bg-neutral-300 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5"
-              >
-                <svg className={`w-3.5 h-3.5 ${isSyncingFzr ? 'animate-spin' : ''}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-                {isSyncingFzr ? 'Syncing Catalog...' : 'Sync FZR Cards Catalog'}
-              </button>
-            </div>
-          </div>
-          <p className="text-sm text-neutral-500 mb-6">
-            Synced products from FZR Cards. Set custom Short Keys for rapid ordering in Telegram (e.g. <span className="font-mono font-semibold text-neutral-800">.fml</span> or <span className="font-mono font-semibold text-neutral-800">.fff</span>).
-          </p>
-          {showFzrGames && (
-            <div className="mt-4">
-              <div className="mb-4 flex flex-col sm:flex-row gap-3 items-start sm:items-center">
-                <input
-                  type="text"
-                  placeholder="Search FZR Cards Games..."
-                  className="px-4 py-2 border border-neutral-300 rounded-lg w-full max-w-sm focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
-                  value={fzrGameSearch}
-                  onChange={(e) => setFzrGameSearch(e.target.value)}
-                />
-                <div className="flex gap-2">
-                  <button 
-                    onClick={() => handleBulkToggleFzrProducts(true)}
-                    className="px-3 py-1.5 bg-green-50 text-green-700 hover:bg-green-100 border border-green-200 text-xs font-bold rounded-lg transition-colors"
-                  >
-                    Enable All Filtered
-                  </button>
-                  <button 
-                    onClick={() => handleBulkToggleFzrProducts(false)}
-                    className="px-3 py-1.5 bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 text-xs font-bold rounded-lg transition-colors"
-                  >
-                    Disable All Filtered
-                  </button>
-                </div>
+                    const allSelected = filtered.every(id => selectedTpnProductIds.includes(id));
+                    if (allSelected) {
+                      setSelectedTpnProductIds(prev => prev.filter(id => !filtered.includes(id)));
+                    } else {
+                      setSelectedTpnProductIds(prev => Array.from(new Set([...prev, ...filtered])));
+                    }
+                  }}
+                  className="font-medium text-indigo-600 hover:text-indigo-800"
+                >
+                  Select / Deselect Filtered
+                </button>
               </div>
 
-          {!fzrConfigured ? (
-            <div className="text-center py-10 bg-neutral-50 rounded-lg border border-neutral-200 border-dashed">
-              <p className="text-neutral-500 mb-3 text-sm">FZR Cards API is not connected.</p>
-              <button 
-                onClick={() => setShowFzrModal(true)}
-                className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white text-sm font-medium rounded-lg transition-colors"
-              >
-                Connect FZR Cards API
-              </button>
-            </div>
-          ) : loadingFzrProducts ? (
-            <p className="text-neutral-500 py-6 text-center text-sm">Loading FZR Cards products...</p>
-          ) : fzrProducts.length === 0 ? (
-            <div className="text-center py-8 bg-neutral-50 rounded-lg border border-neutral-200 text-sm text-neutral-500">
-              No products synced yet. Click <span className="font-semibold text-sky-600">"Sync FZR Cards Catalog"</span> to import products.
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {fzrProducts.filter(p => (p.name || "").toLowerCase().includes(fzrGameSearch.toLowerCase())).map((p) => {
-                const activeKey = p.shortKey || '';
-                const currentInput = fzrShortKeyInput[p.productId] !== undefined ? fzrShortKeyInput[p.productId] : activeKey;
-                const isModified = currentInput !== activeKey;
-                const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {tpnProducts.filter(p => {
+                  const matchesSearch = (p.name || "").toLowerCase().includes(tpnGameSearch.toLowerCase()) || (p.productId || "").toLowerCase().includes(tpnGameSearch.toLowerCase());
+                  const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+                  if (tpnStatusFilter === 'ENABLED') return matchesSearch && isEnabled;
+                  if (tpnStatusFilter === 'DISABLED') return matchesSearch && !isEnabled;
+                  return matchesSearch;
+                }).map((p) => {
+                  const activeKey = p.shortKey || '';
+                  const currentInput = tpnShortKeyInput[p.productId] !== undefined ? tpnShortKeyInput[p.productId] : activeKey;
+                  const isModified = currentInput !== activeKey;
+                  const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+                  const isSelected = selectedTpnProductIds.includes(p.productId);
 
-                return (
-                  <div 
-                    key={p.productId} 
-                    className={`p-5 bg-white border-2 rounded-2xl transition-all flex flex-col justify-between ${
-                      isEnabled 
-                        ? 'border-sky-500 shadow-md ring-1 ring-sky-500/20' 
-                        : 'border-neutral-200 hover:border-neutral-300 shadow-sm opacity-75'
-                    }`}
-                  >
-                    <div className="mb-3">
-                      <div className="flex items-start justify-between gap-2 mb-2">
-                        <div>
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-extrabold text-base text-neutral-900 leading-tight">{p.name}</span>
-                            <span className="text-[10px] bg-sky-50 text-sky-700 font-semibold px-1.5 py-0.5 rounded border border-sky-100">FZR Cards</span>
-                          </div>
-                          <p className="text-xs text-neutral-400 font-mono mt-0.5">ID: {p.productId} • {p.skus?.length || 0} packages</p>
-                        </div>
-                        {isEnabled ? (
-                          <span className="text-[11px] font-bold text-sky-700 bg-sky-50 border border-sky-200 px-2 py-0.5 rounded-full whitespace-nowrap">
-                            ✓ Bot Active
-                          </span>
-                        ) : (
-                          <span className="text-[11px] font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full whitespace-nowrap">
-                            Disabled
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 text-xs text-neutral-700 space-y-1 mb-3">
-                        <div className="flex justify-between items-center">
-                          <span className="font-medium text-neutral-500">Short Key:</span>
-                          <span className="font-mono font-bold text-neutral-900">.{activeKey || `f${p.productId.slice(0, 4)}`}</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span className="font-medium text-neutral-500">View Products:</span>
-                          <span className="font-mono text-neutral-700">.{activeKey || `f${p.productId.slice(0, 4)}`}</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span className="font-medium text-neutral-500">Order Format:</span>
-                          <span className="font-mono text-neutral-700">.{activeKey || `f${p.productId.slice(0, 4)}`} &lt;PlayerID&gt; &lt;Product&gt;</span>
-                        </div>
-                      </div>
-
-                      {/* Package Short Keys Button */}
-                      <button 
-                        onClick={() => openSkuModal(p, 'fzrcards')} 
-                        className="w-full mb-3 px-3.5 py-2 bg-sky-100/70 hover:bg-sky-200/70 text-sky-900 border border-sky-300 rounded-xl text-xs font-bold flex items-center justify-between transition-colors shadow-xs"
-                      >
-                        <div className="flex items-center gap-1.5">
-                          <span>🏷️</span>
-                          <span>Package Short Keys</span>
-                        </div>
-                        <span className="text-[11px] bg-sky-200/80 px-2 py-0.5 rounded font-mono">
-                          {p.skuShortKeys ? Object.keys(p.skuShortKeys).length : 0} configured
-                        </span>
-                      </button>
-
-                      <div className="flex items-center gap-2">
-                        <div className="flex items-center gap-1 flex-1">
-                          <span className="text-xs font-bold text-neutral-400">.</span>
-                          <input
-                            type="text"
-                            placeholder="Custom Short Key (e.g. fml)"
-                            value={currentInput}
-                            onChange={(e) => {
-                              const val = e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '');
-                              setFzrShortKeyInput(prev => ({ ...prev, [p.productId]: val }));
-                            }}
-                            className="w-full text-xs font-mono px-2 py-1 border border-neutral-300 rounded focus:ring-1 focus:ring-sky-500 outline-none"
-                          />
-                        </div>
-                        {isModified && (
-                          <button
-                            onClick={() => handleSaveFzrShortKey(p.productId)}
-                            className="px-2.5 py-1 bg-sky-600 hover:bg-sky-700 text-white text-xs font-medium rounded transition-colors"
-                          >
-                            Save Key
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => handleToggleFzrProduct(p.productId, isEnabled)}
-                      className={`w-full py-2 text-xs font-bold rounded-xl transition-colors border flex justify-center items-center gap-1.5 ${
-                        isEnabled
-                          ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200'
-                          : 'bg-sky-600 hover:bg-sky-700 text-white border-transparent'
+                  return (
+                    <div 
+                      key={p.productId} 
+                      className={`p-5 bg-white border-2 rounded-2xl transition-all flex flex-col justify-between ${
+                        isEnabled 
+                          ? 'border-indigo-500 shadow-sm ring-1 ring-indigo-500/20' 
+                          : 'border-neutral-200 hover:border-neutral-300 shadow-xs opacity-75'
                       }`}
                     >
-                      {isEnabled ? 'Disable from Bot' : '✓ Enable for Bot'}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
+                      <div className="mb-3">
+                        <div className="flex items-start justify-between gap-2 mb-2">
+                          <div className="flex items-start gap-2.5">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedTpnProductIds(prev => [...prev, p.productId]);
+                                } else {
+                                  setSelectedTpnProductIds(prev => prev.filter(id => id !== p.productId));
+                                }
+                              }}
+                              className="w-4 h-4 mt-1 rounded text-indigo-600 border-neutral-300 focus:ring-indigo-500 cursor-pointer"
+                            />
+                            <div>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="font-extrabold text-base text-neutral-900 leading-tight">{p.name}</span>
+                                <span className="text-[10px] bg-indigo-50 text-indigo-700 font-semibold px-1.5 py-0.5 rounded border border-indigo-100">TopupNation</span>
+                              </div>
+                              <p className="text-xs text-neutral-400 font-mono mt-0.5">ID: {p.productId} • {p.skus?.length || 0} packages</p>
+                            </div>
+                          </div>
+                          {isEnabled ? (
+                            <span className="text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-full whitespace-nowrap">
+                              ✓ Bot Active
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full whitespace-nowrap">
+                              Disabled
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 text-xs text-neutral-700 space-y-1 mb-3">
+                          <div className="flex justify-between items-center">
+                            <span className="font-medium text-neutral-500">Short Key:</span>
+                            <span className="font-mono font-bold text-neutral-900">.{activeKey || `t${p.productId.slice(0, 4)}`}</span>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <span className="font-medium text-neutral-500">View Products:</span>
+                            <span className="font-mono text-neutral-700">.{activeKey || `t${p.productId.slice(0, 4)}`}</span>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <span className="font-medium text-neutral-500">Order Format:</span>
+                            <span className="font-mono text-neutral-700">.{activeKey || `t${p.productId.slice(0, 4)}`} &lt;PlayerID&gt; &lt;Product&gt;</span>
+                          </div>
+                        </div>
+
+                        {/* Package Short Keys Button */}
+                        <button 
+                          onClick={() => openSkuModal(p, 'topupnation')} 
+                          className="w-full mb-3 px-3.5 py-2 bg-indigo-100/70 hover:bg-indigo-200/70 text-indigo-900 border border-indigo-300 rounded-xl text-xs font-bold flex items-center justify-between transition-colors shadow-xs"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <span>🏷️</span>
+                            <span>Package Short Keys</span>
+                          </div>
+                          <span className="text-[11px] bg-indigo-200/80 px-2 py-0.5 rounded font-mono">
+                            {p.skuShortKeys ? Object.keys(p.skuShortKeys).length : 0} configured
+                          </span>
+                        </button>
+
+                        <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-1 flex-1">
+                            <span className="text-xs font-bold text-neutral-400">.</span>
+                            <input
+                              type="text"
+                              placeholder="Custom Short Key (e.g. tp)"
+                              value={currentInput}
+                              onChange={(e) => {
+                                const val = e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+                                setTpnShortKeyInput(prev => ({ ...prev, [p.productId]: val }));
+                              }}
+                              className="w-full text-xs font-mono px-2 py-1 border border-neutral-300 rounded focus:ring-1 focus:ring-indigo-500 outline-none"
+                            />
+                          </div>
+                          {isModified && (
+                            <button
+                              onClick={() => handleSaveTpnShortKey(p.productId)}
+                              className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded transition-colors"
+                            >
+                              Save Key
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => handleToggleTpnProduct(p.productId, isEnabled)}
+                        className={`w-full py-2 text-xs font-bold rounded-xl transition-colors border flex justify-center items-center gap-1.5 ${
+                          isEnabled
+                            ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200'
+                            : 'bg-indigo-600 hover:bg-indigo-700 text-white border-transparent'
+                        }`}
+                      >
+                        {isEnabled ? '🔒 Disable from Bot' : '⚡ Enable for Bot'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
           )}
           </div>
           )}
         </div>
 
-        
         {/* G2Bulk Products Management */}
-        <div className="bg-white p-8 rounded-xl shadow-sm border border-neutral-200">
+        <div className="bg-white p-6 sm:p-8 rounded-xl shadow-sm border border-neutral-200">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-2">
             <h2 
               className="text-xl font-bold text-neutral-900 flex items-center gap-2 cursor-pointer select-none hover:text-orange-700 transition-colors"
               onClick={() => setShowG2BulkGames(!showG2BulkGames)}
             >
-              <span>🔥</span> G2Bulk Products Catalog
+              <span>🔥</span> G2Bulk Products Catalog ({g2bulkProducts.length})
               <svg className={`w-5 h-5 text-neutral-400 transition-transform ${showG2BulkGames ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
               </svg>
@@ -3099,34 +3443,91 @@ export default function App() {
               </button>
             </div>
           </div>
-          <p className="text-sm text-neutral-500 mb-6">
+          <p className="text-sm text-neutral-500 mb-4">
             Synced products from G2Bulk. Set custom Short Keys for rapid ordering in Telegram.
           </p>
           {showG2BulkGames && (
             <div className="mt-4">
-              <div className="mb-4 flex flex-col sm:flex-row gap-3 items-start sm:items-center">
-                <input
-                  type="text"
-                  placeholder="Search G2Bulk Games..."
-                  className="px-4 py-2 border border-neutral-300 rounded-lg w-full max-w-sm focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500"
-                  value={g2bulkSearchQuery}
-                  onChange={(e) => setG2BulkSearchQuery(e.target.value)}
-                />
-                <div className="flex gap-2">
+              {/* Filter & Controls Bar for G2Bulk */}
+              <div className="mb-4 flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
+                <div className="flex flex-col sm:flex-row gap-2.5 flex-1">
+                  <input
+                    type="text"
+                    placeholder="Search G2Bulk Games & ID..."
+                    className="px-3.5 py-2 border border-neutral-300 rounded-lg w-full max-w-sm text-sm focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500"
+                    value={g2bulkSearchQuery}
+                    onChange={(e) => setG2BulkSearchQuery(e.target.value)}
+                  />
+                  <div className="inline-flex rounded-lg border border-neutral-200 bg-neutral-100 p-0.5 text-xs font-semibold">
+                    <button
+                      onClick={() => setG2bStatusFilter('ALL')}
+                      className={`px-3 py-1.5 rounded-md transition-all ${g2bStatusFilter === 'ALL' ? 'bg-white text-neutral-900 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
+                    >
+                      All ({g2bulkProducts.length})
+                    </button>
+                    <button
+                      onClick={() => setG2bStatusFilter('ENABLED')}
+                      className={`px-3 py-1.5 rounded-md transition-all ${g2bStatusFilter === 'ENABLED' ? 'bg-white text-orange-700 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
+                    >
+                      Enabled ({g2bulkProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length})
+                    </button>
+                    <button
+                      onClick={() => setG2bStatusFilter('DISABLED')}
+                      className={`px-3 py-1.5 rounded-md transition-all ${g2bStatusFilter === 'DISABLED' ? 'bg-white text-rose-700 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
+                    >
+                      Disabled ({g2bulkProducts.filter(p => p.isEnabled === false || p.status === 'DISABLED').length})
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
                   <button 
-                    onClick={() => handleBulkToggleG2Bulk(true)}
-                    className="px-3 py-1.5 bg-green-50 text-green-700 hover:bg-green-100 border border-green-200 text-xs font-bold rounded-lg transition-colors"
+                    disabled={isBulkGameUpdating}
+                    onClick={() => handleBulkToggleG2b(true, [])}
+                    className="px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 text-xs font-bold rounded-lg transition-colors flex items-center gap-1"
                   >
-                    Enable All Filtered
+                    <span>⚡</span> Enable All G2Bulk
                   </button>
                   <button 
-                    onClick={() => handleBulkToggleG2Bulk(false)}
-                    className="px-3 py-1.5 bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 text-xs font-bold rounded-lg transition-colors"
+                    disabled={isBulkGameUpdating}
+                    onClick={() => handleBulkToggleG2b(false, [])}
+                    className="px-3 py-1.5 bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 text-xs font-bold rounded-lg transition-colors flex items-center gap-1"
                   >
-                    Disable All Filtered
+                    <span>🔒</span> Disable All G2Bulk
                   </button>
                 </div>
               </div>
+
+              {/* Multi-selection bar for G2Bulk */}
+              {selectedG2bProductIds.length > 0 && (
+                <div className="mb-4 p-3 bg-orange-50 border border-orange-200 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-orange-900">{selectedG2bProductIds.length} item(s) selected</span>
+                    <button 
+                      onClick={() => setSelectedG2bProductIds([])}
+                      className="text-neutral-500 hover:text-neutral-800 underline ml-1"
+                    >
+                      Clear Selection
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      disabled={isBulkGameUpdating}
+                      onClick={() => handleBulkToggleG2b(true)}
+                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg transition-colors shadow-xs flex items-center gap-1"
+                    >
+                      ✓ Enable Selected ({selectedG2bProductIds.length})
+                    </button>
+                    <button
+                      disabled={isBulkGameUpdating}
+                      onClick={() => handleBulkToggleG2b(false)}
+                      className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg transition-colors shadow-xs flex items-center gap-1"
+                    >
+                      ✕ Disable Selected ({selectedG2bProductIds.length})
+                    </button>
+                  </div>
+                </div>
+              )}
 
           {!g2bulkConfigured ? (
             <div className="text-center py-10 bg-neutral-50 rounded-lg border border-neutral-200 border-dashed">
@@ -3143,106 +3544,163 @@ export default function App() {
               No products synced yet. Click <span className="font-semibold text-orange-600">"Sync G2Bulk Catalog"</span> to import products.
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {g2bulkProducts.filter(p => (p.name || "").toLowerCase().includes(g2bulkSearchQuery.toLowerCase())).map((p) => {
-                const activeKey = p.shortKey || '';
-                const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+            <>
+              {/* Select all filtered helper */}
+              <div className="flex justify-between items-center text-xs text-neutral-500 mb-3 px-1">
+                <span>
+                  Showing {g2bulkProducts.filter(p => {
+                    const matchesSearch = (p.name || "").toLowerCase().includes(g2bulkSearchQuery.toLowerCase()) || (p.productId || "").toLowerCase().includes(g2bulkSearchQuery.toLowerCase());
+                    const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+                    if (g2bStatusFilter === 'ENABLED') return matchesSearch && isEnabled;
+                    if (g2bStatusFilter === 'DISABLED') return matchesSearch && !isEnabled;
+                    return matchesSearch;
+                  }).length} products
+                </span>
+                <button
+                  onClick={() => {
+                    const filtered = g2bulkProducts.filter(p => {
+                      const matchesSearch = (p.name || "").toLowerCase().includes(g2bulkSearchQuery.toLowerCase()) || (p.productId || "").toLowerCase().includes(g2bulkSearchQuery.toLowerCase());
+                      const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+                      if (g2bStatusFilter === 'ENABLED') return matchesSearch && isEnabled;
+                      if (g2bStatusFilter === 'DISABLED') return matchesSearch && !isEnabled;
+                      return matchesSearch;
+                    }).map(p => p.productId);
 
-                return (
-                  <div 
-                    key={p.productId} 
-                    className={`p-5 bg-white border-2 rounded-2xl transition-all flex flex-col justify-between ${
-                      isEnabled 
-                        ? 'border-orange-500 shadow-md ring-1 ring-orange-500/20' 
-                        : 'border-neutral-200 hover:border-neutral-300 shadow-sm opacity-75'
-                    }`}
-                  >
-                    <div className="mb-3">
-                      <div className="flex items-start justify-between gap-2 mb-2">
-                        <div>
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-extrabold text-base text-neutral-900 leading-tight">{p.name}</span>
-                            <span className="text-[10px] bg-orange-50 text-orange-700 font-semibold px-1.5 py-0.5 rounded border border-orange-100">G2Bulk</span>
-                          </div>
-                          <p className="text-xs text-neutral-400 font-mono mt-0.5">ID: {p.productId} • {p.skus?.length || 0} packages</p>
-                        </div>
-                        {isEnabled ? (
-                          <span className="text-[11px] font-bold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-0.5 rounded-full whitespace-nowrap">
-                            ✓ Bot Active
-                          </span>
-                        ) : (
-                          <span className="text-[11px] font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full whitespace-nowrap">
-                            Disabled
-                          </span>
-                        )}
-                      </div>
+                    const allSelected = filtered.every(id => selectedG2bProductIds.includes(id));
+                    if (allSelected) {
+                      setSelectedG2bProductIds(prev => prev.filter(id => !filtered.includes(id)));
+                    } else {
+                      setSelectedG2bProductIds(prev => Array.from(new Set([...prev, ...filtered])));
+                    }
+                  }}
+                  className="font-medium text-orange-600 hover:text-orange-800"
+                >
+                  Select / Deselect Filtered
+                </button>
+              </div>
 
-                      <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 text-xs text-neutral-700 space-y-1 mb-3">
-                        <div className="flex justify-between items-center">
-                          <span className="font-medium text-neutral-500">Short Key:</span>
-                          <span className="font-mono font-bold text-neutral-900">.{activeKey || `g${p.productId.slice(0, 4)}`}</span>
-                        </div>
-                      </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {g2bulkProducts.filter(p => {
+                  const matchesSearch = (p.name || "").toLowerCase().includes(g2bulkSearchQuery.toLowerCase()) || (p.productId || "").toLowerCase().includes(g2bulkSearchQuery.toLowerCase());
+                  const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+                  if (g2bStatusFilter === 'ENABLED') return matchesSearch && isEnabled;
+                  if (g2bStatusFilter === 'DISABLED') return matchesSearch && !isEnabled;
+                  return matchesSearch;
+                }).map((p) => {
+                  const activeKey = p.shortKey || '';
+                  const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+                  const isSelected = selectedG2bProductIds.includes(p.productId);
 
-                      <button 
-                        onClick={() => openSkuModal(p, 'g2bulk')} 
-                        className="w-full mb-3 px-3.5 py-2 bg-orange-100/70 hover:bg-orange-200/70 text-orange-900 border border-orange-300 rounded-xl text-xs font-bold flex items-center justify-between transition-colors shadow-xs"
-                      >
-                        <div className="flex items-center gap-1.5">
-                          <span>🏷️</span>
-                          <span>Package Short Keys</span>
-                        </div>
-                        <span className="text-[11px] bg-orange-200/80 px-2 py-0.5 rounded font-mono">
-                          {p.skuShortKeys ? Object.keys(p.skuShortKeys).length : 0} configured
-                        </span>
-                      </button>
-
-                      <div className="flex items-center gap-2">
-                        <div className="flex items-center gap-1 flex-1">
-                          <span className="text-xs font-bold text-neutral-400">.</span>
-                          <input
-                            type="text"
-                            placeholder="Custom Short Key"
-                            defaultValue={activeKey}
-                            onBlur={(e) => {
-                              const val = e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '');
-                              if (val !== activeKey) {
-                                handleSaveG2BulkShortKey(p.productId, val);
-                              }
-                            }}
-                            className="w-full text-xs font-mono px-2 py-1 border border-neutral-300 rounded focus:ring-1 focus:ring-orange-500 outline-none"
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => handleToggleG2BulkProduct(p.productId, !isEnabled)}
-                      className={`w-full py-2 rounded-xl text-xs font-bold transition-all border ${
-                        !isEnabled 
-                          ? 'bg-neutral-50 text-neutral-700 hover:bg-neutral-100 border-neutral-300 shadow-sm' 
-                          : 'bg-orange-600 hover:bg-orange-700 text-white border-transparent'
+                  return (
+                    <div 
+                      key={p.productId} 
+                      className={`p-5 bg-white border-2 rounded-2xl transition-all flex flex-col justify-between ${
+                        isEnabled 
+                          ? 'border-orange-500 shadow-sm ring-1 ring-orange-500/20' 
+                          : 'border-neutral-200 hover:border-neutral-300 shadow-xs opacity-75'
                       }`}
                     >
-                      {isEnabled ? 'Disable from Bot' : '✓ Enable for Bot'}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
+                      <div className="mb-3">
+                        <div className="flex items-start justify-between gap-2 mb-2">
+                          <div className="flex items-start gap-2.5">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedG2bProductIds(prev => [...prev, p.productId]);
+                                } else {
+                                  setSelectedG2bProductIds(prev => prev.filter(id => id !== p.productId));
+                                }
+                              }}
+                              className="w-4 h-4 mt-1 rounded text-orange-600 border-neutral-300 focus:ring-orange-500 cursor-pointer"
+                            />
+                            <div>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="font-extrabold text-base text-neutral-900 leading-tight">{p.name}</span>
+                                <span className="text-[10px] bg-orange-50 text-orange-700 font-semibold px-1.5 py-0.5 rounded border border-orange-100">G2Bulk</span>
+                              </div>
+                              <p className="text-xs text-neutral-400 font-mono mt-0.5">ID: {p.productId} • {p.skus?.length || 0} packages</p>
+                            </div>
+                          </div>
+                          {isEnabled ? (
+                            <span className="text-[11px] font-bold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-0.5 rounded-full whitespace-nowrap">
+                              ✓ Bot Active
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full whitespace-nowrap">
+                              Disabled
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 text-xs text-neutral-700 space-y-1 mb-3">
+                          <div className="flex justify-between items-center">
+                            <span className="font-medium text-neutral-500">Short Key:</span>
+                            <span className="font-mono font-bold text-neutral-900">.{activeKey || `g${p.productId.slice(0, 4)}`}</span>
+                          </div>
+                        </div>
+
+                        <button 
+                          onClick={() => openSkuModal(p, 'g2bulk')} 
+                          className="w-full mb-3 px-3.5 py-2 bg-orange-100/70 hover:bg-orange-200/70 text-orange-900 border border-orange-300 rounded-xl text-xs font-bold flex items-center justify-between transition-colors shadow-xs"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <span>🏷️</span>
+                            <span>Package Short Keys</span>
+                          </div>
+                          <span className="text-[11px] bg-orange-200/80 px-2 py-0.5 rounded font-mono">
+                            {p.skuShortKeys ? Object.keys(p.skuShortKeys).length : 0} configured
+                          </span>
+                        </button>
+
+                        <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-1 flex-1">
+                            <span className="text-xs font-bold text-neutral-400">.</span>
+                            <input
+                              type="text"
+                              placeholder="Custom Short Key"
+                              defaultValue={activeKey}
+                              onBlur={(e) => {
+                                const val = e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+                                if (val !== activeKey) {
+                                  handleSaveG2BulkShortKey(p.productId, val);
+                                }
+                              }}
+                              className="w-full text-xs font-mono px-2 py-1 border border-neutral-300 rounded focus:ring-1 focus:ring-orange-500 outline-none"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => handleToggleG2BulkProduct(p.productId, !isEnabled)}
+                        className={`w-full py-2 rounded-xl text-xs font-bold transition-all border ${
+                          isEnabled 
+                            ? 'bg-rose-50 text-rose-700 hover:bg-rose-100 border-rose-200' 
+                            : 'bg-orange-600 hover:bg-orange-700 text-white border-transparent'
+                        }`}
+                      >
+                        {isEnabled ? '🔒 Disable from Bot' : '⚡ Enable for Bot'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
           )}
           </div>
           )}
         </div>
 
-        {/* Telegram Bot Games Management */}
-        <div className="bg-white p-8 rounded-xl shadow-sm border border-neutral-200">
+        {/* Telegram Bot Games Management (LootBar) */}
+        <div className="bg-white p-6 sm:p-8 rounded-xl shadow-sm border border-neutral-200">
           <div className="flex justify-between items-center mb-2">
             <h2 
               className="text-xl font-bold text-neutral-900 flex items-center gap-2 cursor-pointer select-none hover:text-emerald-700 transition-colors"
               onClick={() => setShowLootbarGames(!showLootbarGames)}
             >
-              <span>🎮</span> Select Games for Telegram Bot (LootBar)
+              <span>🎮</span> LootBar Games Catalog ({games.length})
               <svg className={`w-5 h-5 text-neutral-400 transition-transform ${showLootbarGames ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
               </svg>
@@ -3263,15 +3721,86 @@ export default function App() {
           
           {showLootbarGames && (
             <div className="mt-4">
-              <div className="mb-4">
-                <input
-                  type="text"
-                  placeholder="Search LootBar Games..."
-                  className="px-4 py-2 border border-neutral-300 rounded-lg w-full max-w-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-                  value={lbGameSearch}
-                  onChange={(e) => setLbGameSearch(e.target.value)}
-                />
+              {/* Controls & Filter bar for LootBar */}
+              <div className="mb-4 flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
+                <div className="flex flex-col sm:flex-row gap-2.5 flex-1">
+                  <input
+                    type="text"
+                    placeholder="Search LootBar Games & ID..."
+                    className="px-3.5 py-2 border border-neutral-300 rounded-lg w-full max-w-sm text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                    value={lbGameSearch}
+                    onChange={(e) => setLbGameSearch(e.target.value)}
+                  />
+                  <div className="inline-flex rounded-lg border border-neutral-200 bg-neutral-100 p-0.5 text-xs font-semibold">
+                    <button
+                      onClick={() => setLbStatusFilter('ALL')}
+                      className={`px-3 py-1.5 rounded-md transition-all ${lbStatusFilter === 'ALL' ? 'bg-white text-neutral-900 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
+                    >
+                      All ({games.length})
+                    </button>
+                    <button
+                      onClick={() => setLbStatusFilter('ENABLED')}
+                      className={`px-3 py-1.5 rounded-md transition-all ${lbStatusFilter === 'ENABLED' ? 'bg-white text-emerald-700 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
+                    >
+                      Enabled ({savedGames.filter(g => g.isEnabled !== false).length})
+                    </button>
+                    <button
+                      onClick={() => setLbStatusFilter('DISABLED')}
+                      className={`px-3 py-1.5 rounded-md transition-all ${lbStatusFilter === 'DISABLED' ? 'bg-white text-rose-700 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
+                    >
+                      Disabled ({games.length - savedGames.filter(g => g.isEnabled !== false).length})
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button 
+                    disabled={isBulkGameUpdating}
+                    onClick={() => handleBulkToggleLootbar(true, [])}
+                    className="px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 text-xs font-bold rounded-lg transition-colors flex items-center gap-1"
+                  >
+                    <span>⚡</span> Enable All LootBar
+                  </button>
+                  <button 
+                    disabled={isBulkGameUpdating}
+                    onClick={() => handleBulkToggleLootbar(false, [])}
+                    className="px-3 py-1.5 bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 text-xs font-bold rounded-lg transition-colors flex items-center gap-1"
+                  >
+                    <span>🔒</span> Disable All LootBar
+                  </button>
+                </div>
               </div>
+
+              {/* Multi-selection bar for LootBar */}
+              {selectedLbGameIds.length > 0 && (
+                <div className="mb-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-emerald-900">{selectedLbGameIds.length} game(s) selected</span>
+                    <button 
+                      onClick={() => setSelectedLbGameIds([])}
+                      className="text-neutral-500 hover:text-neutral-800 underline ml-1"
+                    >
+                      Clear Selection
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      disabled={isBulkGameUpdating}
+                      onClick={() => handleBulkToggleLootbar(true)}
+                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg transition-colors shadow-xs flex items-center gap-1"
+                    >
+                      ✓ Enable Selected ({selectedLbGameIds.length})
+                    </button>
+                    <button
+                      disabled={isBulkGameUpdating}
+                      onClick={() => handleBulkToggleLootbar(false)}
+                      className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg transition-colors shadow-xs flex items-center gap-1"
+                    >
+                      ✕ Disable Selected ({selectedLbGameIds.length})
+                    </button>
+                  </div>
+                </div>
+              )}
 
           {isConfigured === null ? (
             <p className="text-neutral-500 py-4 text-center">Checking API connection...</p>
@@ -3290,136 +3819,330 @@ export default function App() {
           ) : games.length === 0 ? (
             <p className="text-red-500">Failed to load games. Credentials might be invalid.</p>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {games.filter(g => (g.name || g.game_name || "").toLowerCase().includes(lbGameSearch.toLowerCase())).map((game, i) => {
-                const gameId = String(game.id || game.game_id);
-                const gameName = game.name || game.game_name || 'Unknown';
-                const savedMatch = savedGames.find(s => String(s.gameId) === gameId);
-                const isEnabled = !!savedMatch;
-                const activeKey = savedMatch?.shortKey || '';
+            <>
+              {/* Select all filtered helper */}
+              <div className="flex justify-between items-center text-xs text-neutral-500 mb-3 px-1">
+                <span>
+                  Showing {games.filter(g => {
+                    const gameId = String(g.id || g.game_id);
+                    const matchesSearch = (g.name || g.game_name || "").toLowerCase().includes(lbGameSearch.toLowerCase()) || gameId.toLowerCase().includes(lbGameSearch.toLowerCase());
+                    const savedMatch = savedGames.find(s => String(s.gameId) === gameId);
+                    const isEnabled = !!savedMatch && savedMatch.isEnabled !== false;
+                    if (lbStatusFilter === 'ENABLED') return matchesSearch && isEnabled;
+                    if (lbStatusFilter === 'DISABLED') return matchesSearch && !isEnabled;
+                    return matchesSearch;
+                  }).length} games
+                </span>
+                <button
+                  onClick={() => {
+                    const filtered = games.filter(g => {
+                      const gameId = String(g.id || g.game_id);
+                      const matchesSearch = (g.name || g.game_name || "").toLowerCase().includes(lbGameSearch.toLowerCase()) || gameId.toLowerCase().includes(lbGameSearch.toLowerCase());
+                      const savedMatch = savedGames.find(s => String(s.gameId) === gameId);
+                      const isEnabled = !!savedMatch && savedMatch.isEnabled !== false;
+                      if (lbStatusFilter === 'ENABLED') return matchesSearch && isEnabled;
+                      if (lbStatusFilter === 'DISABLED') return matchesSearch && !isEnabled;
+                      return matchesSearch;
+                    }).map(g => String(g.id || g.game_id));
 
-                return (
-                  <div 
-                    key={i} 
-                    className={`p-5 bg-white border-2 rounded-2xl transition-all flex flex-col justify-between ${
-                      isEnabled 
-                        ? 'border-emerald-500 shadow-md ring-1 ring-emerald-500/20' 
-                        : 'border-neutral-200 hover:border-neutral-300 shadow-sm'
-                    }`}
-                  >
-                    <div className="mb-4">
-                      <div className="flex justify-between items-start gap-2 mb-2">
-                        <span className="font-extrabold text-lg text-neutral-900 block leading-tight">{gameName}</span>
-                        {isEnabled ? (
-                          <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full whitespace-nowrap">
-                            ✓ Bot Active
-                          </span>
-                        ) : (
-                          <span className="text-[11px] font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full whitespace-nowrap">
-                            Disabled
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="inline-block px-2.5 py-0.5 bg-neutral-100 text-neutral-600 text-xs font-mono font-medium rounded">
-                          ID: {gameId}
-                        </span>
-                        {isEnabled && activeKey && (
-                          <span className="inline-block px-2.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 text-xs font-mono font-bold rounded">
-                            Key: .{activeKey}
-                          </span>
-                        )}
-                      </div>
-                    </div>
+                    const allSelected = filtered.every(id => selectedLbGameIds.includes(id));
+                    if (allSelected) {
+                      setSelectedLbGameIds(prev => prev.filter(id => !filtered.includes(id)));
+                    } else {
+                      setSelectedLbGameIds(prev => Array.from(new Set([...prev, ...filtered])));
+                    }
+                  }}
+                  className="font-medium text-emerald-600 hover:text-emerald-800"
+                >
+                  Select / Deselect Filtered
+                </button>
+              </div>
 
-                    {isEnabled ? (
-                      <div className="space-y-3">
-                        <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 text-xs text-neutral-700 space-y-1">
-                          <div className="flex justify-between items-center">
-                            <span className="font-medium text-neutral-500">Short Key:</span>
-                            <span className="font-mono font-bold text-neutral-900">.{activeKey}</span>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {games.filter(g => {
+                  const gameId = String(g.id || g.game_id);
+                  const matchesSearch = (g.name || g.game_name || "").toLowerCase().includes(lbGameSearch.toLowerCase()) || gameId.toLowerCase().includes(lbGameSearch.toLowerCase());
+                  const savedMatch = savedGames.find(s => String(s.gameId) === gameId);
+                  const isEnabled = !!savedMatch && savedMatch.isEnabled !== false;
+                  if (lbStatusFilter === 'ENABLED') return matchesSearch && isEnabled;
+                  if (lbStatusFilter === 'DISABLED') return matchesSearch && !isEnabled;
+                  return matchesSearch;
+                }).map((game, i) => {
+                  const gameId = String(game.id || game.game_id);
+                  const gameName = game.name || game.game_name || 'Unknown';
+                  const savedMatch = savedGames.find(s => String(s.gameId) === gameId);
+                  const isEnabled = !!savedMatch && savedMatch.isEnabled !== false;
+                  const activeKey = savedMatch?.shortKey || '';
+                  const isSelected = selectedLbGameIds.includes(gameId);
+
+                  return (
+                    <div 
+                      key={i} 
+                      className={`p-5 bg-white border-2 rounded-2xl transition-all flex flex-col justify-between ${
+                        isEnabled 
+                          ? 'border-emerald-500 shadow-sm ring-1 ring-emerald-500/20' 
+                          : 'border-neutral-200 hover:border-neutral-300 shadow-xs opacity-75'
+                      }`}
+                    >
+                      <div className="mb-4">
+                        <div className="flex justify-between items-start gap-2 mb-2">
+                          <div className="flex items-start gap-2.5">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedLbGameIds(prev => [...prev, gameId]);
+                                } else {
+                                  setSelectedLbGameIds(prev => prev.filter(id => id !== gameId));
+                                }
+                              }}
+                              className="w-4 h-4 mt-1 rounded text-emerald-600 border-neutral-300 focus:ring-emerald-500 cursor-pointer"
+                            />
+                            <div>
+                              <span className="font-extrabold text-base text-neutral-900 block leading-tight">{gameName}</span>
+                              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                <span className="inline-block px-2 py-0.5 bg-neutral-100 text-neutral-600 text-[11px] font-mono font-medium rounded">
+                                  ID: {gameId}
+                                </span>
+                                <span className="text-[10px] bg-emerald-50 text-emerald-700 font-semibold px-1.5 py-0.5 rounded border border-emerald-100">LootBar</span>
+                                {isEnabled && activeKey && (
+                                  <span className="inline-block px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 text-[11px] font-mono font-bold rounded">
+                                    Key: .{activeKey}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
                           </div>
-                          <div className="flex justify-between items-center">
-                            <span className="font-medium text-neutral-500">View Products:</span>
-                            <span className="font-mono text-neutral-700">.{activeKey}</span>
-                          </div>
-                          <div className="flex justify-between items-center">
-                            <span className="font-medium text-neutral-500">Order Format:</span>
-                            <span className="font-mono text-neutral-700">.{activeKey} &lt;UID&gt; &lt;Product&gt;</span>
-                          </div>
+                          {isEnabled ? (
+                            <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full whitespace-nowrap">
+                              ✓ Bot Active
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full whitespace-nowrap">
+                              Disabled
+                            </span>
+                          )}
                         </div>
-
-                        <button 
-                          onClick={() => deleteSavedGame(gameId)}
-                          className="w-full py-2.5 bg-red-50 hover:bg-red-100 text-red-700 text-sm font-bold rounded-xl transition-colors border border-red-200 flex justify-center items-center gap-2"
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>
-                          Remove from Bot
-                        </button>
                       </div>
-                    ) : (
-                      <button 
-                        onClick={() => saveGame(gameId, gameName)}
-                        className="w-full py-2.5 bg-neutral-900 hover:bg-neutral-800 text-white text-sm font-bold rounded-xl transition-colors shadow-sm flex justify-center items-center gap-2"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>
-                        Enable for Bot
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+
+                      {isEnabled ? (
+                        <div className="space-y-3">
+                          <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 text-xs text-neutral-700 space-y-1">
+                            <div className="flex justify-between items-center">
+                              <span className="font-medium text-neutral-500">Short Key:</span>
+                              <span className="font-mono font-bold text-neutral-900">.{activeKey}</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <span className="font-medium text-neutral-500">View Products:</span>
+                              <span className="font-mono text-neutral-700">.{activeKey}</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <span className="font-medium text-neutral-500">Order Format:</span>
+                              <span className="font-mono text-neutral-700">.{activeKey} &lt;UID&gt; &lt;Product&gt;</span>
+                            </div>
+                          </div>
+
+                          <button 
+                            onClick={() => handleToggleLootbarGame(gameId, gameName, true)}
+                            className="w-full py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold rounded-xl transition-colors border border-rose-200 flex justify-center items-center gap-1.5"
+                          >
+                            <span>🔒</span> Disable from Bot
+                          </button>
+                        </div>
+                      ) : (
+                        <button 
+                          onClick={() => handleToggleLootbarGame(gameId, gameName, false)}
+                          className="w-full py-2 bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-bold rounded-xl transition-colors shadow-sm flex justify-center items-center gap-1.5"
+                        >
+                          <span>⚡</span> Enable for Bot
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
           )}
           </div>
           )}
         </div>
 
-        {/* Active Games in Telegram Bot & Short Key Settings */}
-        <div className="bg-white p-8 rounded-xl shadow-sm border border-neutral-200">
-          <div className="flex justify-between items-center mb-4">
-            <div className="flex-1">
-              <h2 className="text-lg font-bold text-neutral-900">Current Active Games in Bot ({savedGames.length + tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length + fzrProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length})</h2>
-              <p className="text-sm text-neutral-500 mt-1">Set custom Short Keys so users can lookup products and order via <span className="font-mono text-neutral-700">.&lt;shortKey&gt;</span></p>
+        {/* Unified Active & Managed Games in Telegram Bot */}
+        <div className="bg-white p-6 sm:p-8 rounded-xl shadow-sm border border-neutral-200">
+          <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 mb-4 pb-4 border-b border-neutral-100">
+            <div>
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h2 className="text-xl font-bold text-neutral-900">Current Active Games in Bot</h2>
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                  {savedGames.filter(g => g.isEnabled !== false).length + tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length + g2bulkProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length} Active
+                </span>
+              </div>
+              <p className="text-xs sm:text-sm text-neutral-500 mt-0.5">
+                Manage all active games, configure short keys, and toggle bot availability across providers.
+              </p>
             </div>
-            <div className="w-full sm:w-auto mt-4 sm:mt-0">
+
+            <div className="w-full lg:w-auto flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-center">
               <input
                 type="text"
-                placeholder="Search Active Games..."
-                className="px-4 py-2 border border-neutral-300 rounded-lg w-full min-w-[250px] focus:outline-none focus:border-neutral-500 focus:ring-1 focus:ring-neutral-500"
+                placeholder="Filter active games..."
+                className="px-3.5 py-2 border border-neutral-300 rounded-lg text-sm w-full sm:w-64 focus:outline-none focus:border-neutral-500 focus:ring-1 focus:ring-neutral-500"
                 value={activeGameSearch}
                 onChange={(e) => setActiveGameSearch(e.target.value)}
               />
             </div>
           </div>
+
+          {/* Provider and Status Filter Tabs */}
+          <div className="flex flex-wrap items-center justify-between gap-2.5 mb-5 text-xs font-semibold">
+            <div className="inline-flex rounded-lg border border-neutral-200 bg-neutral-100 p-0.5">
+              <button
+                onClick={() => setActiveProviderFilter('ALL')}
+                className={`px-3 py-1.5 rounded-md transition-all ${activeProviderFilter === 'ALL' ? 'bg-white text-neutral-900 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
+              >
+                All Providers ({savedGames.length + tpnProducts.length + g2bulkProducts.length})
+              </button>
+              <button
+                onClick={() => setActiveProviderFilter('LOOTBAR')}
+                className={`px-3 py-1.5 rounded-md transition-all ${activeProviderFilter === 'LOOTBAR' ? 'bg-white text-emerald-700 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
+              >
+                LootBar ({savedGames.length})
+              </button>
+              <button
+                onClick={() => setActiveProviderFilter('TOPUPNATION')}
+                className={`px-3 py-1.5 rounded-md transition-all ${activeProviderFilter === 'TOPUPNATION' ? 'bg-white text-indigo-700 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
+              >
+                TopUpNation ({tpnProducts.length})
+              </button>
+              <button
+                onClick={() => setActiveProviderFilter('G2BULK')}
+                className={`px-3 py-1.5 rounded-md transition-all ${activeProviderFilter === 'G2BULK' ? 'bg-white text-orange-700 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
+              >
+                G2Bulk ({g2bulkProducts.length})
+              </button>
+            </div>
+
+            <div className="inline-flex rounded-lg border border-neutral-200 bg-neutral-100 p-0.5">
+              <button
+                onClick={() => setActiveStatusFilter('ALL')}
+                className={`px-3 py-1.5 rounded-md transition-all ${activeStatusFilter === 'ALL' ? 'bg-white text-neutral-900 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
+              >
+                All
+              </button>
+              <button
+                onClick={() => setActiveStatusFilter('ENABLED')}
+                className={`px-3 py-1.5 rounded-md transition-all ${activeStatusFilter === 'ENABLED' ? 'bg-white text-emerald-700 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
+              >
+                Active Only
+              </button>
+              <button
+                onClick={() => setActiveStatusFilter('DISABLED')}
+                className={`px-3 py-1.5 rounded-md transition-all ${activeStatusFilter === 'DISABLED' ? 'bg-white text-rose-700 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
+              >
+                Disabled Only
+              </button>
+            </div>
+          </div>
+
+          {/* Multi-selection bar for Active Games */}
+          {selectedActiveGameKeys.length > 0 && (
+            <div className="mb-4 p-3 bg-neutral-900 text-white rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-white">{selectedActiveGameKeys.length} items selected</span>
+                <button 
+                  onClick={() => setSelectedActiveGameKeys([])}
+                  className="text-neutral-400 hover:text-white underline ml-1"
+                >
+                  Clear Selection
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  disabled={isBulkGameUpdating}
+                  onClick={() => handleBulkToggleSelectedActive(true)}
+                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg transition-colors shadow-xs flex items-center gap-1"
+                >
+                  ✓ Enable Selected ({selectedActiveGameKeys.length})
+                </button>
+                <button
+                  disabled={isBulkGameUpdating}
+                  onClick={() => handleBulkToggleSelectedActive(false)}
+                  className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-lg transition-colors shadow-xs flex items-center gap-1"
+                >
+                  ✕ Disable Selected ({selectedActiveGameKeys.length})
+                </button>
+              </div>
+            </div>
+          )}
           
           {loadingSaved ? (
-            <p className="text-neutral-500 py-4 text-center">Loading active games...</p>
-          ) : (savedGames.length === 0 && tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length === 0) ? (
+            <p className="text-neutral-500 py-6 text-center text-sm">Loading active games...</p>
+          ) : (savedGames.length === 0 && tpnProducts.length === 0 && g2bulkProducts.length === 0) ? (
             <div className="text-center py-10 bg-amber-50 rounded-xl border border-amber-200">
-              <p className="text-amber-800 font-medium">No games currently active.</p>
-              <p className="text-xs text-amber-600 mt-1">Enable games from the catalogs above/below to show them in the bot.</p>
+              <p className="text-amber-800 font-medium">No games currently active or managed.</p>
+              <p className="text-xs text-amber-600 mt-1">Enable games from the catalogs above to show them in the bot.</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* LootBar Enabled Games */}
-              {savedGames.filter(g => (g.name || "").toLowerCase().includes(activeGameSearch.toLowerCase())).map((saved, i) => {
+              {/* 1. LootBar Games */}
+              {(activeProviderFilter === 'ALL' || activeProviderFilter === 'LOOTBAR') && savedGames.filter(g => {
+                const matchesSearch = (g.name || "").toLowerCase().includes(activeGameSearch.toLowerCase()) || String(g.gameId || "").toLowerCase().includes(activeGameSearch.toLowerCase());
+                const isEnabled = g.isEnabled !== false;
+                if (activeStatusFilter === 'ENABLED') return matchesSearch && isEnabled;
+                if (activeStatusFilter === 'DISABLED') return matchesSearch && !isEnabled;
+                return matchesSearch;
+              }).map((saved, i) => {
                 const currentKey = shortKeyInputs[saved.gameId] !== undefined ? shortKeyInputs[saved.gameId] : (saved.shortKey || '');
                 const isDirty = currentKey !== (saved.shortKey || '');
                 const skuKeyCount = saved.skuShortKeys ? Object.values(saved.skuShortKeys).filter(Boolean).length : 0;
+                const isEnabled = saved.isEnabled !== false;
+                const isSelected = selectedActiveGameKeys.some(k => k.provider === 'lootbar' && k.id === String(saved.gameId));
 
                 return (
-                  <div key={`lb-${i}`} className="p-5 bg-emerald-50/30 border border-emerald-200 shadow-sm rounded-2xl flex flex-col justify-between">
+                  <div 
+                    key={`lb-${i}`} 
+                    className={`p-5 rounded-2xl border transition-all flex flex-col justify-between ${
+                      isEnabled 
+                        ? 'bg-emerald-50/30 border-emerald-300 shadow-sm' 
+                        : 'bg-neutral-50/50 border-neutral-200 opacity-75'
+                    }`}
+                  >
                     <div>
                       <div className="flex justify-between items-start mb-3">
-                        <div className="flex items-center gap-2">
-                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
-                          <span className="font-bold text-neutral-900 text-base">{saved.name}</span>
-                          <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded font-semibold">LootBar</span>
+                        <div className="flex items-start gap-2.5">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedActiveGameKeys(prev => [...prev, { provider: 'lootbar', id: String(saved.gameId) }]);
+                              } else {
+                                setSelectedActiveGameKeys(prev => prev.filter(k => !(k.provider === 'lootbar' && k.id === String(saved.gameId))));
+                              }
+                            }}
+                            className="w-4 h-4 mt-1 rounded text-emerald-600 border-neutral-300 focus:ring-emerald-500 cursor-pointer"
+                          />
+                          <div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className={`w-2.5 h-2.5 rounded-full ${isEnabled ? 'bg-emerald-500' : 'bg-neutral-400'}`}></span>
+                              <span className="font-bold text-neutral-900 text-base">{saved.name}</span>
+                              <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded font-semibold">LootBar</span>
+                            </div>
+                            <span className="text-[11px] font-mono font-medium text-neutral-500 mt-1 inline-block">
+                              ID: {saved.gameId}
+                            </span>
+                          </div>
                         </div>
-                        <span className="text-[11px] font-mono font-medium text-neutral-500 bg-white border border-neutral-200 px-2 py-0.5 rounded">
-                          ID: {saved.gameId}
-                        </span>
+                        {isEnabled ? (
+                          <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                            Active in Bot
+                          </span>
+                        ) : (
+                          <span className="text-[11px] font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full">
+                            Disabled
+                          </span>
+                        )}
                       </div>
 
                       {/* Package Short Keys Button */}
@@ -3465,37 +4188,87 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="mt-4 pt-3 border-t border-emerald-100 flex justify-end">
+                    <div className="mt-4 pt-3 border-t border-neutral-200 flex items-center justify-between gap-2">
                       <button 
                         onClick={() => deleteSavedGame(saved.gameId)}
-                        className="text-red-600 hover:text-red-700 text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-red-50 transition-colors border border-red-200"
+                        className="text-neutral-500 hover:text-neutral-800 text-xs font-semibold px-2 py-1"
                       >
-                        Disable (Remove from Bot)
+                        Remove
+                      </button>
+                      <button 
+                        onClick={() => handleToggleLootbarGame(saved.gameId, saved.name, isEnabled)}
+                        className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-colors border ${
+                          isEnabled 
+                            ? 'bg-rose-50 text-rose-700 hover:bg-rose-100 border-rose-200' 
+                            : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200'
+                        }`}
+                      >
+                        {isEnabled ? '🔒 Disable from Bot' : '⚡ Enable for Bot'}
                       </button>
                     </div>
                   </div>
                 );
               })}
 
-              {/* TopupNation Enabled Games */}
-              {tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED' && (p.name || '').toLowerCase().includes(activeGameSearch.toLowerCase())).map((p, i) => {
+              {/* 2. TopupNation Games */}
+              {(activeProviderFilter === 'ALL' || activeProviderFilter === 'TOPUPNATION') && tpnProducts.filter(p => {
+                const matchesSearch = (p.name || '').toLowerCase().includes(activeGameSearch.toLowerCase()) || (p.productId || '').toLowerCase().includes(activeGameSearch.toLowerCase());
+                const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+                if (activeStatusFilter === 'ENABLED') return matchesSearch && isEnabled;
+                if (activeStatusFilter === 'DISABLED') return matchesSearch && !isEnabled;
+                return matchesSearch;
+              }).map((p, i) => {
                 const activeKey = p.shortKey || '';
                 const currentInput = tpnShortKeyInput[p.productId] !== undefined ? tpnShortKeyInput[p.productId] : activeKey;
                 const isModified = currentInput !== activeKey;
                 const tpnSkuKeyCount = p.skuShortKeys ? Object.values(p.skuShortKeys).filter(Boolean).length : 0;
+                const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+                const isSelected = selectedActiveGameKeys.some(k => k.provider === 'topupnation' && k.id === String(p.productId));
 
                 return (
-                  <div key={`tpn-${i}`} className="p-5 bg-indigo-50/30 border border-indigo-200 shadow-sm rounded-2xl flex flex-col justify-between">
+                  <div 
+                    key={`tpn-${i}`} 
+                    className={`p-5 rounded-2xl border transition-all flex flex-col justify-between ${
+                      isEnabled 
+                        ? 'bg-indigo-50/30 border-indigo-300 shadow-sm' 
+                        : 'bg-neutral-50/50 border-neutral-200 opacity-75'
+                    }`}
+                  >
                     <div>
                       <div className="flex justify-between items-start mb-3">
-                        <div className="flex items-center gap-2">
-                          <span className="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
-                          <span className="font-bold text-neutral-900 text-base">{p.name}</span>
-                          <span className="text-[10px] bg-indigo-100 text-indigo-800 px-1.5 py-0.5 rounded font-semibold">TopupNation</span>
+                        <div className="flex items-start gap-2.5">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedActiveGameKeys(prev => [...prev, { provider: 'topupnation', id: String(p.productId) }]);
+                              } else {
+                                setSelectedActiveGameKeys(prev => prev.filter(k => !(k.provider === 'topupnation' && k.id === String(p.productId))));
+                              }
+                            }}
+                            className="w-4 h-4 mt-1 rounded text-indigo-600 border-neutral-300 focus:ring-indigo-500 cursor-pointer"
+                          />
+                          <div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className={`w-2.5 h-2.5 rounded-full ${isEnabled ? 'bg-indigo-500' : 'bg-neutral-400'}`}></span>
+                              <span className="font-bold text-neutral-900 text-base">{p.name}</span>
+                              <span className="text-[10px] bg-indigo-100 text-indigo-800 px-1.5 py-0.5 rounded font-semibold">TopupNation</span>
+                            </div>
+                            <span className="text-[11px] font-mono font-medium text-neutral-500 mt-1 inline-block">
+                              ID: {p.productId}
+                            </span>
+                          </div>
                         </div>
-                        <span className="text-[11px] font-mono font-medium text-neutral-500 bg-white border border-neutral-200 px-2 py-0.5 rounded">
-                          ID: {p.productId}
-                        </span>
+                        {isEnabled ? (
+                          <span className="text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-full">
+                            Active in Bot
+                          </span>
+                        ) : (
+                          <span className="text-[11px] font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full">
+                            Disabled
+                          </span>
+                        )}
                       </div>
 
                       {/* Package Short Keys Button */}
@@ -3541,50 +4314,92 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="mt-4 pt-3 border-t border-indigo-100 flex justify-end">
+                    <div className="mt-4 pt-3 border-t border-neutral-200 flex items-center justify-end">
                       <button 
-                        onClick={() => handleToggleTpnProduct(p.productId, true)}
-                        className="text-red-600 hover:text-red-700 text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-red-50 transition-colors border border-red-200"
+                        onClick={() => handleToggleTpnProduct(p.productId, isEnabled)}
+                        className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-colors border ${
+                          isEnabled 
+                            ? 'bg-rose-50 text-rose-700 hover:bg-rose-100 border-rose-200' 
+                            : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border-indigo-200'
+                        }`}
                       >
-                        Disable (Remove from Bot)
+                        {isEnabled ? '🔒 Disable from Bot' : '⚡ Enable for Bot'}
                       </button>
                     </div>
                   </div>
                 );
               })}
 
-              {/* FZR Cards Enabled Games */}
-              {fzrProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED' && (p.name || '').toLowerCase().includes(activeGameSearch.toLowerCase())).map((p, i) => {
+              {/* 3. G2Bulk Games */}
+              {(activeProviderFilter === 'ALL' || activeProviderFilter === 'G2BULK') && g2bulkProducts.filter(p => {
+                const matchesSearch = (p.name || '').toLowerCase().includes(activeGameSearch.toLowerCase()) || (p.productId || '').toLowerCase().includes(activeGameSearch.toLowerCase());
+                const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+                if (activeStatusFilter === 'ENABLED') return matchesSearch && isEnabled;
+                if (activeStatusFilter === 'DISABLED') return matchesSearch && !isEnabled;
+                return matchesSearch;
+              }).map((p, i) => {
                 const activeKey = p.shortKey || '';
-                const currentInput = fzrShortKeyInput[p.productId] !== undefined ? fzrShortKeyInput[p.productId] : activeKey;
-                const isModified = currentInput !== activeKey;
-                const fzrSkuKeyCount = p.skuShortKeys ? Object.values(p.skuShortKeys).filter(Boolean).length : 0;
+                const g2bSkuKeyCount = p.skuShortKeys ? Object.values(p.skuShortKeys).filter(Boolean).length : 0;
+                const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
+                const isSelected = selectedActiveGameKeys.some(k => k.provider === 'g2bulk' && k.id === String(p.productId));
 
                 return (
-                  <div key={`fzr-${i}`} className="p-5 bg-sky-50/30 border border-sky-200 shadow-sm rounded-2xl flex flex-col justify-between">
+                  <div 
+                    key={`g2b-${i}`} 
+                    className={`p-5 rounded-2xl border transition-all flex flex-col justify-between ${
+                      isEnabled 
+                        ? 'bg-orange-50/30 border-orange-300 shadow-sm' 
+                        : 'bg-neutral-50/50 border-neutral-200 opacity-75'
+                    }`}
+                  >
                     <div>
                       <div className="flex justify-between items-start mb-3">
-                        <div className="flex items-center gap-2">
-                          <span className="w-2.5 h-2.5 rounded-full bg-sky-500"></span>
-                          <span className="font-bold text-neutral-900 text-base">{p.name}</span>
-                          <span className="text-[10px] bg-sky-100 text-sky-800 px-1.5 py-0.5 rounded font-semibold">FZR Cards</span>
+                        <div className="flex items-start gap-2.5">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedActiveGameKeys(prev => [...prev, { provider: 'g2bulk', id: String(p.productId) }]);
+                              } else {
+                                setSelectedActiveGameKeys(prev => prev.filter(k => !(k.provider === 'g2bulk' && k.id === String(p.productId))));
+                              }
+                            }}
+                            className="w-4 h-4 mt-1 rounded text-orange-600 border-neutral-300 focus:ring-orange-500 cursor-pointer"
+                          />
+                          <div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className={`w-2.5 h-2.5 rounded-full ${isEnabled ? 'bg-orange-500' : 'bg-neutral-400'}`}></span>
+                              <span className="font-bold text-neutral-900 text-base">{p.name}</span>
+                              <span className="text-[10px] bg-orange-100 text-orange-800 px-1.5 py-0.5 rounded font-semibold">G2Bulk</span>
+                            </div>
+                            <span className="text-[11px] font-mono font-medium text-neutral-500 mt-1 inline-block">
+                              ID: {p.productId}
+                            </span>
+                          </div>
                         </div>
-                        <span className="text-[11px] font-mono font-medium text-neutral-500 bg-white border border-neutral-200 px-2 py-0.5 rounded">
-                          ID: {p.productId}
-                        </span>
+                        {isEnabled ? (
+                          <span className="text-[11px] font-bold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-0.5 rounded-full">
+                            Active in Bot
+                          </span>
+                        ) : (
+                          <span className="text-[11px] font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full">
+                            Disabled
+                          </span>
+                        )}
                       </div>
 
                       {/* Package Short Keys Button */}
                       <button 
-                        onClick={() => openSkuModal(p, 'fzrcards')} 
-                        className="w-full mb-3 px-3.5 py-2 bg-sky-100/70 hover:bg-sky-200/70 text-sky-900 border border-sky-300 rounded-xl text-xs font-bold flex items-center justify-between transition-colors shadow-xs"
+                        onClick={() => openSkuModal(p, 'g2bulk')} 
+                        className="w-full mb-3 px-3.5 py-2 bg-orange-100/70 hover:bg-orange-200/70 text-orange-900 border border-orange-300 rounded-xl text-xs font-bold flex items-center justify-between transition-colors shadow-xs"
                       >
                         <div className="flex items-center gap-1.5">
                           <span>🏷️</span>
                           <span>Package Short Keys</span>
                         </div>
-                        <span className="bg-sky-200/80 text-sky-900 px-2 py-0.5 rounded-full text-[11px] font-mono font-bold">
-                          {fzrSkuKeyCount} set
+                        <span className="bg-orange-200/80 text-orange-900 px-2 py-0.5 rounded-full text-[11px] font-mono font-bold">
+                          {g2bSkuKeyCount} set
                         </span>
                       </button>
 
@@ -3597,32 +4412,30 @@ export default function App() {
                           <span className="font-mono text-sm font-bold text-neutral-400">.</span>
                           <input 
                             type="text"
-                            value={currentInput}
-                            onChange={(e) => setFzrShortKeyInput(prev => ({ ...prev, [p.productId]: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '') }))}
-                            placeholder={`e.g. f${p.productId.slice(0, 4)}`}
-                            className="flex-1 px-3 py-1.5 border border-neutral-300 rounded-lg text-sm font-mono font-bold text-neutral-900 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                            defaultValue={activeKey}
+                            onBlur={(e) => {
+                              const val = e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+                              if (val !== activeKey) {
+                                handleSaveG2BulkShortKey(p.productId, val);
+                              }
+                            }}
+                            placeholder={`e.g. g${p.productId.slice(0, 4)}`}
+                            className="flex-1 px-3 py-1.5 border border-neutral-300 rounded-lg text-sm font-mono font-bold text-neutral-900 focus:outline-none focus:ring-2 focus:ring-orange-500"
                           />
-                          <button
-                            disabled={!isModified}
-                            onClick={() => handleSaveFzrShortKey(p.productId)}
-                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
-                              isModified
-                                ? 'bg-sky-600 hover:bg-sky-700 text-white shadow-sm'
-                                : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'
-                            }`}
-                          >
-                            Save
-                          </button>
                         </div>
                       </div>
                     </div>
 
-                    <div className="mt-4 pt-3 border-t border-sky-100 flex justify-end">
+                    <div className="mt-4 pt-3 border-t border-neutral-200 flex items-center justify-end">
                       <button 
-                        onClick={() => handleToggleFzrProduct(p.productId, true)}
-                        className="text-red-600 hover:text-red-700 text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-red-50 transition-colors border border-red-200"
+                        onClick={() => handleToggleG2BulkProduct(p.productId, isEnabled)}
+                        className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-colors border ${
+                          isEnabled 
+                            ? 'bg-rose-50 text-rose-700 hover:bg-rose-100 border-rose-200' 
+                            : 'bg-orange-50 text-orange-700 hover:bg-orange-100 border-orange-200'
+                        }`}
                       >
-                        Disable (Remove from Bot)
+                        {isEnabled ? '🔒 Disable from Bot' : '⚡ Enable for Bot'}
                       </button>
                     </div>
                   </div>
@@ -4028,9 +4841,9 @@ export default function App() {
             const active = orders.filter(o => o.state === 0 || o.state === 1 || o.state === 4).length;
             const completed = orders.filter(o => o.state === 2).length;
             const totalVol = orders.reduce((sum, o) => sum + (o.price || 0), 0);
-            const lbCount = orders.filter(o => o.provider !== 'topupnation' && o.provider !== 'fzrcards' && o.provider !== 'g2bulk' && o.extraInfo?.provider !== 'topupnation' && o.extraInfo?.provider !== 'fzrcards' && o.extraInfo?.provider !== 'g2bulk').length;
+            const lbCount = orders.filter(o => o.provider !== 'topupnation' && o.provider !== 'g2bulk' && o.extraInfo?.provider !== 'topupnation' && o.extraInfo?.provider !== 'g2bulk').length;
             const tpnCount = orders.filter(o => o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation').length;
-            const fzrCount = orders.filter(o => o.provider === 'fzrcards' || o.extraInfo?.provider === 'fzrcards').length;
+            const g2bCount = orders.filter(o => o.provider === 'g2bulk' || o.extraInfo?.provider === 'g2bulk').length;
 
             return (
               <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 my-5">
@@ -4050,11 +4863,11 @@ export default function App() {
                   </div>
                   <div className="text-lg font-bold text-indigo-900 mt-0.5">{tpnCount}</div>
                 </div>
-                <div className="bg-sky-50/70 p-3 rounded-xl border border-sky-200">
-                  <div className="text-[11px] text-sky-800 font-medium flex items-center gap-1">
-                    <span>💎</span> FZR Cards
+                <div className="bg-orange-50/70 p-3 rounded-xl border border-orange-200">
+                  <div className="text-[11px] text-orange-800 font-medium flex items-center gap-1">
+                    <span>🔥</span> G2Bulk
                   </div>
-                  <div className="text-lg font-bold text-sky-900 mt-0.5">{fzrCount}</div>
+                  <div className="text-lg font-bold text-orange-900 mt-0.5">{g2bCount}</div>
                 </div>
                 <div className="bg-blue-50/60 p-3 rounded-xl border border-blue-100">
                   <div className="text-[11px] text-blue-700 font-medium flex items-center gap-1">
@@ -4071,114 +4884,125 @@ export default function App() {
             );
           })()}
 
-          {/* Filters & Search */}
-          <div className="flex flex-col md:flex-row gap-3 justify-between items-stretch md:items-center mb-5">
-            {/* Filter Tabs (API Provider & Status) */}
-            <div className="flex flex-wrap items-center gap-2">
-              {/* Provider Tabs */}
-              <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-lg">
-                <span className="text-[11px] font-bold text-neutral-400 px-2 uppercase tracking-wider">API:</span>
-                <button
-                  onClick={() => setOrderProviderFilter('ALL')}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all ${
-                    orderProviderFilter === 'ALL'
-                      ? 'bg-neutral-900 text-white shadow-xs font-semibold'
-                      : 'text-neutral-600 hover:text-neutral-900'
-                  }`}
-                >
-                  🌐 All ({orders.length})
-                </button>
-                <button
-                  onClick={() => setOrderProviderFilter('LOOTBAR')}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1 ${
-                    orderProviderFilter === 'LOOTBAR'
-                      ? 'bg-emerald-700 text-white shadow-xs font-semibold'
-                      : 'text-emerald-700 hover:bg-emerald-50'
-                  }`}
-                >
-                  🎮 LootBar ({orders.filter(o => o.provider !== 'topupnation' && o.provider !== 'fzrcards' && o.provider !== 'g2bulk' && o.extraInfo?.provider !== 'topupnation' && o.extraInfo?.provider !== 'fzrcards' && o.extraInfo?.provider !== 'g2bulk').length})
-                </button>
-                <button
-                  onClick={() => setOrderProviderFilter('TOPUPNATION')}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1 ${
-                    orderProviderFilter === 'TOPUPNATION'
-                      ? 'bg-indigo-700 text-white shadow-xs font-semibold'
-                      : 'text-indigo-700 hover:bg-indigo-50'
-                  }`}
-                >
-                  ⚡ TopupNation ({orders.filter(o => o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation').length})
-                </button>
-                <button
-                  onClick={() => setOrderProviderFilter('FZRCARDS' as any)}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1 ${
-                    (orderProviderFilter as string) === 'FZRCARDS'
-                      ? 'bg-sky-700 text-white shadow-xs font-semibold'
-                      : 'text-sky-700 hover:bg-sky-50'
-                  }`}
-                >
-                  💎 FZR Cards ({orders.filter(o => o.provider === 'fzrcards' || o.extraInfo?.provider === 'fzrcards').length})
-                </button>
-                <button
-                  onClick={() => setOrderProviderFilter('G2BULK' as any)}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1 ${
-                    (orderProviderFilter as string) === 'G2BULK'
-                      ? 'bg-orange-700 text-white shadow-xs font-semibold'
-                      : 'text-orange-700 hover:bg-orange-50'
-                  }`}
-                >
-                  🔥 G2Bulk ({orders.filter(o => o.provider === 'g2bulk' || o.extraInfo?.provider === 'g2bulk').length})
-                </button>
+          {/* Filters & Search Toolbar */}
+          <div className="space-y-3 mb-5">
+            <div className="flex flex-col lg:flex-row gap-3 justify-between items-stretch lg:items-center">
+              {/* Filter Tabs (API Provider & Status) */}
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Provider Tabs */}
+                <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-lg">
+                  <span className="text-[11px] font-bold text-neutral-400 px-2 uppercase tracking-wider">API:</span>
+                  <button
+                    onClick={() => setOrderProviderFilter('ALL')}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all ${
+                      orderProviderFilter === 'ALL'
+                        ? 'bg-neutral-900 text-white shadow-xs font-semibold'
+                        : 'text-neutral-600 hover:text-neutral-900'
+                    }`}
+                  >
+                    🌐 All ({orders.length})
+                  </button>
+                  <button
+                    onClick={() => setOrderProviderFilter('LOOTBAR')}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1 ${
+                      orderProviderFilter === 'LOOTBAR'
+                        ? 'bg-emerald-700 text-white shadow-xs font-semibold'
+                        : 'text-emerald-700 hover:bg-emerald-50'
+                    }`}
+                  >
+                    🎮 LootBar ({orders.filter(o => o.provider !== 'topupnation' && o.provider !== 'g2bulk' && o.extraInfo?.provider !== 'topupnation' && o.extraInfo?.provider !== 'g2bulk').length})
+                  </button>
+                  <button
+                    onClick={() => setOrderProviderFilter('TOPUPNATION')}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1 ${
+                      orderProviderFilter === 'TOPUPNATION'
+                        ? 'bg-indigo-700 text-white shadow-xs font-semibold'
+                        : 'text-indigo-700 hover:bg-indigo-50'
+                    }`}
+                  >
+                    ⚡ TopupNation ({orders.filter(o => o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation').length})
+                  </button>
+                  <button
+                    onClick={() => setOrderProviderFilter('G2BULK' as any)}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1 ${
+                      (orderProviderFilter as string) === 'G2BULK'
+                        ? 'bg-orange-700 text-white shadow-xs font-semibold'
+                        : 'text-orange-700 hover:bg-orange-50'
+                    }`}
+                  >
+                    🔥 G2Bulk ({orders.filter(o => o.provider === 'g2bulk' || o.extraInfo?.provider === 'g2bulk').length})
+                  </button>
+                </div>
+
+                {/* Status Tabs */}
+                <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-lg">
+                  {(['ALL', 'ACTIVE', 'COMPLETED', 'FAILED'] as const).map(tab => {
+                    const count = tab === 'ALL' 
+                      ? orders.length 
+                      : tab === 'ACTIVE' 
+                        ? orders.filter(o => o.state === 0 || o.state === 1 || o.state === 4).length
+                        : tab === 'COMPLETED'
+                          ? orders.filter(o => o.state === 2).length
+                          : orders.filter(o => o.state === 3 || o.state === 6).length;
+
+                    return (
+                      <button
+                        key={tab}
+                        onClick={() => setOrderFilter(tab)}
+                        className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all ${
+                          orderFilter === tab 
+                            ? 'bg-white text-neutral-900 shadow-xs font-semibold' 
+                            : 'text-neutral-600 hover:text-neutral-900'
+                        }`}
+                      >
+                        {tab === 'ALL' ? 'All Status' : tab === 'ACTIVE' ? '⏳ Active' : tab === 'COMPLETED' ? '✅ Completed' : '❌ Failed'} ({count})
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
-              {/* Status Tabs */}
-              <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-lg">
-                {(['ALL', 'ACTIVE', 'COMPLETED', 'FAILED'] as const).map(tab => {
-                  const count = tab === 'ALL' 
-                    ? orders.length 
-                    : tab === 'ACTIVE' 
-                      ? orders.filter(o => o.state === 0 || o.state === 1 || o.state === 4).length
-                      : tab === 'COMPLETED'
-                        ? orders.filter(o => o.state === 2).length
-                        : orders.filter(o => o.state === 3 || o.state === 6).length;
-
-                  return (
-                    <button
-                      key={tab}
-                      onClick={() => setOrderFilter(tab)}
-                      className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all ${
-                        orderFilter === tab 
-                          ? 'bg-white text-neutral-900 shadow-xs font-semibold' 
-                          : 'text-neutral-600 hover:text-neutral-900'
-                      }`}
-                    >
-                      {tab === 'ALL' ? 'All Status' : tab === 'ACTIVE' ? '⏳ Active' : tab === 'COMPLETED' ? '✅ Completed' : '❌ Failed'} ({count})
-                    </button>
-                  );
-                })}
+              {/* Dedicated Search Bar */}
+              <div className="relative flex-1 max-w-md w-full">
+                <input
+                  type="text"
+                  placeholder="Search by Telegram username (@...), Order ID, Ref ID, UID, IGN..."
+                  value={orderSearch}
+                  onChange={(e) => setOrderSearch(e.target.value)}
+                  className="w-full pl-9 pr-8 py-2 text-xs bg-white border border-neutral-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 shadow-xs transition-all placeholder:text-neutral-400"
+                />
+                <svg className="w-4 h-4 absolute left-3 top-2.5 text-neutral-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                {orderSearch && (
+                  <button 
+                    onClick={() => setOrderSearch('')}
+                    className="absolute right-2.5 top-2 text-xs text-neutral-400 hover:text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-full w-5 h-5 flex items-center justify-center transition-colors cursor-pointer"
+                    title="Clear search"
+                  >
+                    ✕
+                  </button>
+                )}
               </div>
             </div>
 
-            {/* Search Input */}
-            <div className="relative max-w-xs w-full">
-              <input
-                type="text"
-                placeholder="Search UID, IGN, SKU, Ref ID..."
-                value={orderSearch}
-                onChange={(e) => setOrderSearch(e.target.value)}
-                className="w-full pl-8 pr-3 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 focus:bg-white transition-all"
-              />
-              <svg className="w-3.5 h-3.5 absolute left-2.5 top-2 text-neutral-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-              {orderSearch && (
-                <button 
+            {/* Search Active Indicator & Quick Search Helpers */}
+            {orderSearch.trim() && (
+              <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 bg-blue-50/80 border border-blue-200 rounded-lg text-xs text-blue-900">
+                <span className="font-semibold flex items-center gap-1">
+                  <span>🔍</span> Filtering by:
+                </span>
+                <span className="font-mono bg-blue-100 text-blue-800 px-2 py-0.5 rounded font-medium">
+                  {orderSearch}
+                </span>
+                <button
                   onClick={() => setOrderSearch('')}
-                  className="absolute right-2.5 top-1.5 text-xs text-neutral-400 hover:text-neutral-600"
+                  className="text-xs text-blue-600 hover:text-blue-800 underline font-medium cursor-pointer ml-auto"
                 >
-                  ✕
+                  Clear filter
                 </button>
-              )}
-            </div>
+              </div>
+            )}
           </div>
 
           {/* Orders Table */}
@@ -4196,17 +5020,17 @@ export default function App() {
             const filteredOrders = orders.filter(o => {
               // Provider Filter
               const isTpn = o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation';
-              const isFzr = o.provider === 'fzrcards' || o.extraInfo?.provider === 'fzrcards';
-              if (orderProviderFilter === 'LOOTBAR' && (isTpn || isFzr)) return false;
+              const isG2b = o.provider === 'g2bulk' || o.extraInfo?.provider === 'g2bulk';
+              if (orderProviderFilter === 'LOOTBAR' && (isTpn || isG2b)) return false;
               if (orderProviderFilter === 'TOPUPNATION' && !isTpn) return false;
-              if ((orderProviderFilter as string) === 'FZRCARDS' && !isFzr) return false;
+              if ((orderProviderFilter as string) === 'G2BULK' && !isG2b) return false;
 
               // Status Filter
               if (orderFilter === 'ACTIVE' && !(o.state === 0 || o.state === 1 || o.state === 4)) return false;
               if (orderFilter === 'COMPLETED' && o.state !== 2) return false;
               if (orderFilter === 'FAILED' && !(o.state === 3 || o.state === 6)) return false;
 
-              // Search Filter
+              // Search Filter (Supports Telegram Username, Order ID, Ref ID, Chat ID, IGN, SKU, Game, etc.)
               if (orderSearch.trim()) {
                 const query = orderSearch.toLowerCase().trim();
                 const cleanQuery = query.replace(/^@/, '');
@@ -4215,20 +5039,31 @@ export default function App() {
                 const matchPlayer = o.playerName?.toLowerCase().includes(query);
                 const matchRef = o.referenceId?.toLowerCase().includes(query);
                 const matchOrder = o.orderId?.toLowerCase().includes(query);
+                const matchProviderOrder = o.providerOrderId?.toLowerCase().includes(query);
                 const matchChat = String(o.telegramChatId).includes(query);
                 const matchUsername = o.telegramUsername?.toLowerCase().includes(cleanQuery);
                 const matchFirstName = o.telegramFirstName?.toLowerCase().includes(cleanQuery);
                 const matchExtra = o.extraInfo ? JSON.stringify(o.extraInfo).toLowerCase().includes(query) : false;
 
-                return matchName || matchSku || matchPlayer || matchRef || matchOrder || matchChat || matchUsername || matchFirstName || matchExtra;
+                return matchName || matchSku || matchPlayer || matchRef || matchOrder || matchProviderOrder || matchChat || matchUsername || matchFirstName || matchExtra;
               }
               return true;
             });
 
             if (filteredOrders.length === 0) {
               return (
-                <div className="text-center py-8 bg-neutral-50 rounded-xl border border-neutral-200">
-                  <p className="text-xs text-neutral-500">No orders match the selected filter & search criteria.</p>
+                <div className="text-center py-10 bg-neutral-50 rounded-xl border border-neutral-200">
+                  <div className="text-2xl mb-1">🔍</div>
+                  <p className="text-xs font-semibold text-neutral-700">No orders found matching "{orderSearch}"</p>
+                  <p className="text-[11px] text-neutral-400 mt-1">Try searching with another Telegram username, Order ID, or reference number.</p>
+                  {orderSearch && (
+                    <button
+                      onClick={() => setOrderSearch('')}
+                      className="mt-3 px-3 py-1.5 bg-neutral-200 hover:bg-neutral-300 text-neutral-800 text-xs font-medium rounded-lg transition-colors cursor-pointer"
+                    >
+                      Clear Search Filter
+                    </button>
+                  )}
                 </div>
               );
             }
@@ -4274,19 +5109,51 @@ export default function App() {
 
                             {/* Provider */}
                             <td className="py-3.5 px-4 whitespace-nowrap">
-                              {provider === 'fzrcards' ? (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-sky-700 bg-sky-50 border border-sky-200 px-2 py-0.5 rounded-md">
-                                  💎 FZR Cards
-                                </span>
-                              ) : provider === 'topupnation' ? (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md">
-                                  🌐 TopupNation
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
-                                  🟢 LootBar
-                                </span>
-                              )}
+                              <div className="space-y-1">
+                                {provider === 'topupnation' ? (
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md">
+                                    🌐 TopupNation
+                                  </span>
+                                ) : provider === 'g2bulk' ? (
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-0.5 rounded-md">
+                                    🔥 G2Bulk
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+                                    🟢 LootBar
+                                  </span>
+                                )}
+
+                                <div className="flex flex-col text-[10px] font-mono text-neutral-500">
+                                  {o.orderId ? (
+                                    <button
+                                      onClick={() => setOrderSearch(o.orderId)}
+                                      className="text-left text-neutral-600 hover:text-blue-700 hover:underline truncate max-w-[130px] cursor-pointer"
+                                      title={`Click to filter by Order ID: ${o.orderId}`}
+                                    >
+                                      <span className="text-neutral-400 font-sans">OID:</span> {o.orderId}
+                                    </button>
+                                  ) : o.providerOrderId ? (
+                                    <button
+                                      onClick={() => setOrderSearch(o.providerOrderId)}
+                                      className="text-left text-neutral-600 hover:text-blue-700 hover:underline truncate max-w-[130px] cursor-pointer"
+                                      title={`Click to filter by Provider Order ID: ${o.providerOrderId}`}
+                                    >
+                                      <span className="text-neutral-400 font-sans">POID:</span> {o.providerOrderId}
+                                    </button>
+                                  ) : null}
+
+                                  {o.referenceId && (
+                                    <button
+                                      onClick={() => setOrderSearch(o.referenceId)}
+                                      className="text-left text-neutral-500 hover:text-blue-700 hover:underline truncate max-w-[130px] cursor-pointer"
+                                      title={`Click to filter by Ref ID: ${o.referenceId}`}
+                                    >
+                                      <span className="text-neutral-400 font-sans">REF:</span> {o.referenceId.length > 14 ? `${o.referenceId.slice(0, 14)}...` : o.referenceId}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
                             </td>
 
                             {/* User */}
@@ -4516,6 +5383,326 @@ export default function App() {
             );
           })()}
         </div>
+
+        {/* Notification Settings Modal */}
+        {showNotiModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-neutral-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+            <div className="bg-white rounded-2xl max-w-xl w-full p-6 sm:p-8 shadow-2xl border border-neutral-200 relative animate-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
+              <button
+                onClick={() => setShowNotiModal(false)}
+                className="absolute top-5 right-5 text-neutral-400 hover:text-neutral-700 p-1.5 rounded-full hover:bg-neutral-100 transition-colors"
+              >
+                <svg className="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xl">🔔</span>
+                <h3 className="text-lg font-bold text-neutral-900">API Notification Preferences (အသိပေးချက် ဆက်တင်များ)</h3>
+              </div>
+              <p className="text-xs text-neutral-500 mb-5">
+                Bot ထဲသို့ API Provider များနှင့် စနစ်မှ ပေးပို့သော Telegram Message များကို အဖွင့်/အပိတ် ပြုလုပ်နိုင်ပါသည်။
+              </p>
+
+              {notiSuccessMsg && (
+                <div className="mb-4 px-3 py-2 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-lg flex items-center gap-2">
+                  <span>✅</span>
+                  <span>{notiSuccessMsg}</span>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between bg-neutral-50 p-3 rounded-xl border border-neutral-200 mb-4">
+                <span className="text-xs font-semibold text-neutral-700">Quick Global Actions:</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleToggleAllNoti(true)}
+                    className="px-3 py-1 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-colors cursor-pointer"
+                  >
+                    ✓ Enable All
+                  </button>
+                  <button
+                    onClick={() => handleToggleAllNoti(false)}
+                    className="px-3 py-1 text-xs font-semibold rounded-lg bg-neutral-200 text-neutral-700 hover:bg-neutral-300 transition-colors cursor-pointer"
+                  >
+                    ✕ Mute All
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {/* 1. LootBar */}
+                <div className="flex items-center justify-between p-3.5 rounded-xl border border-neutral-200 bg-white hover:border-neutral-300 transition-colors">
+                  <div className="flex items-start gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm shrink-0 mt-0.5">
+                      🎮
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-xs font-bold text-neutral-900">LootBar API Notifications</h4>
+                        <span className={`text-[10px] px-1.5 py-0.2 rounded font-medium ${
+                          notiSettings.lootbarEnabled ? 'bg-emerald-100 text-emerald-800' : 'bg-neutral-100 text-neutral-600'
+                        }`}>
+                          {notiSettings.lootbarEnabled ? 'ON' : 'OFF'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-neutral-500 mt-0.5">
+                        Lootbar မှ အော်ဒါအောင်မြင်ခြင်း၊ မအောင်မြင်ခြင်း နှင့် Refund ရရှိမှု Notification များ
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleToggleNoti('lootbarEnabled')}
+                    disabled={togglingNotiKey === 'lootbarEnabled'}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                      notiSettings.lootbarEnabled ? 'bg-emerald-600' : 'bg-neutral-300'
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                        notiSettings.lootbarEnabled ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* 2. TopupNation */}
+                <div className="flex items-center justify-between p-3.5 rounded-xl border border-neutral-200 bg-white hover:border-neutral-300 transition-colors">
+                  <div className="flex items-start gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-sm shrink-0 mt-0.5">
+                      🌐
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-xs font-bold text-neutral-900">TopUpNation API Notifications</h4>
+                        <span className={`text-[10px] px-1.5 py-0.2 rounded font-medium ${
+                          notiSettings.topupnationEnabled ? 'bg-indigo-100 text-indigo-800' : 'bg-neutral-100 text-neutral-600'
+                        }`}>
+                          {notiSettings.topupnationEnabled ? 'ON' : 'OFF'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-neutral-500 mt-0.5">
+                        TopupNation Webhook callback နှင့် Poller မှ အော်ဒါအခြေအနေ Noti များ
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleToggleNoti('topupnationEnabled')}
+                    disabled={togglingNotiKey === 'topupnationEnabled'}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                      notiSettings.topupnationEnabled ? 'bg-indigo-600' : 'bg-neutral-300'
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                        notiSettings.topupnationEnabled ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* 3. G2Bulk */}
+                <div className="flex items-center justify-between p-3.5 rounded-xl border border-neutral-200 bg-white hover:border-neutral-300 transition-colors">
+                  <div className="flex items-start gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-orange-100 text-orange-700 flex items-center justify-center font-bold text-sm shrink-0 mt-0.5">
+                      🔥
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-xs font-bold text-neutral-900">G2Bulk API Notifications</h4>
+                        <span className={`text-[10px] px-1.5 py-0.2 rounded font-medium ${
+                          notiSettings.g2bulkEnabled ? 'bg-orange-100 text-orange-800' : 'bg-neutral-100 text-neutral-600'
+                        }`}>
+                          {notiSettings.g2bulkEnabled ? 'ON' : 'OFF'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-neutral-500 mt-0.5">
+                        G2Bulk အော်ဒါတင်သွင်းမှု၊ Webhook အကြောင်းကြားချက်များနှင့် Error Refund Noti များ
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleToggleNoti('g2bulkEnabled')}
+                    disabled={togglingNotiKey === 'g2bulkEnabled'}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                      notiSettings.g2bulkEnabled ? 'bg-orange-600' : 'bg-neutral-300'
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                        notiSettings.g2bulkEnabled ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* 4. Admin Order Alerts */}
+                <div className="flex items-center justify-between p-3.5 rounded-xl border border-neutral-200 bg-white hover:border-neutral-300 transition-colors">
+                  <div className="flex items-start gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center font-bold text-sm shrink-0 mt-0.5">
+                      🔔
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-xs font-bold text-neutral-900">Admin New Order Alerts</h4>
+                        <span className={`text-[10px] px-1.5 py-0.2 rounded font-medium ${
+                          notiSettings.adminOrderAlerts ? 'bg-purple-100 text-purple-800' : 'bg-neutral-100 text-neutral-600'
+                        }`}>
+                          {notiSettings.adminOrderAlerts ? 'ON' : 'OFF'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-neutral-500 mt-0.5">
+                        User များမှ Single Order နှင့် Bulk Order တင်တိုင်း Admin Chat ID ထံ ပေးပို့သော Noti
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleToggleNoti('adminOrderAlerts')}
+                    disabled={togglingNotiKey === 'adminOrderAlerts'}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                      notiSettings.adminOrderAlerts ? 'bg-purple-600' : 'bg-neutral-300'
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                        notiSettings.adminOrderAlerts ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* 5. Price Change Alerts with Per-API selection */}
+                <div className="p-4 rounded-xl border border-neutral-200 bg-white hover:border-neutral-300 transition-colors">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-teal-100 text-teal-700 flex items-center justify-center font-bold text-sm shrink-0 mt-0.5">
+                        🏷️
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h4 className="text-xs font-bold text-neutral-900">Price & Catalog Change Alerts</h4>
+                          <span className={`text-[10px] px-1.5 py-0.2 rounded font-medium ${
+                            notiSettings.priceChangeAlerts ? 'bg-teal-100 text-teal-800' : 'bg-neutral-100 text-neutral-600'
+                          }`}>
+                            {notiSettings.priceChangeAlerts ? 'ON' : 'OFF'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-neutral-500 mt-0.5">
+                          စျေးနှုန်း အတက်/အကျ အပြောင်းအလဲရှိပါက User များထံ ပို့ပေးသော Auto Alert Noti
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => handleToggleNoti('priceChangeAlerts')}
+                      disabled={togglingNotiKey === 'priceChangeAlerts'}
+                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                        notiSettings.priceChangeAlerts ? 'bg-teal-600' : 'bg-neutral-300'
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                          notiSettings.priceChangeAlerts ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  {/* Per-API Selection in Modal */}
+                  <div className={`mt-3 pt-3 border-t border-neutral-100 transition-opacity ${notiSettings.priceChangeAlerts ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+                    <div className="text-[11px] font-semibold text-neutral-700 mb-2 flex items-center justify-between">
+                      <span>API အလိုက် စျေးနှုန်း Noti ရွေးချယ်အဖွင့်/အပိတ် :</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      {/* LootBar */}
+                      <div className={`flex items-center justify-between p-2.5 rounded-lg border transition-all ${
+                        notiSettings.priceChangeLootbar && notiSettings.priceChangeAlerts
+                          ? 'bg-amber-50/70 border-amber-200'
+                          : 'bg-neutral-50 border-neutral-200'
+                      }`}>
+                        <div>
+                          <div className="text-[11px] font-bold text-neutral-900">LootBar</div>
+                          <div className="text-[10px] text-neutral-500">Price Alerts</div>
+                        </div>
+                        <button
+                          onClick={() => handleToggleNoti('priceChangeLootbar')}
+                          disabled={togglingNotiKey === 'priceChangeLootbar' || !notiSettings.priceChangeAlerts}
+                          className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors duration-200 focus:outline-none ${
+                            notiSettings.priceChangeLootbar && notiSettings.priceChangeAlerts ? 'bg-amber-600' : 'bg-neutral-300'
+                          }`}
+                        >
+                          <span
+                            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ${
+                              notiSettings.priceChangeLootbar && notiSettings.priceChangeAlerts ? 'translate-x-4' : 'translate-x-0'
+                            }`}
+                          />
+                        </button>
+                      </div>
+
+                      {/* TopupNation */}
+                      <div className={`flex items-center justify-between p-2.5 rounded-lg border transition-all ${
+                        notiSettings.priceChangeTopupnation && notiSettings.priceChangeAlerts
+                          ? 'bg-blue-50/70 border-blue-200'
+                          : 'bg-neutral-50 border-neutral-200'
+                      }`}>
+                        <div>
+                          <div className="text-[11px] font-bold text-neutral-900">TopupNation</div>
+                          <div className="text-[10px] text-neutral-500">Price Alerts</div>
+                        </div>
+                        <button
+                          onClick={() => handleToggleNoti('priceChangeTopupnation')}
+                          disabled={togglingNotiKey === 'priceChangeTopupnation' || !notiSettings.priceChangeAlerts}
+                          className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors duration-200 focus:outline-none ${
+                            notiSettings.priceChangeTopupnation && notiSettings.priceChangeAlerts ? 'bg-blue-600' : 'bg-neutral-300'
+                          }`}
+                        >
+                          <span
+                            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ${
+                              notiSettings.priceChangeTopupnation && notiSettings.priceChangeAlerts ? 'translate-x-4' : 'translate-x-0'
+                            }`}
+                          />
+                        </button>
+                      </div>
+
+                      {/* G2Bulk */}
+                      <div className={`flex items-center justify-between p-2.5 rounded-lg border transition-all ${
+                        notiSettings.priceChangeG2bulk && notiSettings.priceChangeAlerts
+                          ? 'bg-emerald-50/70 border-emerald-200'
+                          : 'bg-neutral-50 border-neutral-200'
+                      }`}>
+                        <div>
+                          <div className="text-[11px] font-bold text-neutral-900">G2Bulk</div>
+                          <div className="text-[10px] text-neutral-500">Price Alerts</div>
+                        </div>
+                        <button
+                          onClick={() => handleToggleNoti('priceChangeG2bulk')}
+                          disabled={togglingNotiKey === 'priceChangeG2bulk' || !notiSettings.priceChangeAlerts}
+                          className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors duration-200 focus:outline-none ${
+                            notiSettings.priceChangeG2bulk && notiSettings.priceChangeAlerts ? 'bg-emerald-600' : 'bg-neutral-300'
+                          }`}
+                        >
+                          <span
+                            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ${
+                              notiSettings.priceChangeG2bulk && notiSettings.priceChangeAlerts ? 'translate-x-4' : 'translate-x-0'
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 flex justify-end">
+                <button
+                  onClick={() => setShowNotiModal(false)}
+                  className="px-4 py-2 bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                >
+                  Done / Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Real-Time Order Tracking Modal Drawer */}
         {selectedTrackingOrder && (

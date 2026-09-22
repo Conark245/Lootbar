@@ -2,26 +2,74 @@ import { Telegraf, Markup, Context } from 'telegraf';
 import { v4 as uuidv4 } from 'uuid';
 import { LootBarClient } from './providers/lootbar/LootBarClient';
 import { TopupNationService } from './providers/topupnation/TopupNationService';
-import { TopupNationProduct } from './models/TopupNationProduct';
-import { FzrCardsService } from './providers/fzrcards/FzrCardsService';
 import { G2BulkService } from './providers/g2bulk/G2BulkService';
-import { G2BulkProduct } from './models/G2BulkProduct';
-import { FzrCardsProduct } from './models/FzrCardsProduct';
-import { Order } from './models/Order';
-import { OrderLock } from './models/OrderLock';
-import { BotLeaderLock } from './models/BotLeaderLock';
-import mongoose from 'mongoose';
 import { User } from './models/User';
 import { Session } from './models/Session';
 import { AppConfig } from './models/AppConfig';
 import { SavedGame } from './models/SavedGame';
-import { TopupRequest } from './models/TopupRequest';
-import { escapeMd, escapeCode, formatMyanmarDateTime, formatMyanmarTimeOnly, safeReply, safeSendMessage, safeEditMessageText, safeSendPhoto, safeEditMessageCaption,parseCommandArgs } from './bot/helpers';
-import { findLootBarSkuMatch, findTopupNationSkuMatch, findFzrCardsSkuMatch, parseSkuWithQuantity } from './bot/matching';
+import { TopupNationProduct } from './models/TopupNationProduct';
+import { G2BulkProduct } from './models/G2BulkProduct';
+import { BotLeaderLock } from './models/BotLeaderLock';
 
-import { BulkOrderService, BulkOrderItem } from './bulkOrderService';
+import { MyContext, SessionData } from './bot/types';
+import {
+  escapeMd,
+  escapeCode,
+  formatMyanmarDateTime,
+  formatMyanmarTimeOnly,
+  safeReply,
+  safeSendMessage,
+  safeEditMessageText,
+  safeSendPhoto,
+  safeEditMessageCaption,
+  parseCommandArgs,
+  isProviderApiLinked,
+  getGameDefaultShortKey
+} from './bot/helpers';
 
-// Helper to escape text for Telegram Markdown v1
+import {
+  renderLootBarGameList,
+  handleGamePackageList,
+  handleGameDirectOrder,
+  registerLootBarHandlers
+} from './bot/lootbar';
+
+import {
+  renderTopupNationGameList,
+  handleTopupNationPackageList,
+  handleTopupNationDirectOrder,
+  syncTopupNationProductLive,
+  registerTopupNationHandlers
+} from './bot/topupnation';
+
+import {
+  renderG2BulkGameList,
+  handleG2BulkPackageList,
+  handleG2BulkDirectOrder,
+  registerG2BulkHandlers
+} from './bot/g2bulk';
+
+import {
+  registerBulkOrderHandlers,
+  handleBulkOrderFlow,
+  renderBulkOrderHistory
+} from './bot/bulkOrder';
+
+import {
+  registerAccountHandlers,
+  renderAccountProfile,
+  renderBalance,
+  startTopupRequest,
+  submitTopupRequest
+} from './bot/account';
+
+import {
+  registerOrderHandlers,
+  renderOrderHistory,
+  showOrderConfirmation,
+  handleTrackOrderQuery
+} from './bot/orders';
+
 async function getAdminChatId(defaultId: string | undefined): Promise<string | undefined> {
   try {
     const config = await AppConfig.findOne({ key: 'admin_chat_id' });
@@ -29,43 +77,8 @@ async function getAdminChatId(defaultId: string | undefined): Promise<string | u
   } catch { return defaultId; }
 }
 
-
-// We augment the session context to keep track of conversation state
-interface SessionData {
-  provider?: 'lootbar' | 'topupnation' | 'fzrcards' | 'g2bulk';
-  step?: string;
-  gameId?: string;
-  gameName?: string;
-  skus?: any[];
-  skuId?: string;
-  skuName?: string;
-  skuPrice?: number;
-  quantity?: number;
-  playerName?: string;
-  requiredFields?: any[];
-  currentFieldIndex?: number;
-  extraInfo?: Record<string, string>;
-  topupAmount?: number;
-  topupNote?: string;
-  topupPhotoFileId?: string;
-  bulkOrders?: BulkOrderItem[];
-  bulkTotalPrice?: number;
-  bulkRawText?: string;
-  orderInProgress?: boolean;
-  orderIdempotencyKey?: string;
-}
-
-export interface MyContext extends Context {
-  session: SessionData;
-}
-
-// In-flight order lock per user to strictly prevent concurrent / double clicks
 const activeUserOrderLocks = new Map<number | string, number>();
-
-// Set of processed confirmation message IDs to prevent duplicate callbacks on the same message card
 const processedOrderMessages = new Set<string>();
-
-// Dedup command text to prevent rapid duplicate command sending
 const userLastCommandTime = new Map<number | string, number>();
 const userLastCommandText = new Map<number | string, string>();
 
@@ -75,27 +88,24 @@ export function setupBot(
   lootbar: LootBarClient,
   options: { isServerless?: boolean; webhookUrl?: string } = {},
   topupNation?: TopupNationService,
-  fzrCards?: FzrCardsService,
   g2bulk?: G2BulkService
 ) {
   const bot = new Telegraf<MyContext>(botToken);
   
-  // Global bot error handler to prevent crashing or unhandled rejections
   bot.catch((err: any, ctx: Context) => {
     console.error(`Telegram Bot Error (update: ${ctx.updateType}):`, err?.message || err);
   });
 
-  // Telegram Update Deduplication Middleware (drops duplicate update deliveries)
   const recentUpdates = new Map<number, number>();
   bot.use(async (ctx, next) => {
     const updateId = ctx.update?.update_id;
     if (updateId) {
       if (recentUpdates.has(updateId)) {
-        return; // Dropped duplicate update delivery from Telegram
+        return;
       }
       recentUpdates.set(updateId, Date.now());
       if (recentUpdates.size > 3000) {
-        const threshold = Date.now() - 600000; // 10 minutes
+        const threshold = Date.now() - 600000;
         for (const [id, ts] of recentUpdates.entries()) {
           if (ts < threshold) recentUpdates.delete(id);
         }
@@ -104,7 +114,6 @@ export function setupBot(
     return next();
   });
   
-  // MongoDB Session Middleware
   bot.use(async (ctx, next) => {
     const chatId = ctx.chat?.id;
     if (chatId) {
@@ -116,7 +125,6 @@ export function setupBot(
       
       await next();
       
-      // Save session back to DB after processing
       if (ctx.session) {
         await Session.updateOne({ chatId }, { data: ctx.session }, { upsert: true });
       }
@@ -125,7 +133,6 @@ export function setupBot(
     }
   });
 
-  // User Authorization Middleware
   bot.use(async (ctx, next) => {
     const chatId = ctx.chat?.id;
     if (!chatId) return next();
@@ -135,7 +142,6 @@ export function setupBot(
 
     let user = await User.findOne({ telegramChatId: chatId });
     
-    // Auto-authorize admin
     const currentAdminId = await getAdminChatId(adminChatId);
     if (String(chatId) === currentAdminId) {
       if (!user) {
@@ -156,7 +162,6 @@ export function setupBot(
       }
     } else {
       if (!user) {
-        // Create user with isAuthorized: false to show up in UI and allow inline approval
         user = await User.create({ 
           telegramChatId: chatId, 
           isAuthorized: false,
@@ -173,7 +178,6 @@ export function setupBot(
     }
 
     if (!user || !user.isAuthorized) {
-      // If it's a message, inform them. Don't spam on callbacks.
       if (ctx.message && 'text' in ctx.message && ctx.message.text.startsWith('/start')) {
         await ctx.reply(`🚫 You are not authorized to use this bot.\n\nYour Chat ID is: \`${chatId}\`\n\nA request has been sent to the admin. Please wait for approval.`, { parse_mode: 'Markdown' });
         
@@ -182,7 +186,7 @@ export function setupBot(
         if (currentAdminIdForNotify) {
           try {
             await bot.telegram.sendMessage(
-              adminChatId,
+              currentAdminIdForNotify,
               `🔔 *New User Request*\nChat ID: \`${chatId}\`\nUsername: @${chatObj?.username || 'Unknown'}\nName: ${chatObj?.first_name || ''} ${chatObj?.last_name || ''}`,
               {
                 parse_mode: 'Markdown',
@@ -198,317 +202,23 @@ export function setupBot(
         }
         return;
       }
-      // If it's a callback, answer with an alert
-      if (ctx.callbackQuery) {
-        return ctx.answerCbQuery('🚫 Unauthorized', { show_alert: true });
-      }
       return;
     }
 
     return next();
   });
 
-  function getGameDefaultShortKey(name: string, gameId: string): string {
-    const n = (name || '').toLowerCase();
-    if (n.includes('pubg')) return 'p';
-    if (n.includes('mobile legends') || n.includes('mlbb')) return 'ml';
-    if (n.includes('free fire')) return 'ff';
-    if (n.includes('genshin')) return 'gi';
-    if (n.includes('honkai') || n.includes('star rail')) return 'hsr';
-    if (n.includes('roblox')) return 'rbx';
-    if (n.includes('arena of valor') || n.includes('aov')) return 'aov';
-    if (n.includes('call of duty') || n.includes('codm')) return 'codm';
-    if (n.includes('clash of clans') || n.includes('coc')) return 'coc';
-    if (n.includes('brawl stars')) return 'bs';
-    
-    const words = n.replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
-    if (words.length > 1) {
-      return words.map(w => w[0]).join('').slice(0, 4);
-    }
-    return words[0]?.slice(0, 4) || `g${gameId}`;
-  }
-
   const mainMenu = Markup.keyboard([
-    ['🎮 All Games', '📦 Bulk Order'],
-    ['🎮 LootBar Games', '🌐 TopupNation Games'],
-    ['💎 FZR Cards Games', '🔥 G2Bulk Games'],
-    ['💰 Request Top-Up', '📜 Order History'],
-    ['💳 Check Balance', '👤 My Account']
+    ['🎮 All Games', '⚡ TopupNation'],
+    ['🔥 G2Bulk Games', '🎮 LootBar Games'],
+    ['💳 My Balance', '👤 My Profile'],
+    ['📜 Order History', '📦 Bulk Orders']
   ]).resize();
 
-  bot.command('start', async (ctx) => {
-    ctx.session = {}; // reset session
-    return ctx.reply(
-      '🎮 *Welcome to the Game Top-Up Bot!*\n\n' +
-      'သင်ဝယ်ယူလိုသော API Provider အလိုက် Games စာရင်းကို အောက်ပါ Menu မှ ရွေးချယ်ကြည့်ရှုနိုင်ပါသည်:\n' +
-      '• *🎮 LootBar Games* — LootBar API Games စာရင်း\n' +
-      '• *🌐 TopupNation Games* — TopupNation API Games စာရင်း\n' +
-      '• *💎 FZR Cards Games* — FZR Cards API Games စာရင်း\n' +
-      '• *🔥 G2Bulk Games* — G2Bulk API Games စာရင်း\n' +
-      '• *📦 Bulk Order* — အော်ဒါများစွာ တစ်ခါတည်း ဝယ်ယူခြင်း\n\n' +
-      '⚡ *အသုံးပြုနည်း အမြန်လမ်းညွှန်:*\n' +
-      '• Game ၏ Products စာရင်း ကြည့်ရန်: `.<shortKey>` (ဥပမာ `.p`, `.ml`, `.tp`)\n' +
-      '• အော်ဒါ တိုက်ရိုက်တင်ရန်: `.<shortKey> <Account ID> <Product>`\n' +
-      '• Bulk အော်ဒါ တင်ရန်: `/bulk` သို့မဟုတ် လိုင်းများစွာ တိုက်ရိုက်ပို့ပါ\n' +
-      '👉 _ဥပမာ:_ `.p 5123456789 60` သို့မဟုတ် `.tp 5123456789 60`',
-      {
-        parse_mode: 'Markdown',
-        ...mainMenu
-      }
-    );
-  });
-
-  // Text-only Game List handler for LootBar (No buttons, Owner-enabled only)
-  async function renderLootBarGameList(ctx: MyContext) {
-    try {
-      // Query ONLY enabled games
-      let savedGames = await SavedGame.find({ isEnabled: { $ne: false } }).sort({ savedAt: -1 });
-
-      if (!savedGames || savedGames.length === 0) {
-        // Check if any games exist at all
-        const anyGames = await SavedGame.countDocuments();
-        if (anyGames === 0) {
-          const response = await lootbar.getGames();
-          const allGames = response?.data?.items || [];
-          if (allGames.length > 0) {
-            for (const g of allGames.slice(0, 6)) {
-              const gId = String(g.id || g.game_id);
-              const gName = g.name || g.game_name || 'Game';
-              const shortKey = getGameDefaultShortKey(gName, gId);
-              await SavedGame.findOneAndUpdate(
-                { gameId: gId },
-                { name: gName, shortKey, isEnabled: true },
-                { upsert: true, returnDocument: 'after' }
-              );
-            }
-            savedGames = await SavedGame.find({ isEnabled: { $ne: false } }).sort({ savedAt: -1 });
-          }
-        }
-      }
-
-      if (!savedGames || savedGames.length === 0) {
-        return ctx.reply('⚠️ No LootBar games are currently enabled by the Owner. Please contact the administrator.');
-      }
-
-      let msg = `🎮 *LootBar API — ရရှိနိုင်သော Games စာရင်း*\n\n` +
-        `အောက်ပါ Game များအား Top-Up ဝယ်ယူနိုင်ပါသည်။ Product စာရင်း ကြည့်ရှုရန် သို့မဟုတ် အော်ဒါတင်ရန် သက်ဆိုင်ရာ *Short Key* ဖြင့် အသုံးပြုနိုင်ပါသည်:\n\n`;
-
-      const numEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
-
-      savedGames.forEach((game: any, index: number) => {
-        const shortKey = (game.shortKey || getGameDefaultShortKey(game.name, game.gameId)).toLowerCase();
-        const numEmoji = numEmojis[index] || `🔹`;
-
-        let example = `.${shortKey} 123456789 60`;
-        let format = `.${shortKey} <UID> <Product>`;
-        const lowerName = game.name.toLowerCase();
-
-        if (lowerName.includes('mobile legends') || lowerName.includes('mlbb')) {
-          example = `.${shortKey} 12345678 2001 86`;
-          format = `.${shortKey} <UID> <ZoneID> <Product>`;
-        } else if (lowerName.includes('genshin') || lowerName.includes('star rail')) {
-          example = `.${shortKey} 812345678 60`;
-          format = `.${shortKey} <UID> <Product>`;
-        } else if (lowerName.includes('free fire')) {
-          example = `.${shortKey} 987654321 100`;
-          format = `.${shortKey} <UID> <Product>`;
-        }
-
-        msg += `${numEmoji} *${game.name}*\n` +
-          `   ▫️ *Short Key:* \`.${shortKey}\`\n` +
-          `   ▫️ *Packages ကြည့်ရန်:* \`.${shortKey}\`\n` +
-          `   ▫️ *Order တင်ရန်:* \`${format}\`\n` +
-          `   ▫️ *ဥပမာ:* \`${example}\`\n\n`;
-      });
-
-      msg += `━━━━━━━━━━━━━━━━━━━━\n` +
-        `💡 *အသုံးပြုနည်း လမ်းညွှန်:*\n` +
-        `• Packages & Prices ကြည့်ရှုရန်: \`.<shortKey>\` (ဥပမာ \`.p\`)\n` +
-        `• တိုက်ရိုက် Order တင်ရန်: \`.<shortKey> <UID> <Product>\``;
-
-      return ctx.reply(msg, { parse_mode: 'Markdown' });
-    } catch (error: any) {
-      console.error('Failed to fetch LootBar text game list:', error);
-      return ctx.reply(`An error occurred while fetching the LootBar game list: ${error.message}`);
-    }
-  }
-
-  // Text-only Game List handler for TopupNation (No buttons, Owner-enabled only)
-  async function renderTopupNationGameList(ctx: MyContext) {
-    try {
-      // Query ONLY enabled products
-      const products = await TopupNationProduct.find({ 
-        isEnabled: { $ne: false }, 
-        status: { $ne: 'DISABLED' } 
-      }).sort({ name: 1 });
-
-      if (!products || products.length === 0) {
-        return ctx.reply('⚠️ No TopupNation games are currently enabled by the Owner. Please contact the administrator.');
-      }
-
-      let msg = `🌐 *TopupNation API — ရရှိနိုင်သော Games စာရင်း*\n\n` +
-        `အောက်ပါ Game များအား TopupNation မှတစ်ဆင့် Top-Up ဝယ်ယူနိုင်ပါသည်။ Product စာရင်း ကြည့်ရှုရန် သို့မဟုတ် အော်ဒါတင်ရန် သက်ဆိုင်ရာ *Short Key* ဖြင့် အသုံးပြုနိုင်ပါသည်:\n\n`;
-
-      const numEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
-
-      products.forEach((p: any, index: number) => {
-        const shortKey = (p.shortKey || `t${p.productId.slice(0, 4)}`).toLowerCase();
-        const numEmoji = numEmojis[index] || `🔹`;
-
-        const requiredFields = (p.fields || []).filter((f: any) => f.required);
-        let format = `.${shortKey} <PlayerID> <Product>`;
-        let example = `.${shortKey} 123456789 60`;
-
-        if (requiredFields.length === 1) {
-          const fName = requiredFields[0].title || requiredFields[0].name || 'PlayerID';
-          format = `.${shortKey} <${fName}> <Product>`;
-          example = `.${shortKey} 12345678 60`;
-        } else if (requiredFields.length >= 2) {
-          const f1 = requiredFields[0].title || requiredFields[0].name || 'Account';
-          const f2 = requiredFields[1].title || requiredFields[1].name || 'Server';
-          format = `.${shortKey} <${f1}> <${f2}> <Product>`;
-          example = `.${shortKey} 12345678 2001 86`;
-        }
-
-        msg += `${numEmoji} *${p.name}*\n` +
-          `   ▫️ *Short Key:* \`.${shortKey}\`\n` +
-          `   ▫️ *Packages ကြည့်ရန်:* \`.${shortKey}\`\n` +
-          `   ▫️ *Order တင်ရန်:* \`${format}\`\n` +
-          `   ▫️ *ဥပမာ:* \`${example}\`\n\n`;
-      });
-
-      msg += `━━━━━━━━━━━━━━━━━━━━\n` +
-        `💡 *အသုံးပြုနည်း လမ်းညွှန်:*\n` +
-        `• Packages & Prices ကြည့်ရှုရန်: \`.<shortKey>\` (ဥပမာ \`.${products[0]?.shortKey || 'tp'}\`)\n` +
-        `• တိုက်ရိုက် Order တင်ရန်: \`.<shortKey> <Account> <Product>\``;
-
-      return ctx.reply(msg, { parse_mode: 'Markdown' });
-    } catch (error: any) {
-      console.error('Failed to fetch TopupNation text game list:', error);
-      return ctx.reply(`An error occurred while fetching the TopupNation game list: ${error.message}`);
-    }
-  }
-
-  // Text-only Game List handler for FZR Cards (No buttons, Owner-enabled only)
-  async function renderFzrCardsGameList(ctx: MyContext) {
-    try {
-      const products = await FzrCardsProduct.find({ 
-        isEnabled: { $ne: false }, 
-        status: { $ne: 'DISABLED' } 
-      }).sort({ name: 1 });
-
-      if (!products || products.length === 0) {
-        return ctx.reply('⚠️ No FZR Cards games are currently enabled by the Owner. Please contact the administrator.');
-      }
-
-      let msg = `💎 *FZR Cards API — ရရှိနိုင်သော Games စာရင်း*\n\n` +
-        `အောက်ပါ Game များအား FZR Cards မှတစ်ဆင့် Top-Up ဝယ်ယူနိုင်ပါသည်။ Product စာရင်း ကြည့်ရှုရန် သို့မဟုတ် အော်ဒါတင်ရန် သက်ဆိုင်ရာ *Short Key* ဖြင့် အသုံးပြုနိုင်ပါသည်:\n\n`;
-
-      const numEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
-
-      products.forEach((p: any, index: number) => {
-        const shortKey = (p.shortKey || `f${p.productId.slice(0, 4)}`).toLowerCase();
-        const numEmoji = numEmojis[index] || `🔹`;
-
-        const requiredFields = (p.fields || []).filter((f: any) => f.required);
-        let format = `.${shortKey} <PlayerID> <Product>`;
-        let example = `.${shortKey} 123456789 60`;
-
-        if (requiredFields.length === 1) {
-          const fName = requiredFields[0].title || requiredFields[0].name || 'PlayerID';
-          format = `.${shortKey} <${fName}> <Product>`;
-          example = `.${shortKey} 12345678 60`;
-        } else if (requiredFields.length >= 2) {
-          const f1 = requiredFields[0].title || requiredFields[0].name || 'Account';
-          const f2 = requiredFields[1].title || requiredFields[1].name || 'Server';
-          format = `.${shortKey} <${f1}> <${f2}> <Product>`;
-          example = `.${shortKey} 12345678 2001 86`;
-        }
-
-        msg += `${numEmoji} *${p.name}*\n` +
-          `   ▫️ *Short Key:* \`.${shortKey}\`\n` +
-          `   ▫️ *Packages ကြည့်ရန်:* \`.${shortKey}\`\n` +
-          `   ▫️ *Order တင်ရန်:* \`${format}\`\n` +
-          `   ▫️ *ဥပမာ:* \`${example}\`\n\n`;
-      });
-
-      msg += `━━━━━━━━━━━━━━━━━━━━\n` +
-        `💡 *အသုံးပြုနည်း လမ်းညွှန်:*\n` +
-        `• Packages & Prices ကြည့်ရှုရန်: \`.<shortKey>\` (ဥပမာ \`.${products[0]?.shortKey || 'fzr'}\`)\n` +
-        `• တိုက်ရိုက် Order တင်ရန်: \`.<shortKey> <Account> <Product>\``;
-
-      return ctx.reply(msg, { parse_mode: 'Markdown' });
-    } catch (error: any) {
-      console.error('Failed to fetch FZR Cards text game list:', error);
-      return ctx.reply(`An error occurred while fetching the FZR Cards game list: ${error.message}`);
-    }
-  }
-
-
-  async function renderG2BulkGameList(ctx: MyContext) {
-    try {
-      const products = await G2BulkProduct.find({
-        isEnabled: { $ne: false },
-        status: { $ne: 'DISABLED' }
-      }).sort({ name: 1 });
-
-      if (!products || products.length === 0) {
-        return ctx.reply('⚠️ No G2Bulk games are currently enabled by the Owner. Please contact the administrator.');
-      }
-
-      let msg = `🔥 *G2Bulk API — ရရှိနိုင်သော Games စာရင်း*\n\n` +
-        `အောက်ပါ Game များအား G2Bulk မှတစ်ဆင့် Top-Up ဝယ်ယူနိုင်ပါသည်။ Product စာရင်း ကြည့်ရှုရန် သို့မဟုတ် အော်ဒါတင်ရန် သက်ဆိုင်ရာ *Short Key* ဖြင့် အသုံးပြုနိုင်ပါသည်:\n\n`;
-
-      const numEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
-
-      products.forEach((p: any, index: number) => {
-        const shortKey = (p.shortKey || `g${p.productId.slice(0, 4)}`).toLowerCase();
-        const numEmoji = numEmojis[index] || `🔹`;
-
-        const requiredFields = (p.fields || []).filter((f: any) => f.required);
-        let format = `.${shortKey} <PlayerID> <Product>`;
-        let example = `.${shortKey} 123456789 60`;
-
-        if (requiredFields.length === 1) {
-          const fName = requiredFields[0].title || requiredFields[0].name || 'PlayerID';
-          format = `.${shortKey} <${fName}> <Product>`;
-          example = `.${shortKey} 12345678 60`;
-        } else if (requiredFields.length >= 2) {
-          const f1 = requiredFields[0].title || requiredFields[0].name || 'Account';
-          const f2 = requiredFields[1].title || requiredFields[1].name || 'Server';
-          format = `.${shortKey} <${f1}> <${f2}> <Product>`;
-          example = `.${shortKey} 12345678 2001 86`;
-        }
-
-        msg += `${numEmoji} *${p.name}*\n` +
-          `   ▫️ *Short Key:* \`.${shortKey}\`\n` +
-          `   ▫️ *Packages ကြည့်ရန်:* \`.${shortKey}\`\n` +
-          `   ▫️ *Order တင်ရန်:* \`${format}\`\n` +
-          `   ▫️ *ဥပမာ:* \`${example}\`\n\n`;
-      });
-
-      msg += `━━━━━━━━━━━━━━━━━━━━\n` +
-        `💡 *အသုံးပြုနည်း လမ်းညွှန်:*\n` +
-        `• Packages & Prices ကြည့်ရှုရန်: \`.<shortKey>\` (ဥပမာ \`.${products[0]?.shortKey || 'g2b'}\`)\n` +
-        `• တိုက်ရိုက် Order တင်ရန်: \`.<shortKey> <Account> <Product>\``;
-
-      return ctx.reply(msg, { parse_mode: 'Markdown' });
-    } catch (error: any) {
-      console.error('Failed to fetch G2Bulk text game list:', error);
-      return ctx.reply(`An error occurred while fetching the G2Bulk game list: ${error.message}`);
-    }
-  }
-
-  // Combined or generic Game List handler
-// (shows both providers in text)
   async function renderAllGamesList(ctx: MyContext) {
     try {
       const lootbarGames = await SavedGame.find({ isEnabled: { $ne: false } }).sort({ savedAt: -1 });
       const tpnGames = await TopupNationProduct.find({ 
-        isEnabled: { $ne: false }, 
-        status: { $ne: 'DISABLED' } 
-      }).sort({ name: 1 });
-      const fzrGames = await FzrCardsProduct.find({ 
         isEnabled: { $ne: false }, 
         status: { $ne: 'DISABLED' } 
       }).sort({ name: 1 });
@@ -517,7 +227,7 @@ export function setupBot(
         status: { $ne: 'DISABLED' } 
       }).sort({ name: 1 });
 
-      if (lootbarGames.length === 0 && tpnGames.length === 0 && fzrGames.length === 0 && g2bGames.length === 0) {
+      if (lootbarGames.length === 0 && tpnGames.length === 0 && g2bGames.length === 0) {
         return ctx.reply('⚠️ No games are currently enabled by the Owner.');
       }
 
@@ -541,15 +251,6 @@ export function setupBot(
         msg += `\n`;
       }
 
-      if (fzrGames.length > 0) {
-        msg += `💎 *[FZR Cards API Games]*\n`;
-        fzrGames.forEach(p => {
-          const sk = (p.shortKey || `f${p.productId.slice(0, 4)}`).toLowerCase();
-          msg += `• *${p.name}* ➔ \`.${sk}\`\n`;
-        });
-        msg += `\n`;
-      }
-
       if (g2bGames.length > 0) {
         msg += `🔥 *[G2Bulk API Games]*\n`;
         g2bGames.forEach(p => {
@@ -568,994 +269,100 @@ export function setupBot(
     }
   }
 
-  // Display packages & prices for a specific game when sending .<shortKey>
-  async function handleGamePackageList(ctx: MyContext, game: any, shortKey: string) {
+  // Admin user approval actions
+  bot.action(/^approve_user_(\d+)$/, async (ctx) => {
+    const currentAdminId = await getAdminChatId(adminChatId);
+    if (String(ctx.chat!.id) !== currentAdminId) {
+      return ctx.answerCbQuery('Unauthorized');
+    }
+    const targetChatId = parseInt(ctx.match[1]);
+    await User.findOneAndUpdate({ telegramChatId: targetChatId }, { isAuthorized: true });
+    await ctx.editMessageText(`✅ User \`${targetChatId}\` approved successfully!`, { parse_mode: 'Markdown' });
     try {
-      const gameId = String(game.gameId || game.game_id);
-      const gameName = game.name || game.game_name || 'Game';
-
-      const response = await lootbar.getSkus(gameId);
-      const skus = response?.data?.items || [];
-
-      if (!skus || skus.length === 0) {
-        return ctx.reply(`⚠️ No packages available for *${gameName}* at the moment from LootBar.`, { parse_mode: 'Markdown' });
-      }
-
-      // Determine extra info format
-      const requiredFields = (skus[0]?.extra_info || []).filter((f: any) => f.required);
-      let orderFormatDesc = `.${shortKey} <UID> <Product>`;
-      let exampleDesc = `.${shortKey} 123456789 60`;
-
-      if (requiredFields.length === 2) {
-        const f1 = requiredFields[0].title || requiredFields[0].name || 'UID';
-        const f2 = requiredFields[1].title || requiredFields[1].name || 'ZoneID';
-        orderFormatDesc = `.${shortKey} <${f1}> <${f2}> <Product>`;
-        exampleDesc = `.${shortKey} 12345678 2001 86`;
-      } else if (requiredFields.length > 2) {
-        const fieldsList = requiredFields.map((f: any) => `<${f.title || f.name}>`).join(' ');
-        orderFormatDesc = `.${shortKey} ${fieldsList} <Product>`;
-      }
-
-      // Extract SKU short keys if defined
-      let skuKeys: Record<string, string> = {};
-      if (game.skuShortKeys) {
-        skuKeys = typeof game.skuShortKeys.get === 'function' 
-          ? Object.fromEntries(game.skuShortKeys) 
-          : (game.skuShortKeys || {});
-      }
-
-      let msg = `🎮 *${gameName} — Packages & Prices*\n\n` +
-        `📦 *ရရှိနိုင်သော Products စာရင်း:*\n`;
-
-      skus.forEach((sku: any) => {
-        const name = sku.sku_name || `Product #${sku.sku_id}`;
-        const price = sku.reseller_price || sku.price || '0.00';
-        const customKey = skuKeys[String(sku.sku_id)];
-        const shortKeyTag = customKey ? ` (Key: \`${customKey}\`)` : '';
-        msg += `▫️ *${name}* — \`$${Number(price).toFixed(3)} USD\`${shortKeyTag}\n`;
-      });
-
-      msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
-        `🛒 *Order တင်ရန် Command Format:*\n` +
-        `\`${orderFormatDesc}\`\n\n` +
-        `👉 *ဥပမာ:* \`${exampleDesc}\`\n` +
-        `━━━━━━━━━━━━━━━━━━━━`;
-
-      return ctx.reply(msg, { parse_mode: 'Markdown' });
-    } catch (err: any) {
-      console.error('Error fetching game packages:', err);
-      return ctx.reply(`❌ Error fetching package list: ${err.message}`);
-    }
-  }
-
-// Direct order placement using Owner-defined Short Key
-  async function handleGameDirectOrder(ctx: MyContext, game: any, shortKey: string, args: string[]) {
-    try {
-      const gameId = String(game.gameId || game.game_id);
-      const gameName = game.name || game.game_name || 'Game';
-
-      const response = await lootbar.getSkus(gameId);
-      const skus = response?.data?.items || [];
-
-      if (!skus || skus.length === 0) {
-        return ctx.reply(`⚠️ No packages available for *${gameName}* at the moment.`, { parse_mode: 'Markdown' });
-      }
-
-      const requiredFields = (skus[0]?.extra_info || []).filter((f: any) => f.required);
-      const minFields = requiredFields.length > 0 ? requiredFields.length : 1;
-
-      if (args.length < minFields) {
-        let formatHelp = `.${shortKey} <UID> <Product> [xQty]`;
-        let exampleHelp = `.${shortKey} 5123456789 60\n.${shortKey} 5123456789 60 x5`;
-        if (requiredFields.length === 2) {
-          formatHelp = `.${shortKey} <${requiredFields[0].title || 'UID'}> <${requiredFields[1].title || 'ZoneID'}> <Product> [xQty]`;
-          exampleHelp = `.${shortKey} 12345678 2001 86\n.${shortKey} 12345678 2001 86 x3`;
-        }
-        return ctx.reply(
-          `⚡ *${gameName} Quick Top-Up Command*\n\n` +
-          `📌 *Format:* \`${formatHelp}\`\n` +
-          `💡 *Example:* \`${exampleHelp}\`\n\n` +
-          `To view all packages & prices, send: \`.${shortKey}\``,
-          { parse_mode: 'Markdown' }
-        );
-      }
-
-      // Parse account parameters
-      const extraInfo: Record<string, string> = {};
-      if (requiredFields.length === 0) {
-        extraInfo['uid'] = args[0];
-      } else {
-        for (let i = 0; i < requiredFields.length; i++) {
-          const field = requiredFields[i];
-          extraInfo[field.name] = args[i];
-        }
-      }
-
-      // If user provided account details without a product name, show 1-click buttons!
-      if (args.length === minFields) {
-        ctx.session = {};
-        ctx.session.provider = 'lootbar';
-        ctx.session.gameId = gameId;
-        ctx.session.gameName = gameName;
-        ctx.session.extraInfo = extraInfo;
-        ctx.session.skus = skus;
-
-        const buttons = skus.map((sku: any, idx: number) => {
-          const name = sku.sku_name || 'Unknown Item';
-          const price = sku.reseller_price || sku.price ? ` ($${sku.reseller_price || sku.price})` : '';
-          return [Markup.button.callback(`${name}${price}`, `lb_s_${idx}`)];
-        });
-        buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
-
-        let infoDesc = Object.entries(extraInfo).map(([k, v]) => `• ${k.toUpperCase()}: \`${v}\``).join('\n');
-
-        return ctx.reply(
-          `🎮 *${gameName}*\n${infoDesc}\n\n` +
-          `👇 ဝယ်ယူလိုသော Package ကို အောက်ပါ Button များမှ ရွေးချယ်နှိပ်ပါ:`,
-          {
-            parse_mode: 'Markdown',
-            ...Markup.inlineKeyboard(buttons)
-          }
-        );
-      }
-
-      const rawProductQuery = args.slice(minFields).join(' ').trim();
-
-      // Get short keys safely
-      let skuKeys = {};
-      if (game.skuShortKeys) {
-        skuKeys = typeof game.skuShortKeys.get === 'function' 
-          ? Object.fromEntries(game.skuShortKeys) 
-          : game.skuShortKeys;
-      }
-      
-      // Smart parse SKU and quantity (e.g. "86", "86 x5", "86 3", "one time 2", "wp * 5")
-      const parsedResult = parseSkuWithQuantity(skus, rawProductQuery, skuKeys, false);
-      const matchedSku = parsedResult.sku;
-      const quantity = parsedResult.quantity;
-
-      ctx.session = {};
-      ctx.session.quantity = quantity;
-      ctx.session.provider = 'lootbar';
-      ctx.session.gameId = gameId;
-      ctx.session.gameName = gameName;
-      ctx.session.extraInfo = extraInfo;
-      ctx.session.skus = skus;
-
-      if (!matchedSku) {
-        // Show available packages for quick selection
-        const buttons = skus.map((sku: any, idx: number) => {
-          const name = sku.sku_name || 'Unknown Item';
-          const price = sku.reseller_price || sku.price ? ` ($${sku.reseller_price || sku.price})` : '';
-          return [Markup.button.callback(`${name}${price}`, `lb_s_${idx}`)];
-        });
-        buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
-
-        let infoDesc = Object.entries(extraInfo).map(([k, v]) => `• ${k.toUpperCase()}: \`${v}\``).join('\n');
-
-        let promptMsg = `⚠️ Package matching \`${rawProductQuery}\` not found.\n\n`;
-        if (!rawProductQuery) promptMsg = '';
-        return ctx.reply(
-          promptMsg +
-          `🎮 *${gameName}*\n${infoDesc}\n\n` +
-          `👇 ဝယ်ယူလိုသော Package ကို အောက်ပါ Button များမှ ရွေးချယ်နှိပ်ပါ:`,
-          {
-            parse_mode: 'Markdown',
-            ...Markup.inlineKeyboard(buttons)
-          }
-        );
-      }
-
-      // SKU matched!
-      ctx.session.skuId = String(matchedSku.sku_id);
-      ctx.session.skuName = matchedSku.sku_name || `${gameName} Item`;
-      ctx.session.skuPrice = parseFloat(matchedSku.reseller_price || matchedSku.price || '0');
-
-      // Directly proceed to confirmation
-      await showOrderConfirmation(ctx);
-
-    } catch (err: any) {
-      console.error('Direct order error:', err);
-      return ctx.reply(`❌ Error processing order: ${err.message}`);
-    }
-  }
-
-  // Display packages & prices for TopupNation product
-  async function handleTopupNationPackageList(ctx: MyContext, product: any, shortKey: string) {
-    try {
-      const productName = product.name || 'Game';
-      const skus = (product.skus || []).filter((s: any) => s.available !== false && s.availability !== false);
-
-      if (!skus || skus.length === 0) {
-        return ctx.reply(`⚠️ No packages available for *${productName}* from TopupNation.`, { parse_mode: 'Markdown' });
-      }
-
-      const requiredFields = (product.fields || []).filter((f: any) => f.required);
-      let orderFormatDesc = `.${shortKey} <PlayerID> <Package>`;
-      let exampleDesc = `.${shortKey} 123456789 100`;
-
-      if (requiredFields.length === 1) {
-        const fName = requiredFields[0].title || requiredFields[0].name || 'PlayerID';
-        orderFormatDesc = `.${shortKey} <${fName}> <Package>`;
-        exampleDesc = `.${shortKey} 12345678 100`;
-      } else if (requiredFields.length >= 2) {
-        const f1 = requiredFields[0].title || requiredFields[0].name || 'UserAccount';
-        const f2 = requiredFields[1].title || requiredFields[1].name || 'Server';
-        orderFormatDesc = `.${shortKey} <${f1}> <${f2}> <Package>`;
-        exampleDesc = `.${shortKey} 12345678 2001 100`;
-      }
-
-      // Extract SKU short keys if defined
-      let skuKeys: Record<string, string> = {};
-      if (product.skuShortKeys) {
-        skuKeys = typeof product.skuShortKeys.get === 'function' 
-          ? Object.fromEntries(product.skuShortKeys) 
-          : (product.skuShortKeys || {});
-      }
-
-      let msg = `🌐 *${productName} (TopupNation) — Packages & Prices*\n\n` +
-        `📦 *ရရှိနိုင်သော Products စာရင်း:*\n`;
-
-      skus.forEach((sku: any) => {
-        const name = sku.name || `Package #${sku.sku}`;
-        const price = sku.price || '0.00';
-        const customKey = skuKeys[String(sku.sku || sku.sku_id)];
-        const shortKeyTag = customKey ? ` (Key: \`${customKey}\`)` : '';
-        msg += `▫️ *${name}* — \`$${Number(price).toFixed(3)} USD\`${shortKeyTag}\n`;
-      });
-
-      msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
-        `🛒 *Order တင်ရန် Command Format:*\n` +
-        `\`${orderFormatDesc}\`\n\n` +
-        `👉 *ဥပမာ:* \`${exampleDesc}\`\n` +
-        `━━━━━━━━━━━━━━━━━━━━`;
-
-      return ctx.reply(msg, { parse_mode: 'Markdown' });
-    } catch (err: any) {
-      console.error('Error fetching TopupNation package list:', err);
-      return ctx.reply(`❌ Error fetching package list: ${err.message}`);
-    }
-  }
-
-  // Direct order placement for TopupNation
-  async function handleTopupNationDirectOrder(ctx: MyContext, product: any, shortKey: string, args: string[]) {
-    try {
-      const productId = String(product.productId);
-      const productName = product.name || 'Game';
-      const skus = product.skus || [];
-
-      if (!skus || skus.length === 0) {
-        return ctx.reply(`⚠️ No packages available for *${productName}*.`, { parse_mode: 'Markdown' });
-      }
-
-      const requiredFields = (product.fields || []).filter((f: any) => f.required);
-      const minFields = requiredFields.length > 0 ? requiredFields.length : 1;
-
-      if (args.length < minFields) {
-        let formatHelp = `.${shortKey} <Account> <Package> [xQty]`;
-        let exampleHelp = `.${shortKey} 123456789 100\n.${shortKey} 123456789 100 x2`;
-        if (requiredFields.length === 2) {
-          const f0 = requiredFields[0].title || requiredFields[0].label || requiredFields[0].name || requiredFields[0].key || 'Account';
-          const f1 = requiredFields[1].title || requiredFields[1].label || requiredFields[1].name || requiredFields[1].key || 'Server';
-          formatHelp = `.${shortKey} <${f0}> <${f1}> <Package> [xQty]`;
-          exampleHelp = `.${shortKey} 12345678 2001 100\n.${shortKey} 12345678 2001 100 x3`;
-        }
-        return ctx.reply(
-          `⚡ *${productName} (TopupNation) Quick Order*\n\n` +
-          `📌 *Format:* \`${formatHelp}\`\n` +
-          `💡 *Example:* \`${exampleHelp}\`\n\n` +
-          `To view all packages & prices, send: \`.${shortKey}\``,
-          { parse_mode: 'Markdown' }
-        );
-      }
-
-      // Parse fields
-      const extraInfo: Record<string, any> = {};
-      if (requiredFields.length === 0) {
-        extraInfo['userAccount'] = args[0];
-        extraInfo['uid'] = args[0];
-      } else {
-        for (let i = 0; i < requiredFields.length; i++) {
-          const field = requiredFields[i];
-          const fieldKey = field?.name || field?.key || field?.field_name || field?.id;
-          if (fieldKey && fieldKey !== 'undefined' && fieldKey !== 'null') {
-            extraInfo[fieldKey] = args[i];
-          }
-        }
-        if (!extraInfo['userAccount'] && args[0]) {
-          extraInfo['userAccount'] = args[0];
-        }
-        if (!extraInfo['server'] && args[1] && requiredFields.length > 1) {
-          extraInfo['server'] = args[1];
-        }
-        delete extraInfo['undefined'];
-        delete extraInfo['null'];
-      }
-
-      // If user provided account details without a product name, show 1-click buttons!
-      if (args.length === minFields) {
-        ctx.session = {};
-        ctx.session.provider = 'topupnation';
-        ctx.session.gameId = productId;
-        ctx.session.gameName = productName;
-        ctx.session.extraInfo = extraInfo;
-        ctx.session.skus = skus;
-
-        const buttons = skus.map((sku: any, idx: number) => {
-          const name = sku.name || 'Unknown Item';
-          const price = sku.price ? ` ($${sku.price})` : '';
-          return [Markup.button.callback(`${name}${price}`, `tpn_s_${idx}`)];
-        });
-        buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
-
-        let infoDesc = Object.entries(extraInfo).map(([k, v]) => `• ${k.toUpperCase()}: \`${v}\``).join('\n');
-
-        return ctx.reply(
-          `🌐 *${productName} (TopupNation)*\n${infoDesc}\n\n` +
-          `👇 ဝယ်ယူလိုသော Package ကို အောက်ပါ Button များမှ ရွေးချယ်နှိပ်ပါ:`,
-          {
-            parse_mode: 'Markdown',
-            ...Markup.inlineKeyboard(buttons)
-          }
-        );
-      }
-
-      const rawProductQuery = args.slice(minFields).join(' ').trim();
-
-      // Get short keys safely
-      let skuKeys = {};
-      if (product.skuShortKeys) {
-        skuKeys = typeof product.skuShortKeys.get === 'function' 
-          ? Object.fromEntries(product.skuShortKeys) 
-          : product.skuShortKeys;
-      }
-
-      // Smart parse SKU and quantity (e.g. "86", "86 x5", "86 3", "one time 2", "wp * 5")
-      const parsedResult = parseSkuWithQuantity(skus, rawProductQuery, skuKeys, true);
-      const matchedSku = parsedResult.sku;
-      const quantity = parsedResult.quantity;
-
-      ctx.session = {};
-      ctx.session.quantity = quantity;
-      ctx.session.provider = 'topupnation';
-      ctx.session.gameId = productId;
-      ctx.session.gameName = productName;
-      ctx.session.extraInfo = extraInfo;
-      ctx.session.skus = skus;
-
-      if (!matchedSku) {
-        const buttons = skus.map((sku: any, idx: number) => {
-          const name = sku.name || 'Unknown Item';
-          const price = sku.price ? ` ($${sku.price})` : '';
-          return [Markup.button.callback(`${name}${price}`, `tpn_s_${idx}`)];
-        });
-        buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
-
-        let infoDesc = Object.entries(extraInfo).map(([k, v]) => `• ${k.toUpperCase()}: \`${v}\``).join('\n');
-
-        let promptMsg = `⚠️ Package matching \`${rawProductQuery}\` not found.\n\n`;
-        if (!rawProductQuery) promptMsg = '';
-        return ctx.reply(
-          promptMsg +
-          `🌐 *${productName} (TopupNation)*\n${infoDesc}\n\n` +
-          `👇 ဝယ်ယူလိုသော Package ကို အောက်ပါ Button များမှ ရွေးချယ်နှိပ်ပါ:`,
-          {
-            parse_mode: 'Markdown',
-            ...Markup.inlineKeyboard(buttons)
-          }
-        );
-      }
-
-      // SKU matched!
-      ctx.session.skuId = String(matchedSku.sku);
-      ctx.session.skuName = matchedSku.name || `${productName} Package`;
-      ctx.session.skuPrice = typeof matchedSku.price === 'number' ? matchedSku.price : parseFloat(String(matchedSku.price || '0'));
-
-      // Directly proceed to confirmation
-      await showOrderConfirmation(ctx);
-
-    } catch (err: any) {
-      console.error('TopupNation direct order error:', err);
-      return ctx.reply(`❌ Error processing order: ${err.message}`);
-    }
-  }
-
-  // Display packages & prices for FZR Cards product
-  async function handleFzrCardsPackageList(ctx: MyContext, product: any, shortKey: string) {
-    try {
-      const productName = product.name || 'Game';
-      const skus = (product.skus || []).filter((s: any) => s.available !== false && s.availability !== false);
-
-      if (!skus || skus.length === 0) {
-        return ctx.reply(`⚠️ No packages available for *${productName}* from FZR Cards.`, { parse_mode: 'Markdown' });
-      }
-
-      const requiredFields = (product.fields || []).filter((f: any) => f.required);
-      let orderFormatDesc = `.${shortKey} <PlayerID> <Package>`;
-      let exampleDesc = `.${shortKey} 123456789 100`;
-
-      if (requiredFields.length === 1) {
-        const fName = requiredFields[0].title || requiredFields[0].name || 'PlayerID';
-        orderFormatDesc = `.${shortKey} <${fName}> <Package>`;
-        exampleDesc = `.${shortKey} 12345678 100`;
-      } else if (requiredFields.length >= 2) {
-        const f1 = requiredFields[0].title || requiredFields[0].name || 'UserAccount';
-        const f2 = requiredFields[1].title || requiredFields[1].name || 'Server';
-        orderFormatDesc = `.${shortKey} <${f1}> <${f2}> <Package>`;
-        exampleDesc = `.${shortKey} 12345678 2001 100`;
-      }
-
-      // Extract SKU short keys if defined
-      let skuKeys: Record<string, string> = {};
-      if (product.skuShortKeys) {
-        skuKeys = typeof product.skuShortKeys.get === 'function' 
-          ? Object.fromEntries(product.skuShortKeys) 
-          : (product.skuShortKeys || {});
-      }
-
-      let msg = `⚡ *${productName} (FZR Cards) — Packages & Prices*\n\n` +
-        `📦 *ရရှိနိုင်သော Products စာရင်း:*\n`;
-
-      skus.forEach((sku: any) => {
-        const name = sku.name || `Package #${sku.sku}`;
-        const price = sku.price || '0.00';
-        const customKey = skuKeys[String(sku.sku || sku.sku_id)];
-        const shortKeyTag = customKey ? ` (Key: \`${customKey}\`)` : '';
-        msg += `▫️ *${name}* — \`$${Number(price).toFixed(3)} USD\`${shortKeyTag}\n`;
-      });
-
-      msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
-        `🛒 *Order တင်ရန် Command Format:*\n` +
-        `\`${orderFormatDesc}\`\n\n` +
-        `👉 *ဥပမာ:* \`${exampleDesc}\`\n` +
-        `━━━━━━━━━━━━━━━━━━━━`;
-
-      return ctx.reply(msg, { parse_mode: 'Markdown' });
-    } catch (err: any) {
-      console.error('Error fetching FZR Cards package list:', err);
-      return ctx.reply(`❌ Error fetching package list: ${err.message}`);
-    }
-  }
-
-  // Direct order placement for FZR Cards
-  async function handleFzrCardsDirectOrder(ctx: MyContext, product: any, shortKey: string, args: string[]) {
-    try {
-      const productId = String(product.productId);
-      const productName = product.name || 'Game';
-      const skus = product.skus || [];
-
-      if (!skus || skus.length === 0) {
-        return ctx.reply(`⚠️ No packages available for *${productName}*.`, { parse_mode: 'Markdown' });
-      }
-
-      const requiredFields = (product.fields || []).filter((f: any) => f.required);
-      const minFields = requiredFields.length > 0 ? requiredFields.length : 1;
-
-      if (args.length < minFields) {
-        let formatHelp = `.${shortKey} <Account> <Package> [xQty]`;
-        let exampleHelp = `.${shortKey} 123456789 100\n.${shortKey} 123456789 100 x2`;
-        if (requiredFields.length === 2) {
-          formatHelp = `.${shortKey} <${requiredFields[0].title || 'Account'}> <${requiredFields[1].title || 'Server'}> <Package> [xQty]`;
-          exampleHelp = `.${shortKey} 12345678 2001 100\n.${shortKey} 12345678 2001 100 x3`;
-        }
-        return ctx.reply(
-          `⚡ *${productName} (FZR Cards) Quick Order*\n\n` +
-          `📌 *Format:* \`${formatHelp}\`\n` +
-          `💡 *Example:* \`${exampleHelp}\`\n\n` +
-          `To view all packages & prices, send: \`.${shortKey}\``,
-          { parse_mode: 'Markdown' }
-        );
-      }
-
-      // Parse fields
-      const extraInfo: Record<string, any> = {};
-      if (requiredFields.length === 0) {
-        extraInfo['player_id'] = args[0];
-        extraInfo['userAccount'] = args[0];
-        extraInfo['uid'] = args[0];
-      } else {
-        for (let i = 0; i < requiredFields.length; i++) {
-          const field = requiredFields[i];
-          extraInfo[field.name] = args[i];
-        }
-        if (!extraInfo['player_id'] && args[0]) {
-          extraInfo['player_id'] = args[0];
-        }
-        if (!extraInfo['userAccount'] && args[0]) {
-          extraInfo['userAccount'] = args[0];
-        }
-        if (!extraInfo['server'] && args[1] && requiredFields.length > 1) {
-          extraInfo['server'] = args[1];
-        }
-      }
-
-      // If user provided account details without a product name, show 1-click buttons!
-      if (args.length === minFields) {
-        ctx.session = {};
-        ctx.session.provider = 'fzrcards';
-        ctx.session.gameId = productId;
-        ctx.session.gameName = productName;
-        ctx.session.extraInfo = extraInfo;
-        ctx.session.skus = skus;
-
-        const buttons = skus.map((sku: any, idx: number) => {
-          const name = sku.name || 'Unknown Item';
-          const price = sku.price ? ` ($${sku.price})` : '';
-          return [Markup.button.callback(`${name}${price}`, `fzr_s_${idx}`)];
-        });
-        buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
-
-        let infoDesc = Object.entries(extraInfo).map(([k, v]) => `• ${k.toUpperCase()}: \`${v}\``).join('\n');
-
-        return ctx.reply(
-          `⚡ *${productName} (FZR Cards)*\n${infoDesc}\n\n` +
-          `👇 ဝယ်ယူလိုသော Package ကို အောက်ပါ Button များမှ ရွေးချယ်နှိပ်ပါ:`,
-          {
-            parse_mode: 'Markdown',
-            ...Markup.inlineKeyboard(buttons)
-          }
-        );
-      }
-
-      const rawProductQuery = args.slice(minFields).join(' ').trim();
-
-      // Get short keys safely
-      let skuKeys = {};
-      if (product.skuShortKeys) {
-        skuKeys = typeof product.skuShortKeys.get === 'function' 
-          ? Object.fromEntries(product.skuShortKeys) 
-          : product.skuShortKeys;
-      }
-
-      // Smart parse SKU and quantity
-      const parsedResult = parseSkuWithQuantity(skus, rawProductQuery, skuKeys, true);
-      const matchedSku = parsedResult.sku;
-      const quantity = 1; // API does not support quantity
-
-      ctx.session = {};
-      ctx.session.quantity = quantity;
-      ctx.session.provider = 'fzrcards';
-      ctx.session.gameId = productId;
-      ctx.session.gameName = productName;
-      ctx.session.extraInfo = extraInfo;
-      ctx.session.skus = skus;
-
-      if (!matchedSku) {
-        const buttons = skus.map((sku: any, idx: number) => {
-          const name = sku.name || 'Unknown Item';
-          const price = sku.price ? ` ($${sku.price})` : '';
-          return [Markup.button.callback(`${name}${price}`, `fzr_s_${idx}`)];
-        });
-        buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
-
-        let infoDesc = Object.entries(extraInfo).map(([k, v]) => `• ${k.toUpperCase()}: \`${v}\``).join('\n');
-
-        let promptMsg = `⚠️ Package matching \`${rawProductQuery}\` not found.\n\n`;
-        if (!rawProductQuery) promptMsg = '';
-        return ctx.reply(
-          promptMsg +
-          `⚡ *${productName} (FZR Cards)*\n${infoDesc}\n\n` +
-          `👇 ဝယ်ယူလိုသော Package ကို အောက်ပါ Button များမှ ရွေးချယ်နှိပ်ပါ:`,
-          {
-            parse_mode: 'Markdown',
-            ...Markup.inlineKeyboard(buttons)
-          }
-        );
-      }
-
-      // SKU matched!
-      ctx.session.skuId = String(matchedSku.sku);
-      ctx.session.skuName = matchedSku.name || `${productName} Package`;
-      ctx.session.skuPrice = typeof matchedSku.price === 'number' ? matchedSku.price : parseFloat(String(matchedSku.price || '0'));
-
-      // Directly proceed to confirmation
-      await showOrderConfirmation(ctx);
-
-    } catch (err: any) {
-      console.error('FZR Cards direct order error:', err);
-      return ctx.reply(`❌ Error processing order: ${err.message}`);
-    }
-  }
-
-
-  async function handleG2BulkPackageList(ctx: MyContext, product: any, shortKey: string) {
-    try {
-      const productName = product.name || 'Game';
-      const skus = (product.skus || []).filter((s: any) => s.available !== false);
-
-      if (!skus || skus.length === 0) {
-        return ctx.reply(`⚠️ No packages available for *${productName}* from G2Bulk.`, { parse_mode: 'Markdown' });
-      }
-
-      const requiredFields = (product.fields || []).filter((f: any) => f.required);
-      let orderFormatDesc = `.${shortKey} <PlayerID> <Package>`;
-      let exampleDesc = `.${shortKey} 123456789 100`;
-
-      if (requiredFields.length === 1) {
-        const fName = requiredFields[0].title || requiredFields[0].name || 'PlayerID';
-        orderFormatDesc = `.${shortKey} <${fName}> <Package>`;
-        exampleDesc = `.${shortKey} 12345678 100`;
-      } else if (requiredFields.length >= 2) {
-        const f1 = requiredFields[0].title || requiredFields[0].name || 'UserAccount';
-        const f2 = requiredFields[1].title || requiredFields[1].name || 'Server';
-        orderFormatDesc = `.${shortKey} <${f1}> <${f2}> <Package>`;
-        exampleDesc = `.${shortKey} 12345678 2001 100`;
-      }
-
-      let skuKeys: Record<string, string> = {};
-      if (product.skuShortKeys) {
-        skuKeys = typeof product.skuShortKeys.get === 'function'
-          ? Object.fromEntries(product.skuShortKeys)
-          : (product.skuShortKeys || {});
-      }
-
-      let msg = `🔥 *${productName} (G2Bulk) — Packages & Prices*\n\n` +
-        `📦 *ရရှိနိုင်သော Products စာရင်း:*\n`;
-
-      skus.forEach((sku: any) => {
-        const name = sku.name || `Package #${sku.sku}`;
-        const price = sku.price || '0.00';
-        const customKey = skuKeys[String(sku.sku)];
-        const shortKeyTag = customKey ? ` (Key: \`${customKey}\`)` : '';
-        msg += `▫️ *${name}* — \`$${Number(price).toFixed(3)} USD\`${shortKeyTag}\n`;
-      });
-
-      msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
-        `🛒 *Order တင်ရန် Command Format:*\n` +
-        `\`${orderFormatDesc}\`\n\n` +
-        `👉 *ဥပမာ:* \`${exampleDesc}\`\n` +
-        `━━━━━━━━━━━━━━━━━━━━`;
-
-      return ctx.reply(msg, { parse_mode: 'Markdown' });
-    } catch (err: any) {
-      console.error('Error fetching G2Bulk package list:', err);
-      return ctx.reply(`❌ Error fetching package list: ${err.message}`);
-    }
-  }
-
-  async function handleG2BulkDirectOrder(ctx: MyContext, product: any, shortKey: string, args: string[]) {
-    try {
-      const productId = String(product.productId);
-      const productName = product.name || 'Game';
-      const skus = product.skus || [];
-
-      if (!skus || skus.length === 0) {
-        return ctx.reply(`⚠️ No packages available for *${productName}*.`, { parse_mode: 'Markdown' });
-      }
-
-      const requiredFields = (product.fields || []).filter((f: any) => f.required);
-      const minFields = requiredFields.length > 0 ? requiredFields.length : 1;
-
-      if (args.length < minFields) {
-        let formatHelp = `.${shortKey} <Account> <Package>`;
-        let exampleHelp = `.${shortKey} 123456789 100`;
-        if (requiredFields.length === 2) {
-          formatHelp = `.${shortKey} <${requiredFields[0].title || 'Account'}> <${requiredFields[1].title || 'Server'}> <Package>`;
-          exampleHelp = `.${shortKey} 12345678 2001 100`;
-        }
-        return ctx.reply(
-          `🔥 *${productName} (G2Bulk) Quick Order*\n\n` +
-          `📌 *Format:* \`${formatHelp}\`\n` +
-          `💡 *Example:* \`${exampleHelp}\`\n\n` +
-          `To view all packages & prices, send: \`.${shortKey}\``,
-          { parse_mode: 'Markdown' }
-        );
-      }
-
-      // Parse fields — G2Bulk products use player_id / server_id
-      const extraInfo: Record<string, any> = {};
-      if (requiredFields.length === 0) {
-        extraInfo['player_id'] = args[0];
-      } else {
-        for (let i = 0; i < requiredFields.length; i++) {
-          extraInfo[requiredFields[i].name] = args[i];
-        }
-        if (!extraInfo['player_id'] && args[0]) {
-          extraInfo['player_id'] = args[0];
-        }
-      }
-
-      if (args.length === minFields) {
-        ctx.session = {};
-        ctx.session.provider = 'g2bulk';
-        ctx.session.gameId = productId;
-        ctx.session.gameName = productName;
-        ctx.session.extraInfo = extraInfo;
-        ctx.session.skus = skus;
-
-        const buttons = skus.map((sku: any, idx: number) => {
-          const name = sku.name || 'Unknown Item';
-          const price = sku.price ? ` ($${sku.price})` : '';
-          return [Markup.button.callback(`${name}${price}`, `g2b_s_${idx}`)];
-        });
-        buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
-
-        let infoDesc = Object.entries(extraInfo).map(([k, v]) => `• ${k.toUpperCase()}: \`${v}\``).join('\n');
-
-        return ctx.reply(
-          `🔥 *${productName} (G2Bulk)*\n${infoDesc}\n\n` +
-          `👇 ဝယ်ယူလိုသော Package ကို အောက်ပါ Button များမှ ရွေးချယ်နှိပ်ပါ:`,
-          { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) }
-        );
-      }
-
-      const rawProductQuery = args.slice(minFields).join(' ').trim();
-
-      let skuKeys = {};
-      if (product.skuShortKeys) {
-        skuKeys = typeof product.skuShortKeys.get === 'function'
-          ? Object.fromEntries(product.skuShortKeys)
-          : product.skuShortKeys;
-      }
-
-      const parsedResult = parseSkuWithQuantity(skus, rawProductQuery, skuKeys, true);
-      const matchedSku = parsedResult.sku;
-
-      ctx.session = {};
-      ctx.session.quantity = 1; // G2Bulk API does not support quantity
-      ctx.session.provider = 'g2bulk';
-      ctx.session.gameId = productId;
-      ctx.session.gameName = productName;
-      ctx.session.extraInfo = extraInfo;
-      ctx.session.skus = skus;
-
-      if (!matchedSku) {
-        const buttons = skus.map((sku: any, idx: number) => {
-          const name = sku.name || 'Unknown Item';
-          const price = sku.price ? ` ($${sku.price})` : '';
-          return [Markup.button.callback(`${name}${price}`, `g2b_s_${idx}`)];
-        });
-        buttons.push([Markup.button.callback('❌ Cancel', 'cancel_order')]);
-
-        let infoDesc = Object.entries(extraInfo).map(([k, v]) => `• ${k.toUpperCase()}: \`${v}\``).join('\n');
-        let promptMsg = rawProductQuery ? `⚠️ Package matching \`${rawProductQuery}\` not found.\n\n` : '';
-
-        return ctx.reply(
-          promptMsg +
-          `🔥 *${productName} (G2Bulk)*\n${infoDesc}\n\n` +
-          `👇 ဝယ်ယူလိုသော Package ကို အောက်ပါ Button များမှ ရွေးချယ်နှိပ်ပါ:`,
-          { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) }
-        );
-      }
-
-      ctx.session.skuId = String(matchedSku.sku);
-      ctx.session.skuName = matchedSku.name || `${productName} Package`;
-      ctx.session.skuPrice = typeof matchedSku.price === 'number' ? matchedSku.price : parseFloat(String(matchedSku.price || '0'));
-
-      await showOrderConfirmation(ctx);
-
-    } catch (err: any) {
-      console.error('G2Bulk direct order error:', err);
-      return ctx.reply(`❌ Error processing order: ${err.message}`);
-    }
-  }
-
-  // Multi-line / Bulk Order Flow Handler
-  async function handleBulkOrderFlow(ctx: MyContext, text: string) {
-    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
-
-    // If user sent just "/bulk" or ".bulk" without order lines
-    if (lines.length === 1 && (lines[0].toLowerCase() === '/bulk' || lines[0].toLowerCase() === '.bulk' || lines[0].toLowerCase() === 'bulk')) {
-      return safeReply(
-        ctx,
-        `📦 *Bulk Top-Up Order (အော်ဒါအများအပြား တင်ခြင်း)*\n` +
-        `═════════════════════════\n` +
-        `အော်ဒါများစွာကို တစ်ကြိမ်တည်းဖြင့် တိုက်ရိုက်တင်ရန်အတွက် အောက်ပါအတိုင်း Message တစ်စောင်တည်းတွင် တစ်ကြောင်းချင်းစီ ရိုက်ပို့ပေးပါ:\n\n` +
-        `📌 *Format:*\n` +
-        `\`.<shortKey> <Account ID> [ZoneID] <Product> [xQty]\`\n\n` +
-        `💡 *ဥပမာ နမူနာများ:*\n` +
-        `\`.ml 12345678 2001 wp\`\n` +
-        `\`.ml 87654321 2002 86 x3\`\n` +
-        `\`.pubg 5123456789 60\`\n` +
-        `\`.ff 11223344 100\`\n` +
-        `\`.tp 123456789 100\`\n` +
-        `\`.fzr 123456789 100\`\n` +
-        `═════════════════════════\n` +
-        `_💡 Note: အော်ဒါများကို မပို့မီ စုစုပေါင်းကုန်ကျငွေနှင့် အချက်အလက်များကို စနစ်မှ သေချာစွာ စစ်ဆေးအတည်ပြုခိုင်းမည် ဖြစ်ပါသည်။_`,
-        Markup.inlineKeyboard([
-          [Markup.button.callback('📜 View Bulk Order History', 'bulk_history_page_1')],
-          [Markup.button.callback('🏠 Main Menu', 'main_menu')]
-        ])
-      );
-    }
-
-    try {
-      const parseResult = await BulkOrderService.parseBulkText(text, lootbar);
-
-      if (parseResult.errors.length > 0) {
-        let errMsg = `⚠️ *Bulk Order Format Errors!*\n═════════════════════════\n` +
-          `အောက်ပါ စာကြောင်းများတွင် အချက်အလက် မပြည့်စုံပါ သို့မဟုတ် မှားယွင်းနေပါသည်:\n\n`;
-
-        parseResult.errors.slice(0, 8).forEach(e => {
-          errMsg += `❌ *Line ${e.lineIndex}:* \`${escapeCode(e.rawLine)}\`\n   ↳ _${escapeMd(e.error)}_\n\n`;
-        });
-
-        if (parseResult.errors.length > 8) {
-          errMsg += `_... နောက်ထပ် error (${parseResult.errors.length - 8}) ခု ရှိပါသေးသည်။_\n\n`;
-        }
-
-        if (parseResult.validItems.length > 0) {
-          errMsg += `✅ *မှန်ကန်သော အော်ဒါ:* ${parseResult.validItems.length} ခု\n` +
-            `❌ *မှားယွင်းနေသော အော်ဒါ:* ${parseResult.errors.length} ခု\n\n` +
-            `_ကျေးဇူးပြု၍ မှားယွင်းနေသော လိုင်းများကို ပြန်လည်စစ်ဆေးပြီး အားလုံးမှန်ကန်အောင် ပြန်လည်ပို့ပေးပါ။_`;
-        } else {
-          errMsg += `💡 *Format:* \`.ml 12345678 2001 wp\``;
-        }
-
-        return safeReply(ctx, errMsg);
-      }
-
-      if (parseResult.validItems.length === 0) {
-        return safeReply(ctx, '⚠️ No valid order lines found in the message.');
-      }
-
-      // Check user balance
-      let userDoc = await User.findOne({ telegramChatId: ctx.chat!.id });
-      if (!userDoc) {
-        userDoc = await User.create({
-          telegramChatId: ctx.chat!.id,
-          username: ctx.from?.username || (ctx.chat as any)?.username,
-          firstName: ctx.from?.first_name || (ctx.chat as any)?.first_name,
-          balance: 0
-        });
-      }
-
-      const isApiLinked = !!(userDoc.useDirectApiBalance || userDoc.balanceMode === 'api');
-      const userBalance = userDoc.balance || 0;
-      const totalPrice = parseResult.totalPrice;
-
-      if (!isApiLinked && userBalance < totalPrice) {
-        const needed = (totalPrice - userBalance).toFixed(3);
-        return safeReply(
-          ctx,
-          `⚠️ *Insufficient Balance for Bulk Order!*\n═════════════════════════\n` +
-          `├── 📦 Total Orders: *${parseResult.validItems.length} items*\n` +
-          `├── 💰 Total Cost: \`$${totalPrice.toFixed(3)} USD\`\n` +
-          `├── 💳 Your Balance: \`$${userBalance.toFixed(3)} USD\`\n` +
-          `└── ⚠️ Needed More: \`$${needed} USD\`\n` +
-          `═════════════════════════\n` +
-          `_ကျေးဇူးပြု၍ Wallet ထဲသို့ ငွေဖြည့်သွင်းပြီးမှ အော်ဒါတင်ပေးပါ။_`,
-          Markup.inlineKeyboard([
-            [Markup.button.callback('💰 Request Top-Up', 'topup_flow_start')],
-            [Markup.button.callback('❌ Cancel', 'cancel_order')]
-          ])
-        );
-      }
-
-      // Store in session
-      ctx.session = ctx.session || {};
-      ctx.session.bulkOrders = parseResult.validItems;
-      ctx.session.bulkTotalPrice = totalPrice;
-      ctx.session.bulkRawText = text;
-
-      let summaryMsg = `🛒 *Confirm Bulk Top-Up Order*\n═════════════════════════\n` +
-        `စုစုပေါင်း အော်ဒါ *(${parseResult.validItems.length})* ခု တင်ရန် အတည်ပြုပေးပါ:\n\n`;
-
-      parseResult.validItems.forEach((item, idx) => {
-        let accountStr = '';
-        if (item.extraInfo) {
-          const vals = Object.entries(item.extraInfo)
-            .filter(([k, v]) => k !== 'paymentSource' && k !== 'provider' && v)
-            .map(([_, v]) => String(v));
-          accountStr = vals.join(' | ');
-        }
-        const qtyStr = item.quantity > 1 ? ` (x${item.quantity})` : '';
-        summaryMsg += `▫️ *#${idx + 1} ${escapeMd(item.gameName)}* — ${escapeMd(item.skuName)}${qtyStr}\n` +
-          `   └ 🎯 \`${escapeCode(accountStr)}\` • \`$${item.totalPrice.toFixed(3)}\`\n`;
-      });
-
-      summaryMsg += `═════════════════════════\n` +
-        `├── 📦 Total Items: *${parseResult.validItems.length} orders* (${parseResult.totalQuantity} items)\n` +
-        `├── 💰 Total Price: \`$${totalPrice.toFixed(3)} USD\`\n`;
-
-      if (isApiLinked) {
-        summaryMsg += `└── 💳 Payment: \`⚡ Direct API Balance Linked\`\n`;
-      } else {
-        const after = Math.max(0, userBalance - totalPrice);
-        summaryMsg += `├── 💳 Current Balance: \`$${userBalance.toFixed(3)} USD\`\n` +
-          `└── 💵 Balance After: \`$${after.toFixed(3)} USD\`\n`;
-      }
-      summaryMsg += `═════════════════════════`;
-
-      const confirmKeyboard = Markup.inlineKeyboard([
-        [Markup.button.callback(`🚀 Confirm & Place ${parseResult.validItems.length} Orders ($${totalPrice.toFixed(3)})`, 'confirm_bulk_orders')],
-        [Markup.button.callback('❌ Cancel Bulk Order', 'cancel_order')]
-      ]);
-
-      return safeReply(ctx, summaryMsg, confirmKeyboard);
-    } catch (err: any) {
-      console.error('Bulk order flow error:', err);
-      return safeReply(ctx, `❌ Bulk Order Processing Error: ${err.message}`);
-    }
-  }
-
-  // Bulk Command Handler (/bulk or /bulkorder)
-  bot.command(['bulk', 'bulkorder'], async (ctx) => {
-    const text = ctx.message.text || '';
-    return await handleBulkOrderFlow(ctx, text);
+      await bot.telegram.sendMessage(targetChatId, '🎉 Congratulations! Your account has been approved by the Admin.\n\nYou can now use the bot! Tap /start to begin.', mainMenu);
+    } catch (e) {}
   });
 
-
-  async function syncTopupNationProductLive(product: any, shortKey: string) {
-    if (!topupNation || !topupNation.getClient()?.isConfigured()) return product;
-    try {
-      const liveProduct = await topupNation.getClient().getProduct(product.productId);
-      if (liveProduct && liveProduct.skus && liveProduct.skus.length > 0) {
-        const changes: string[] = [];
-        // Compare SKUs
-        for (const newSku of liveProduct.skus) {
-          const oldSku = (product.skus || []).find((s: any) => String(s.sku) === String(newSku.sku));
-          if (oldSku) {
-            const oldPrice = parseFloat(String(oldSku.price || '0'));
-            const newPrice = parseFloat(String(newSku.price || '0'));
-            if (oldPrice !== newPrice) {
-              const name = (newSku.name || 'Package').replace(/[*_`\[\]]/g, '');
-              const indicator = newPrice > oldPrice ? '🔴 🔺' : '🟢 🔻';
-              changes.push(`• ${name}: \`${oldPrice.toFixed(3)}\` ➔ \`${newPrice.toFixed(3)}\` ${indicator}`);
-            }
-          }
-        }
-
-        // Update DB with latest data
-        product.name = liveProduct.name;
-        product.status = liveProduct.status || 'ACTIVE';
-        product.category = liveProduct.category;
-        product.description = liveProduct.description;
-        product.iconUrl = liveProduct.iconUrl;
-        product.fields = liveProduct.fields || [];
-        product.skus = liveProduct.skus || [];
-        product.markModified('skus');
-        product.markModified('fields');
-        await product.save();
-
-        if (changes.length > 0) {
-          const users = await User.find({ isAuthorized: true });
-          const message = `📈 *Price Update Alert* (TopupNation)\n` +
-            `🎮 Game: *${(product.name || 'Game').replace(/[*_`\[\]]/g, '')}* (\`.${shortKey}\`)\n\n` +
-            `The following packages have updated prices:\n` +
-            changes.join('\n') +
-            `\n\n_Note: The Bot has already updated its prices automatically. You will see these new prices when placing an order._`;
-          for (const u of users) {
-            try {
-              await bot.telegram.sendMessage(u.telegramChatId, message, { parse_mode: 'Markdown' });
-              await new Promise(resolve => setTimeout(resolve, 50));
-            } catch (e) {}
-          }
-        }
-        
-        return product; // Return the updated product
-      }
-    } catch (err) {
-      if (err?.status === 404 || err?.code === 'PRODUCT_NOT_FOUND' || err?.responseData?.error?.code === 'PRODUCT_NOT_FOUND') {
-        console.warn(`[TopupNation] Product ${product.productId} not found on live sync. Disabling locally.`);
-        product.isEnabled = false;
-        product.status = 'DISABLED';
-        await product.save().catch(() => {});
-      } else {
-        console.error('Error syncing TPN product live:', err.message || err);
-      }
+  bot.action(/^reject_user_(\d+)$/, async (ctx) => {
+    const currentAdminId = await getAdminChatId(adminChatId);
+    if (String(ctx.chat!.id) !== currentAdminId) {
+      return ctx.answerCbQuery('Unauthorized');
     }
-    return product;
-  }
+    const targetChatId = parseInt(ctx.match[1]);
+    await User.findOneAndUpdate({ telegramChatId: targetChatId }, { isAuthorized: false });
+    await ctx.editMessageText(`❌ User \`${targetChatId}\` request rejected.`, { parse_mode: 'Markdown' });
+  });
 
-  // Universal Short Key Listener (e.g. .p, .ml, .ff, /p, etc.)
+  // Basic Commands
+  bot.start(async (ctx) => {
+    ctx.session = {};
+    const welcome = `👋 *Welcome to Multi-Provider Game Top-Up Bot!*\n\n` +
+      `⚡ *Supported Direct APIs:* LootBar, TopupNation, G2Bulk\n\n` +
+      `📌 *အသုံးပြုနည်း လမ်းညွှန်:*\n` +
+      `• *All Games စာရင်း:* \`/games\` သို့မဟုတ် Menu မှ \`🎮 All Games\`\n` +
+      `• *Packages ကြည့်ရန်:* \`.<shortKey>\` (ဥပမာ: \`.p\`, \`.ml\`, \`.tp\`)\n` +
+      `• *Direct Order:* \`.<shortKey> <Account> <Product>\`\n` +
+      `• *Bulk Order:* \`/bulk\` သို့မဟုတ် စာကြောင်းများစွာ တစ်ပြိုင်နက် ပို့ပါ\n` +
+      `• *Live Balance:* \`/balance\` သို့မဟုတ် \`💳 My Balance\`\n` +
+      `• *Order Status:* \`/status <OrderID>\``;
+
+    return safeReply(ctx, welcome, mainMenu);
+  });
+
+  bot.help(async (ctx) => {
+    const helpMsg = `📖 *Bot Commands & Usage Guide*\n═════════════════════════\n` +
+      `• \`/games\` — ရရှိနိုင်သော Games အားလုံး စာရင်း\n` +
+      `• \`/balance\` — လက်ကျန်ငွေ နှင့် API ချိတ်ဆက်မှု စစ်ဆေးရန်\n` +
+      `• \`/profile\` — User Account Profile အချက်အလက်\n` +
+      `• \`/orders\` — ယခင် တင်ခဲ့သော အော်ဒါမှတ်တမ်းများ\n` +
+      `• \`/bulk\` — Bulk Order အများအပြား တစ်ခါတည်း တင်ရန်\n` +
+      `• \`/status <ID>\` — Live Order Status တိုက်ရိုက် စစ်ဆေးရန်\n` +
+      `• \`/cancel\` — လုပ်ဆောင်နေသော အော်ဒါ ဖျက်သိမ်းရန်\n` +
+      `═════════════════════════`;
+    return safeReply(ctx, helpMsg, mainMenu);
+  });
+
+  bot.command(['games', 'gamelist', 'allgames'], async (ctx) => {
+    return await renderAllGamesList(ctx);
+  });
+
+  bot.hears(['🎮 All Games', 'All Games', 'Games', 'games', '🎮 Games'], async (ctx) => {
+    return await renderAllGamesList(ctx);
+  });
+
+  bot.command('cancel', async (ctx) => {
+    ctx.session = {};
+    return ctx.reply('❌ Action cancelled. Main Menu:', mainMenu);
+  });
+
+  bot.action('cancel_order', async (ctx) => {
+    ctx.session = {};
+    await ctx.answerCbQuery('Order cancelled');
+    return ctx.reply('❌ Order cancelled. Main Menu:', mainMenu);
+  });
+
+  bot.action('main_menu', async (ctx) => {
+    ctx.session = {};
+    await ctx.answerCbQuery();
+    return ctx.reply('🏠 Main Menu:', mainMenu);
+  });
+
+  // Universal Short Key Router (.ml, .pubg, .tp, etc.)
   bot.hears(/^[./]([a-zA-Z0-9_-]+)(\s+.*)?$/i, async (ctx, next) => {
     const text = ctx.message.text.trim();
     if (text.includes('\n')) {
-      return await handleBulkOrderFlow(ctx, text);
+      return await handleBulkOrderFlow(ctx, text, lootbar);
     }
     const match = text.match(/^[./]([a-zA-Z0-9_-]+)(\s+.*)?$/i);
     if (!match) return next();
 
-    // Deduplicate rapid identical commands within 3 seconds
     const chatId = ctx.chat?.id;
     if (chatId) {
       const now = Date.now();
       const lastCmd = userLastCommandText.get(chatId);
       const lastTime = userLastCommandTime.get(chatId) || 0;
       if (lastCmd === text && now - lastTime < 3000) {
-        console.warn(`[Command Dedup] Blocked duplicate command within 3s for user ${chatId}: ${text}`);
-        return; // Ignore duplicate command delivery
+        return;
       }
       userLastCommandText.set(chatId, text);
       userLastCommandTime.set(chatId, now);
@@ -1564,28 +371,29 @@ export function setupBot(
     const inputKey = match[1].toLowerCase();
     const rawArgs = match[2] ? parseCommandArgs(match[2]) : [];
 
-    // Check if bulk command
     if (inputKey === 'bulk' || inputKey === 'bulkorder') {
-      return await handleBulkOrderFlow(ctx, text);
+      return await handleBulkOrderFlow(ctx, text, lootbar);
     }
 
-    // Skip reserved commands like /start, /cancel, /auth, /unauth, /users, /addbalance, /orders, /balance, /games, /account, /profile, /wallet, /topup, /deposit, /lootbar, /tpn, /bulk, /fzr
-    const reservedCommands = ['start', 'cancel', 'auth', 'unauth', 'users', 'addbalance', 'orders', 'balance', 'games', 'gamelist', 'help', 'account', 'profile', 'wallet', 'myaccount', 'mywallet', 'mybalance', 'topup', 'deposit', 'requesttopup', 'requestbalance', 'addmoney', 'lootbar', 'lb', 'tpn', 'topupnation', 'fzr', 'fzrcards', 'bulk', 'bulkorder', 'bulkhistory'];
+    const reservedCommands = [
+      'start', 'cancel', 'auth', 'unauth', 'users', 'addbalance', 'orders', 'balance',
+      'games', 'gamelist', 'help', 'account', 'profile', 'wallet', 'myaccount', 'mywallet',
+      'mybalance', 'topup', 'deposit', 'requesttopup', 'requestbalance', 'addmoney',
+      'lootbar', 'lb', 'tpn', 'topupnation', 'bulk', 'bulkorder', 'bulkhistory', 'status', 'track'
+    ];
     if (reservedCommands.includes(inputKey)) {
       return next();
     }
 
     try {
-      // Find matching game by shortKey strictly in Enabled SavedGames
-      let savedGames = await SavedGame.find({ isEnabled: { $ne: false } });
-      let matchedGame = savedGames.find((g: any) => {
+      const savedGames = await SavedGame.find();
+      const matchedGame = savedGames.find((g: any) => {
         const k = (g.shortKey || getGameDefaultShortKey(g.name, g.gameId)).toLowerCase();
         return k === inputKey || String(g.gameId) === inputKey;
       });
 
       if (!matchedGame) {
-        // Try matching TopupNation products by shortKey
-        const tpnProducts = await TopupNationProduct.find({ isEnabled: { $ne: false } });
+        const tpnProducts = await TopupNationProduct.find();
         let matchedTpn = tpnProducts.find((p: any) => {
           const k = (p.shortKey || '').toLowerCase();
           return k === inputKey || String(p.productId).toLowerCase() === inputKey;
@@ -1597,36 +405,15 @@ export function setupBot(
           }
 
           const activeShortKey = (matchedTpn.shortKey || inputKey).toLowerCase();
-          matchedTpn = await syncTopupNationProductLive(matchedTpn, activeShortKey);
+          matchedTpn = await syncTopupNationProductLive(matchedTpn, activeShortKey, topupNation);
           if (rawArgs.length === 0) {
             return await handleTopupNationPackageList(ctx, matchedTpn, activeShortKey);
           } else {
-            return await handleTopupNationDirectOrder(ctx, matchedTpn, activeShortKey, rawArgs);
+            return await handleTopupNationDirectOrder(ctx, matchedTpn, activeShortKey, rawArgs, (c) => showOrderConfirmation(c, lootbar, topupNation));
           }
         }
 
-        // Try matching FZR Cards products by shortKey
-        const fzrProducts = await FzrCardsProduct.find({ isEnabled: { $ne: false } });
-        const matchedFzr = fzrProducts.find((p: any) => {
-          const k = (p.shortKey || '').toLowerCase();
-          return k === inputKey || String(p.productId).toLowerCase() === inputKey;
-        });
-
-        if (matchedFzr) {
-          if (matchedFzr.isEnabled === false || matchedFzr.status === 'DISABLED') {
-            return ctx.reply(`⚠️ *${matchedFzr.name}* is currently disabled by Admin.`, { parse_mode: 'Markdown' });
-          }
-
-          const activeShortKey = (matchedFzr.shortKey || inputKey).toLowerCase();
-          if (rawArgs.length === 0) {
-            return await handleFzrCardsPackageList(ctx, matchedFzr, activeShortKey);
-          } else {
-            return await handleFzrCardsDirectOrder(ctx, matchedFzr, activeShortKey, rawArgs);
-          }
-        }
-
-        // Try matching G2Bulk products by shortKey
-        const g2bProducts = await G2BulkProduct.find({ isEnabled: { $ne: false } });
+        const g2bProducts = await G2BulkProduct.find();
         const matchedG2b = g2bProducts.find((p: any) => {
           const k = (p.shortKey || '').toLowerCase();
           return k === inputKey || String(p.productId).toLowerCase() === inputKey;
@@ -1641,11 +428,11 @@ export function setupBot(
           if (rawArgs.length === 0) {
             return await handleG2BulkPackageList(ctx, matchedG2b, activeShortKey);
           } else {
-            return await handleG2BulkDirectOrder(ctx, matchedG2b, activeShortKey, rawArgs);
+            return await handleG2BulkDirectOrder(ctx, matchedG2b, activeShortKey, rawArgs, (c) => showOrderConfirmation(c, lootbar, topupNation));
           }
         }
 
-        return next(); // Not an enabled game short key, pass along
+        return next();
       }
 
       if (matchedGame.isEnabled === false) {
@@ -1655,11 +442,9 @@ export function setupBot(
       const activeShortKey = (matchedGame.shortKey || inputKey).toLowerCase();
 
       if (rawArgs.length === 0) {
-        // User sent just .<shortKey> -> Show package list & prices
-        return await handleGamePackageList(ctx, matchedGame, activeShortKey);
+        return await handleGamePackageList(ctx, matchedGame, activeShortKey, lootbar);
       } else {
-        // User sent .<shortKey> <args...> -> Direct order
-        return await handleGameDirectOrder(ctx, matchedGame, activeShortKey, rawArgs);
+        return await handleGameDirectOrder(ctx, matchedGame, activeShortKey, rawArgs, lootbar, (c) => showOrderConfirmation(c, lootbar, topupNation));
       }
     } catch (err: any) {
       console.error('Short key processing error:', err);
@@ -1667,1399 +452,7 @@ export function setupBot(
     }
   });
 
-  bot.action(/^lb_s_(\d+)$/, async (ctx) => {
-    const idx = parseInt(ctx.match[1], 10);
-    await ctx.answerCbQuery();
-    try {
-      const skus = ctx.session.skus || [];
-      const selectedSku = skus[idx];
-      if (!selectedSku) {
-        return ctx.reply('⚠️ Session expired. Please type the command again.');
-      }
-      ctx.session.provider = 'lootbar';
-      ctx.session.skuId = String(selectedSku.sku_id);
-      ctx.session.skuName = selectedSku.sku_name || 'Item';
-      ctx.session.skuPrice = parseFloat(selectedSku.reseller_price || selectedSku.price || '0');
-      await showOrderConfirmation(ctx);
-    } catch (err: any) {
-      return ctx.reply(`❌ Error: ${err.message}`);
-    }
-  });
-
-  bot.action(/^tpn_s_(\d+)$/, async (ctx) => {
-    const idx = parseInt(ctx.match[1], 10);
-    await ctx.answerCbQuery();
-    try {
-      const skus = ctx.session.skus || [];
-      const sku = skus[idx];
-      if (!sku) {
-        return ctx.reply('⚠️ Session expired. Please type the command again.');
-      }
-      ctx.session.provider = 'topupnation';
-      ctx.session.skuId = String(sku.sku);
-      ctx.session.skuName = sku.name || 'Package';
-      ctx.session.skuPrice = typeof sku.price === 'number' ? sku.price : parseFloat(String(sku.price || '0'));
-      await showOrderConfirmation(ctx);
-    } catch (err: any) {
-      return ctx.reply(`❌ Error: ${err.message}`);
-    }
-  });
-
-  bot.action(/^q_order_(.+?)_(.+)$/, async (ctx) => {
-    const gameId = ctx.match[1];
-    const skuId = ctx.match[2];
-    await ctx.answerCbQuery();
-
-    try {
-      const response = await lootbar.getSkus(gameId);
-      const skus = response?.data?.items || [];
-      const selectedSku = skus.find((s: any) => String(s.sku_id) === String(skuId));
-      if (!selectedSku) {
-        return ctx.reply('⚠️ Selected SKU not found.');
-      }
-
-      const savedGame = await SavedGame.findOne({ gameId });
-      const gameName = savedGame?.name || selectedSku.game_name || 'Game';
-
-      ctx.session.provider = 'lootbar';
-      ctx.session.gameId = gameId;
-      ctx.session.gameName = gameName;
-      ctx.session.skuId = String(selectedSku.sku_id);
-      ctx.session.skuName = selectedSku.sku_name || 'Item';
-      ctx.session.skuPrice = parseFloat(selectedSku.reseller_price || selectedSku.price || '0');
-
-      await showOrderConfirmation(ctx);
-    } catch (err: any) {
-      return ctx.reply(`❌ Error: ${err.message}`);
-    }
-  });
-
-  bot.action(/^tpn_q_order_(.+?)_(.+)$/, async (ctx) => {
-    const productId = ctx.match[1];
-    const skuId = ctx.match[2];
-    await ctx.answerCbQuery();
-
-    try {
-      const product = await TopupNationProduct.findOne({ productId });
-      if (!product) {
-        return ctx.reply('⚠️ TopupNation product not found.');
-      }
-
-      const sku = (product.skus || []).find((s: any) => String(s.sku) === String(skuId));
-      if (!sku) {
-        return ctx.reply('⚠️ Selected SKU not found in TopupNation catalog.');
-      }
-
-      ctx.session.provider = 'topupnation';
-      ctx.session.gameId = productId;
-      ctx.session.gameName = product.name;
-      ctx.session.skuId = String(sku.sku);
-      ctx.session.skuName = sku.name || 'Package';
-      ctx.session.skuPrice = typeof sku.price === 'number' ? sku.price : parseFloat(String(sku.price || '0'));
-
-      await showOrderConfirmation(ctx);
-    } catch (err: any) {
-      return ctx.reply(`❌ Error: ${err.message}`);
-    }
-  });
-
-  bot.action(/^fzr_s_(\d+)$/, async (ctx) => {
-    const idx = parseInt(ctx.match[1], 10);
-    await ctx.answerCbQuery();
-    try {
-      const skus = ctx.session.skus || [];
-      const sku = skus[idx];
-      if (!sku) {
-        return ctx.reply('⚠️ Session expired. Please type the command again.');
-      }
-      ctx.session.provider = 'fzrcards';
-      ctx.session.skuId = String(sku.sku);
-      ctx.session.skuName = sku.name || 'Package';
-      ctx.session.skuPrice = typeof sku.price === 'number' ? sku.price : parseFloat(String(sku.price || '0'));
-      await showOrderConfirmation(ctx);
-    } catch (err: any) {
-      return ctx.reply(`❌ Error: ${err.message}`);
-    }
-  });
-
-  bot.action(/^g2b_s_(\d+)$/, async (ctx) => {
-    const idx = parseInt(ctx.match[1], 10);
-    await ctx.answerCbQuery();
-    try {
-      const skus = ctx.session.skus || [];
-      const sku = skus[idx];
-      if (!sku) {
-        return ctx.reply('⚠️ Session expired. Please type the command again.');
-      }
-      ctx.session.provider = 'g2bulk';
-      ctx.session.skuId = String(sku.sku);
-      ctx.session.skuName = sku.name || 'Package';
-      ctx.session.skuPrice = typeof sku.price === 'number' ? sku.price : parseFloat(String(sku.price || '0'));
-      await showOrderConfirmation(ctx);
-    } catch (err: any) {
-      return ctx.reply(`❌ Error: ${err.message}`);
-    }
-  });
-
-  bot.action(/^fzr_q_order_(.+?)_(.+)$/, async (ctx) => {
-    const productId = ctx.match[1];
-    const skuId = ctx.match[2];
-    await ctx.answerCbQuery();
-
-    try {
-      const product = await FzrCardsProduct.findOne({ productId });
-      if (!product) {
-        return ctx.reply('⚠️ FZR Cards product not found.');
-      }
-
-      const sku = (product.skus || []).find((s: any) => String(s.sku) === String(skuId));
-      if (!sku) {
-        return ctx.reply('⚠️ Selected SKU not found in FZR Cards catalog.');
-      }
-
-      ctx.session.provider = 'fzrcards';
-      ctx.session.gameId = productId;
-      ctx.session.gameName = product.name;
-      ctx.session.skuId = String(sku.sku);
-      ctx.session.skuName = sku.name || 'Package';
-      ctx.session.skuPrice = typeof sku.price === 'number' ? sku.price : parseFloat(String(sku.price || '0'));
-
-      await showOrderConfirmation(ctx);
-    } catch (err: any) {
-      return ctx.reply(`❌ Error: ${err.message}`);
-    }
-  });
-
-  // FZR Cards Games & Products Catalog Command
-  bot.command(['fzr', 'fzrcards'], async (ctx) => {
-    return await renderFzrCardsGameList(ctx);
-  });
-
-  // TopupNation Games & Products Catalog Command
-  bot.command(['tpn', 'topupnation'], async (ctx) => {
-    try {
-      const products = await TopupNationProduct.find({}).sort({ name: 1 });
-      if (products.length === 0) {
-        return ctx.reply(
-          `🌐 *TopupNation Provider Catalog*\n\n` +
-          `No TopupNation products are currently synced. Please sync products in the Admin Panel.`,
-          { parse_mode: 'Markdown' }
-        );
-      }
-
-      let msg = `🌐 *TopupNation Games & Products*\n\n` +
-        `ရရှိနိုင်သော Games များကိုကြည့်ရန် သက်ဆိုင်ရာ Short Key ကို ပို့ပေးပါ:\n\n`;
-
-      products.forEach((p: any) => {
-        const sk = p.shortKey || `t${p.productId.slice(0, 4)}`;
-        msg += `🎮 *${p.name}* ➔ \`.${sk}\`\n`;
-      });
-
-      msg += `\n━━━━━━━━━━━━━━━━━━━━\n` +
-        `💡 *ဥပမာ:* \`.${products[0]?.shortKey || 'tp'}\` ပို့ပြီး Package စာရင်းနှင့် ဈေးနှုန်းကြည့်နိုင်ပါသည်။\n` +
-        `━━━━━━━━━━━━━━━━━━━━`;
-
-      return ctx.reply(msg, { parse_mode: 'Markdown' });
-    } catch (err: any) {
-      return ctx.reply(`❌ Error fetching TopupNation list: ${err.message}`);
-    }
-  });
-
-  bot.action(/^quick_p_(.+?)_(.+)$/, async (ctx) => {
-    const uid = ctx.match[1];
-    const skuId = ctx.match[2];
-    await ctx.answerCbQuery();
-
-    try {
-      const response = await lootbar.getSkus('1004');
-      const skus = response?.data?.items || [];
-      const selectedSku = skus.find((s: any) => String(s.sku_id) === String(skuId));
-      if (!selectedSku) {
-        return ctx.reply('⚠️ Selected SKU not found.');
-      }
-
-      ctx.session = {};
-      ctx.session.gameId = '1004';
-      ctx.session.gameName = 'PUBG Mobile';
-      ctx.session.skuId = String(selectedSku.sku_id);
-      ctx.session.skuName = selectedSku.sku_name || 'PUBG Item';
-      ctx.session.skuPrice = parseFloat(selectedSku.reseller_price || selectedSku.price || '0');
-      ctx.session.extraInfo = { uid };
-
-      await showOrderConfirmation(ctx);
-    } catch (err: any) {
-      return ctx.reply(`❌ Error: ${err.message}`);
-    }
-  });
-
-  // Admin Commands
-  bot.command('auth', async (ctx) => {
-    const currentAdminId = await getAdminChatId(adminChatId);
-    if (String(ctx.chat.id) !== currentAdminId) return;
-    const parts = ctx.message.text.split(' ');
-    const targetId = parts[1];
-    if (!targetId) return ctx.reply('Usage: /auth <chatId>');
-    await User.findOneAndUpdate({ telegramChatId: Number(targetId) }, { isAuthorized: true }, { upsert: true });
-    return ctx.reply(`✅ User ${targetId} authorized.`);
-  });
-
-  bot.command('unauth', async (ctx) => {
-    const currentAdminId = await getAdminChatId(adminChatId);
-    if (String(ctx.chat.id) !== currentAdminId) return;
-    const parts = ctx.message.text.split(' ');
-    const targetId = parts[1];
-    if (!targetId) return ctx.reply('Usage: /unauth <chatId>');
-    await User.findOneAndUpdate({ telegramChatId: Number(targetId) }, { isAuthorized: false }, { upsert: true });
-    return ctx.reply(`✅ User ${targetId} unauthorized.`);
-  });
-
-  bot.command('users', async (ctx) => {
-    const currentAdminId = await getAdminChatId(adminChatId);
-    if (String(ctx.chat.id) !== currentAdminId) return;
-    const users = await User.find({ isAuthorized: true });
-    if (users.length === 0) return ctx.reply('No authorized users found.');
-    let msg = '👥 *Authorized Users*\n\n';
-    users.forEach(u => {
-      msg += `- \`${u.telegramChatId}\` (Balance: $${u.balance})\n`;
-    });
-    return ctx.reply(msg, { parse_mode: 'Markdown' });
-  });
-
-  bot.command('addbalance', async (ctx) => {
-    const currentAdminId = await getAdminChatId(adminChatId);
-    if (String(ctx.chat.id) !== currentAdminId) return;
-    const parts = ctx.message.text.split(' ');
-    const targetId = parts[1];
-    const amount = Number(parts[2]);
-    if (!targetId || isNaN(amount)) return ctx.reply('Usage: /addbalance <chatId> <amount>');
-    const user = await User.findOneAndUpdate({ telegramChatId: Number(targetId) }, { $inc: { balance: amount } }, { returnDocument: 'after', upsert: true });
-    return ctx.reply(`✅ Added ${amount} to user ${targetId}. New balance: ${user?.balance}`);
-  });
-
-  // Admin Action: Approve User
-  bot.action(/^approve_user_(.+)$/, async (ctx) => {
-    const currentAdminId = await getAdminChatId(adminChatId);
-    if (String(ctx.chat?.id) !== currentAdminId) {
-        return ctx.answerCbQuery('Unauthorized', { show_alert: true });
-    }
-    const targetId = ctx.match[1];
-    await User.findOneAndUpdate({ telegramChatId: Number(targetId) }, { isAuthorized: true }, { upsert: true });
-    await ctx.editMessageText(`✅ User ${targetId} has been authorized.`);
-    
-    // Notify the user
-    try {
-        await bot.telegram.sendMessage(targetId, '🎉 Good news! You have been authorized by the admin.\n\nSend /start to begin using the bot.');
-    } catch (e) {
-        console.error('Failed to notify user of approval', e);
-    }
-  });
-
-  // Admin Action: Reject User
-  bot.action(/^reject_user_(.+)$/, async (ctx) => {
-    const currentAdminId = await getAdminChatId(adminChatId);
-    if (String(ctx.chat?.id) !== currentAdminId) {
-        return ctx.answerCbQuery('Unauthorized', { show_alert: true });
-    }
-    const targetId = ctx.match[1];
-    await ctx.editMessageText(`❌ User ${targetId} request rejected.`);
-  });
-
-  // Admin Action: Approve Balance Top-Up Request
-  bot.action(/^topup_approve_(TR-[A-Z0-9]+)$/, async (ctx) => {
-    const currentAdminId = await getAdminChatId(adminChatId);
-    const clickerChatId = String(ctx.chat?.id || ctx.from?.id);
-
-    if (clickerChatId !== currentAdminId) {
-      return ctx.answerCbQuery('🚫 Unauthorized (Owner only)', { show_alert: true });
-    }
-
-    const requestId = ctx.match[1];
-    const topupReq = await TopupRequest.findOne({ requestId });
-
-    if (!topupReq) {
-      return ctx.answerCbQuery('⚠️ Top-up request not found.', { show_alert: true });
-    }
-
-    if (topupReq.status !== 'pending') {
-      return ctx.answerCbQuery(`ℹ️ This request was already ${topupReq.status}.`, { show_alert: true });
-    }
-
-    topupReq.status = 'approved';
-    topupReq.processedBy = clickerChatId;
-    topupReq.processedAt = new Date();
-    await topupReq.save();
-
-    // Increment user's wallet balance
-    const updatedUser = await User.findOneAndUpdate(
-      { telegramChatId: topupReq.telegramChatId },
-      { $inc: { balance: topupReq.amount } },
-      { returnDocument: 'after' }
-    );
-
-    await ctx.answerCbQuery('✅ Top-up approved & balance added!');
-    
-    const approvedMsg = `✅ *Top-Up Request Approved!*\n` +
-      `═════════════════════════\n` +
-      `├── 🆔 Request ID: \`${requestId}\`\n` +
-      `├── 👤 User: \`${topupReq.telegramChatId}\`\n` +
-      `├── 💵 Amount Added: \`+$${topupReq.amount.toFixed(3)} USD\`\n` +
-      `├── 💳 User New Balance: \`$${Number(updatedUser?.balance || 0).toFixed(3)} USD\`\n` +
-      `├── 👤 Approved by: \`Admin / Owner\`\n` +
-      `└── 📅 Time: \`${new Date().toLocaleTimeString()}\`\n` +
-      `═════════════════════════`;
-
-    await safeEditMessageCaption(ctx, approvedMsg);
-
-    // Notify user in their Telegram chat
-    const userSuccessMsg = `🎉 *Balance Top-Up Approved!*\n` +
-      `═════════════════════════\n` +
-      `├── 🆔 Request ID: \`${requestId}\`\n` +
-      `├── 💰 Added Amount: \`+$${topupReq.amount.toFixed(3)} USD\`\n` +
-      `├── 💳 New Wallet Balance: \`$${Number(updatedUser?.balance || 0).toFixed(3)} USD\`\n` +
-      `└── ✅ Status: *APPROVED*\n` +
-      `═════════════════════════\n` +
-      `သင့် Wallet ထဲသို့ ငွေဖြည့်သွင်းခြင်း အောင်မြင်ပါပြီ။ အော်ဒါများကို စတင်ဝယ်ယူနိုင်ပါပြီ။`;
-
-    await safeSendMessage(bot.telegram, topupReq.telegramChatId, userSuccessMsg, mainMenu);
-  });
-
-  // Admin Action: Reject Balance Top-Up Request
-  bot.action(/^topup_reject_(TR-[A-Z0-9]+)$/, async (ctx) => {
-    const currentAdminId = await getAdminChatId(adminChatId);
-    const clickerChatId = String(ctx.chat?.id || ctx.from?.id);
-
-    if (clickerChatId !== currentAdminId) {
-      return ctx.answerCbQuery('🚫 Unauthorized (Owner only)', { show_alert: true });
-    }
-
-    const requestId = ctx.match[1];
-    const topupReq = await TopupRequest.findOne({ requestId });
-
-    if (!topupReq) {
-      return ctx.answerCbQuery('⚠️ Top-up request not found.', { show_alert: true });
-    }
-
-    if (topupReq.status !== 'pending') {
-      return ctx.answerCbQuery(`ℹ️ This request was already ${topupReq.status}.`, { show_alert: true });
-    }
-
-    topupReq.status = 'rejected';
-    topupReq.processedBy = clickerChatId;
-    topupReq.processedAt = new Date();
-    await topupReq.save();
-
-    await ctx.answerCbQuery('❌ Top-up request declined.');
-    
-    const rejectedMsg = `❌ *Top-Up Request Declined*\n` +
-      `═════════════════════════\n` +
-      `├── 🆔 Request ID: \`${requestId}\`\n` +
-      `├── 👤 User: \`${topupReq.telegramChatId}\`\n` +
-      `├── 💵 Amount: \`$${topupReq.amount.toFixed(3)} USD\`\n` +
-      `├── 👤 Declined by: \`Admin / Owner\`\n` +
-      `└── 📅 Time: \`${new Date().toLocaleTimeString()}\`\n` +
-      `═════════════════════════`;
-
-    await safeEditMessageCaption(ctx, rejectedMsg);
-
-    // Notify user
-    const userRejectMsg = `❌ *Top-Up Request Declined*\n` +
-      `═════════════════════════\n` +
-      `├── 🆔 Request ID: \`${requestId}\`\n` +
-      `├── 💰 Amount: \`$${topupReq.amount.toFixed(3)} USD\`\n` +
-      `└── ❌ Status: *DECLINED*\n` +
-      `═════════════════════════\n` +
-      `Admin မှ ငွေဖြည့်သွင်းမှုအား ပယ်ဖျက်လိုက်ပါသည်။ အသေးစိတ်သိရှိလိုပါက Admin သို့ ဆက်သွယ်ပါ။`;
-
-    await safeSendMessage(bot.telegram, topupReq.telegramChatId, userRejectMsg, mainMenu);
-  });
-
-  // Live API Balance Fetching Helpers
-  async function getLootBarLiveBalance(): Promise<{ success: boolean; balance: string; error?: string }> {
-    try {
-      if (!lootbar || !lootbar.isConfigured()) {
-        return { success: false, balance: '0.00', error: 'Credentials not configured' };
-      }
-      const asset = await lootbar.queryAsset();
-      const bal = asset?.data?.total_amount || asset?.data?.balance || '0.00';
-      return { success: true, balance: Number(bal).toFixed(3) };
-    } catch (e: any) {
-      return { success: false, balance: '0.00', error: e.message || 'Connection error' };
-    }
-  }
-
-  async function getTopupNationLiveBalance(): Promise<{ success: boolean; balance: string; available: string; currency: string; error?: string }> {
-    try {
-      if (!topupNation || !topupNation.getClient()?.isConfigured()) {
-        return { success: false, balance: '0.00', available: '0.00', currency: 'USD', error: 'Credentials not configured' };
-      }
-      const data = await topupNation.getWalletBalance();
-      const bal = typeof data?.balance === 'number' ? data.balance : parseFloat(data?.balance || '0');
-      const avail = typeof data?.availableBalance === 'number' ? data.availableBalance : (data?.availableBalance ? parseFloat(data.availableBalance) : bal);
-      return {
-        success: true,
-        balance: bal.toFixed(3),
-        available: avail.toFixed(3),
-        currency: data?.currency || 'USD'
-      };
-    } catch (e: any) {
-      return { success: false, balance: '0.00', available: '0.00', currency: 'USD', error: e.message || 'Connection error' };
-    }
-  }
-
-  async function getFzrCardsLiveBalance(): Promise<{ success: boolean; balance: string; available: string; currency: string; error?: string }> {
-    try {
-      if (!fzrCards || !fzrCards.getClient()?.isConfigured()) {
-        return { success: false, balance: '0.00', available: '0.00', currency: 'USD', error: 'Credentials not configured' };
-      }
-      const data = await fzrCards.getWalletBalance();
-      const bal = typeof data?.balance === 'number' ? data.balance : parseFloat(data?.balance || '0');
-      const avail = typeof data?.availableBalance === 'number' ? data.availableBalance : (data?.availableBalance ? parseFloat(data.availableBalance) : bal);
-      return {
-        success: true,
-        balance: bal.toFixed(3),
-        available: avail.toFixed(3),
-        currency: data?.currency || 'USD'
-      };
-    } catch (e: any) {
-      return { success: false, balance: '0.00', available: '0.00', currency: 'USD', error: e.message || 'Connection error' };
-    }
-  }
-
-  async function getG2BulkLiveBalance(): Promise<{ success: boolean; balance: string; currency: string; error?: string }> {
-    try {
-      if (!g2bulk || !g2bulk.getClient()?.getStatus().isConfigured) {
-        return { success: false, balance: '0.000', currency: 'USD', error: 'Credentials not configured' };
-      }
-      const bal = await g2bulk.getClient().getBalance();
-      return {
-        success: true,
-        balance: bal.toFixed(3),
-        currency: 'USD'
-      };
-    } catch (e: any) {
-      return { success: false, balance: '0.000', currency: 'USD', error: e.message || 'Connection error' };
-    }
-  }
-
-  
-  async function renderAccountProfile(ctx: MyContext, isEdit: boolean = false) {
-    const user = await User.findOne({ telegramChatId: ctx.chat!.id });
-    
-    let msg = `👤 *Your Profile*\n` +
-      `═════════════════════════\n` +
-      `📛 *Name:* \`${user?.firstName || 'User'}\`\n` +
-      `🆔 *ID:* \`${user?.telegramChatId}\`\n` +
-      `💰 *Wallet Balance:* \`$${Number(user?.balance || 0).toFixed(3)} USD\`\n` +
-      `═════════════════════════\n`;
-
-    const keyboard = Markup.inlineKeyboard([
-      [
-        Markup.button.callback('💳 Check Balance', 'view_my_balance'),
-        Markup.button.callback('📜 Order History', 'view_my_orders')
-      ]
-    ]);
-
-    if (isEdit) {
-      return await safeEditMessageText(ctx, msg, keyboard);
-    } else {
-      return await safeReply(ctx, msg, keyboard);
-    }
-  }
-
-  async function renderBalance(ctx: MyContext, isEdit: boolean = false) {
-    const user = await User.findOne({ telegramChatId: ctx.chat!.id });
-    
-    let msg = `💳 *Your Wallet Balance*
-` +
-      `═════════════════════════
-` +
-      `💰 *Current Balance:* \`$${Number(user?.balance || 0).toFixed(3)} USD\`
-` +
-      `📦 *Ordering Mode:* \`Pre-funded Wallet Balance\`
-` +
-      `═════════════════════════
-` +
-      `_💡 သင့် Wallet ထဲသို့ ငွေဖြည့်သွင်းလိုပါက အောက်ပါ Request Balance Top-Up ခလုတ်ကို နှိပ်ပါ:_`;
-
-    const keyboard = Markup.inlineKeyboard([
-      [
-        Markup.button.callback('💰 Request Balance Top-Up', 'topup_flow_start'),
-        Markup.button.callback('👤 My Account Profile', 'view_my_profile')
-      ]
-    ]);
-
-    if (isEdit) {
-      return await safeEditMessageText(ctx, msg, keyboard);
-    } else {
-      return await safeReply(ctx, msg, keyboard);
-    }
-  }
-
-  // Action Handlers for API Balance Switcher
-  
-  
-  
-  
-  bot.action('view_my_balance', async (ctx) => {
-    await ctx.answerCbQuery();
-    return await renderBalance(ctx, true);
-  });
-
-  bot.action('view_my_profile', async (ctx) => {
-    await ctx.answerCbQuery();
-    return await renderAccountProfile(ctx, true);
-  });
-
-  bot.action('view_my_orders', async (ctx) => {
-    await ctx.answerCbQuery();
-    return await renderOrderHistory(ctx);
-  });
-
-  bot.hears([
-    '👤 My Account', 'My Account', 'Account', 'account', '👤 Profile', 'Profile', 'profile', '👤 My Profile'
-  ], async (ctx) => {
-    return await renderAccountProfile(ctx);
-  });
-
-  bot.command(['account', 'profile', 'myaccount', 'myprofile'], async (ctx) => {
-    return await renderAccountProfile(ctx);
-  });
-
-  bot.hears([
-    '💳 Check Balance', '💳 My Balance', 'My Balance', 'Balance', 'balance', 
-    'Wallet', 'wallet', '💳 Wallet', '💰 Balance', 'API Balance', 'api balance', 
-    'API Balance စစ်မည်', 'လက်ကျန်ငွေ', 'လက်ကျန်ငွေ စစ်မည်'
-  ], async (ctx) => {
-    return await renderBalance(ctx);
-  });
-
-  bot.command([
-    'balance', 'wallet', 'mybalance', 'mywallet', 'checkbalance',
-    'apibalance', 'apibal', 'apis', 'api', 'adminbalance',
-    'lootbarbalance', 'lbbalance', 'tpnbalance', 'topupnationbalance',
-    'fzrbalance', 'fzrcardsbalance'
-  ], async (ctx) => {
-    const user = await User.findOne({ telegramChatId: ctx.chat!.id });
-    const currentAdminId = await getAdminChatId(adminChatId);
-    const isOwner = String(ctx.chat!.id) === currentAdminId;
-    const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
-
-    const text = (ctx.message && 'text' in ctx.message ? ctx.message.text : '').toLowerCase();
-
-    // If a regular user calls API-specific balance commands, enforce permissions
-    if (text.includes('lootbar') || text.includes('lbbalance')) {
-      if (!isApiLinked && !isOwner) {
-        return await renderBalance(ctx);
-      }
-      return await renderBalance(ctx);
-    }
-    if (text.includes('tpn') || text.includes('topupnation')) {
-      if (!isApiLinked && !isOwner) {
-        return await renderBalance(ctx);
-      }
-      return await renderBalance(ctx);
-    }
-    if (text.includes('fzr') || text.includes('fzrcards')) {
-      if (!isApiLinked && !isOwner) {
-        return await renderBalance(ctx);
-      }
-      return await renderBalance(ctx);
-    }
-    if (text.includes('apibalance') || text.includes('apis') || text.startsWith('/api')) {
-      if (!isApiLinked && !isOwner) {
-        return await renderBalance(ctx);
-      }
-      return await renderBalance(ctx);
-    }
-    return await renderBalance(ctx);
-  });
-
-  // Top-up Request Flow Functions
-  async function startTopupRequest(ctx: MyContext) {
-    const user = await User.findOne({ telegramChatId: ctx.chat!.id });
-    if (!user) return ctx.reply('User account not found.');
-
-    ctx.session = {
-      step: 'INPUT_TOPUP_AMOUNT'
-    };
-
-    const isApiLinked = !!(user.useDirectApiBalance || user.balanceMode === 'api');
-    let intro = `💰 *Request Balance Top-Up*\n\n`;
-    if (isApiLinked) {
-      intro += `⚡ *Account Tier:* \`Direct API Linked (VIP)\`\n_Note: Your account is currently linked to live API funds, but you can also request wallet balance if needed._\n\n`;
-    } else {
-      intro += `💳 *Current Wallet Balance:* \`$${Number(user.balance || 0).toFixed(3)} USD\`\n\n`;
-    }
-
-    intro += `ကျေးဇူးပြု၍ ထည့်သွင်းလိုသော USD ပမာဏကို ရွေးချယ်ပါ (သို့မဟုတ် စာရိုက်ထည့်ပါ - ဥပမာ \`15\`, \`30\`, \`100\`):`;
-
-    const keyboard = Markup.inlineKeyboard([
-      [
-        Markup.button.callback('💵 $5', 'topup_preset_5'),
-        Markup.button.callback('💵 $10', 'topup_preset_10'),
-        Markup.button.callback('💵 $20', 'topup_preset_20')
-      ],
-      [
-        Markup.button.callback('💵 $50', 'topup_preset_50'),
-        Markup.button.callback('💵 $100', 'topup_preset_100'),
-        Markup.button.callback('💵 $200', 'topup_preset_200')
-      ],
-      [
-        Markup.button.callback('✏️ Custom Amount (တိုက်ရိုက်ရိုက်ထည့်မည်)', 'topup_custom')
-      ],
-      [
-        Markup.button.callback('❌ Cancel', 'cancel_topup')
-      ]
-    ]);
-
-    return await safeReply(ctx, intro, keyboard);
-  }
-
-  async function submitTopupRequest(ctx: MyContext, amount: number, note: string = '', photoFileId?: string) {
-    ctx.session = {};
-    const chatId = ctx.chat!.id;
-    const user = await User.findOne({ telegramChatId: chatId });
-    if (!user) return ctx.reply('User account not found.');
-
-    const requestId = 'TR-' + uuidv4().replace(/[^a-zA-Z0-9]/g, '').substring(0, 8).toUpperCase();
-    const fromUsername = ctx.from?.username || (ctx.chat as any)?.username || undefined;
-    const fromFirstName = ctx.from?.first_name || (ctx.chat as any)?.first_name || undefined;
-
-    try {
-      await TopupRequest.create({
-        requestId,
-        telegramChatId: chatId,
-        username: fromUsername,
-        firstName: fromFirstName,
-        amount,
-        note: note.trim(),
-        photoFileId: photoFileId || '',
-        status: 'pending'
-      });
-    } catch (e) {
-      console.error('Failed to create TopupRequest record:', e);
-    }
-
-    // Confirmation message to User
-    const userConfirmMsg = `✅ *Top-Up Request Submitted!*\n` +
-      `═════════════════════════\n` +
-      `├── 🆔 Request ID: \`${requestId}\`\n` +
-      `├── 💰 Requested Amount: \`$${amount.toFixed(3)} USD\`\n` +
-      `├── 📸 Payment Slip: \`Attached ✅\`\n` +
-      (note ? `├── 📝 Note / Ref: \`${escapeCode(note)}\`\n` : '') +
-      `├── 💳 Current Balance: \`$${Number(user.balance || 0).toFixed(3)} USD\`\n` +
-      `├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
-      `└── ⏳ Status: *PENDING APPROVAL*\n` +
-      `═════════════════════════\n` +
-      `Admin / Owner ထံသို့ ငွေလွှဲပြေစာနှင့်တကွ တိုက်ရိုက် အကြောင်းကြားစာ ပို့ပြီးပါပြီ။ Owner မှ စစ်ဆေးအတည်ပြုပြီးပါက သင့် Wallet ထဲသို့ Balance တိုက်ရိုက်ထည့်သွင်းပေးပါမည်။`;
-
-    await safeReply(ctx, userConfirmMsg, mainMenu);
-
-    // Notify Owner ONLY
-    const currentAdminId = await getAdminChatId(adminChatId);
-    const userDisplay = fromUsername ? `@${escapeMd(fromUsername)}` : (fromFirstName ? escapeMd(fromFirstName) : 'User');
-    const safeNote = note ? escapeCode(note) : 'None';
-
-    const adminNotificationCaption = `🔔 *New Balance Top-Up Request!*\n` +
-      `═════════════════════════\n` +
-      `├── 🆔 Request ID: \`${requestId}\`\n` +
-      `├── 👤 User: \`${chatId}\` (${userDisplay})\n` +
-      `├── 💵 Requested Amount: \`$${amount.toFixed(3)} USD\`\n` +
-      `├── 💳 Current Balance: \`$${Number(user.balance || 0).toFixed(3)} USD\`\n` +
-      `├── 📝 Note / Ref: \`${safeNote}\`\n` +
-      `└── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
-      `═════════════════════════\n` +
-      `အောက်ပါ ခလုတ်များကို နှိပ်၍ အတည်ပြု/ပယ်ဖျက်နိုင်ပါသည်:`;
-
-    const adminKeyboard = Markup.inlineKeyboard([
-      [
-        Markup.button.callback(`✅ Approve (+$${amount.toFixed(3)})`, `topup_approve_${requestId}`),
-        Markup.button.callback(`❌ Decline`, `topup_reject_${requestId}`)
-      ]
-    ]);
-
-    if (currentAdminId) {
-      if (photoFileId) {
-        await safeSendPhoto(bot.telegram, currentAdminId, photoFileId, {
-          caption: adminNotificationCaption,
-          reply_markup: adminKeyboard.reply_markup
-        });
-      } else {
-        await safeSendMessage(bot.telegram, currentAdminId, adminNotificationCaption, adminKeyboard);
-      }
-    }
-  }
-
-  bot.hears([
-    '💰 Request Top-Up', 
-    'Request Top-Up', 
-    'Request Topup', 
-    'Top-up', 
-    'Topup', 
-    '💰 Request Balance Top-up', 
-    'Request Balance Top-up', 
-    'Request Balance Topup',
-    'Top Up', 
-    '💰 Top-Up', 
-    '💰 Top Up', 
-    'Request Top Up'
-  ], async (ctx) => {
-    return await startTopupRequest(ctx);
-  });
-
-  bot.command(['topup', 'deposit', 'requesttopup', 'requestbalance'], async (ctx) => {
-    return await startTopupRequest(ctx);
-  });
-
-  bot.action('topup_flow_start', async (ctx) => {
-    await ctx.answerCbQuery();
-    return await startTopupRequest(ctx);
-  });
-
-  bot.action(/^topup_preset_(\d+(\.\d+)?)$/, async (ctx) => {
-    const amount = parseFloat(ctx.match[1]);
-    if (isNaN(amount) || amount <= 0) {
-      return ctx.answerCbQuery('Invalid amount');
-    }
-
-    ctx.session.topupAmount = amount;
-    ctx.session.step = 'INPUT_TOPUP_PHOTO';
-
-    await ctx.answerCbQuery(`Selected $${amount.toFixed(3)} USD`);
-
-    const promptMsg = `💰 *Selected Top-Up Amount:* \`$${amount.toFixed(3)} USD\`\n\n` +
-      `📸 *Payment Slip Screenshot (ငွေလွှဲပြေစာ ပုံ ပို့ပေးပါ)*\n` +
-      `ငွေဖြည့်သွင်းမှု အတည်ပြုရန်အတွက် ငွေလွှဲပြေစာ Screenshot (ဓာတ်ပုံ) ကို ပေးပို့ပေးပါ:\n` +
-      `💡 _(ဓာတ်ပုံနှင့်အတူ Caption ဖြင့် KPay Ref သို့မဟုတ် Note ရေးထည့်နိုင်ပါသည်)_\n\n` +
-      `⚠️ *ငွေလွှဲပြေစာ ဓာတ်ပုံမပါဘဲ ငွေဖြည့်သွင်းခွင့် တင်၍မရပါ။*`;
-
-    const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('❌ Cancel', 'cancel_topup')]
-    ]);
-
-    await safeEditMessageText(ctx, promptMsg, keyboard);
-  });
-
-  bot.action('topup_custom', async (ctx) => {
-    ctx.session.step = 'INPUT_TOPUP_AMOUNT';
-    await ctx.answerCbQuery();
-    await safeEditMessageText(
-      ctx,
-      '✏️ ကျေးဇူးပြု၍ ထည့်သွင်းလိုသော USD ပမာဏကို စာရိုက်ထည့်ပေးပါ (ဥပမာ: `15`, `25.50`, `100`):\n\n_မပြုလုပ်လိုပါက /cancel ဟု ပို့နိုင်ပါသည်။_'
-    );
-  });
-
-  bot.action('cancel_topup', async (ctx) => {
-    ctx.session = {};
-    await ctx.answerCbQuery('Cancelled');
-    await safeEditMessageText(ctx, '❌ Top-up request cancelled.');
-  });
-
-  function isValidValue(val: any): boolean {
-    if (val === null || val === undefined) return false;
-    const s = String(val).trim();
-    if (!s || s === '' || s.toLowerCase() === 'undefined' || s.toLowerCase() === 'null' || s === '[object Object]') {
-      return false;
-    }
-    return true;
-  }
-
-  function formatOrderTreeNode(o: any, orderNumber: number, showUserInfo: boolean = false): string {
-    const isTopupNation = o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation';
-    const providerBadge = isTopupNation ? '⚡ TopupNation API' : '🎮 LootBar API';
-    const safeGame = escapeMd(o.gameName || 'Game');
-    const safeSku = escapeMd(o.skuName || `Product #${o.skuId}`);
-    const priceVal = `$${Number(o.price || 0).toFixed(3)}`;
-
-    const stateMap: Record<number, { statusText: string; icon: string; message: string }> = {
-      0: { statusText: 'PENDING', icon: '⏳', message: 'Order created, awaiting transaction' },
-      1: { statusText: 'PROCESSING', icon: '🔄', message: isTopupNation ? 'TopupNation delivering top-up' : 'LootBar delivering top-up' },
-      2: { statusText: 'COMPLETED', icon: '✅', message: 'Order completed successfully' },
-      3: { statusText: 'FAILED', icon: '❌', message: 'Order failed on game server (Refunded)' },
-      4: { statusText: 'SETTLING', icon: '⚡', message: 'Transaction in settlement stage' },
-      5: { statusText: 'PARTIAL', icon: '⚠️', message: 'Order partially fulfilled' },
-      6: { statusText: 'CANCELLED', icon: '🚫', message: 'Order was cancelled' }
-    };
-
-    const status = stateMap[o.state] || { statusText: 'PROCESSING', icon: '⏳', message: isTopupNation ? 'TopupNation processing' : 'LootBar processing' };
-
-    const lines: string[] = [];
-    lines.push(`*Order #${orderNumber}* ❲ *${providerBadge}* ❳`);
-
-    if (o.telegramUsername || (showUserInfo && o.telegramChatId)) {
-      const userDisplay = o.telegramUsername 
-        ? `@${escapeMd(o.telegramUsername)}` 
-        : (o.telegramFirstName ? escapeMd(o.telegramFirstName) : `User \`${o.telegramChatId}\``);
-      lines.push(`├── 👤 User: *${userDisplay}* \`(${o.telegramChatId})\``);
-    }
-
-    const displayOrderId = o.providerOrderId || o.orderId || o.referenceId || 'Pending';
-    lines.push(`├── 🆔 Order ID: \`${displayOrderId}\``);
-    lines.push(`├── 🌐 Provider: *${providerBadge}*`);
-    lines.push(`├── 🎮 Game: *${safeGame}*`);
-    lines.push(`├── 📦 Package: *${safeSku}*`);
-
-    // Parse player details cleanly - Strictly omit if undefined or missing
-    let playerName = isValidValue(o.playerName) ? String(o.playerName).trim() : '';
-    let playerId = '';
-    let serverId = '';
-    const otherDetails: { key: string; val: string }[] = [];
-
-    if (o.extraInfo && typeof o.extraInfo === 'object') {
-      for (const [key, val] of Object.entries(o.extraInfo)) {
-        if (!isValidValue(val)) continue;
-        if (key === 'paymentSource' || key === 'provider') continue;
-        const lk = key.toLowerCase();
-        if (!playerId && (lk === 'uid' || lk === 'userid' || lk === 'user_id' || lk === 'player_id' || lk === 'account_id' || lk === 'useraccount')) {
-          playerId = String(val).trim();
-        } else if (!serverId && (lk === 'zoneid' || lk === 'zone_id' || lk === 'server' || lk === 'server_id' || lk === 'serverid')) {
-          serverId = String(val).trim();
-        } else if (!playerName && (lk === 'player_name' || lk === 'role_name' || lk === 'nickname' || lk === 'playername' || lk === 'role')) {
-          playerName = String(val).trim();
-        } else {
-          otherDetails.push({ key: key.toUpperCase(), val: String(val).trim() });
-        }
-      }
-    }
-
-    if (isValidValue(playerName)) {
-      lines.push(`├── 👤 Player: \`${escapeCode(playerName)}\``);
-    }
-    if (isValidValue(playerId)) {
-      lines.push(`├── 🎯 Player ID: \`${escapeCode(playerId)}\``);
-    }
-    if (isValidValue(serverId)) {
-      lines.push(`├── 🌐 Server ID: \`${escapeCode(serverId)}\``);
-    }
-    for (const item of otherDetails) {
-      if (isValidValue(item.val)) {
-        lines.push(`├── ▫️ ${escapeMd(item.key)}: \`${escapeCode(item.val)}\``);
-      }
-    }
-
-    lines.push(`├── ${status.icon} Status: *${status.statusText}*`);
-    lines.push(`├── 💬 Message: _${escapeMd(status.message)}_`);
-    lines.push(`├── 💰 Price: \`${priceVal}\``);
-    lines.push(`└── 🕒 Time: \`${formatMyanmarDateTime(o.createdAt)}\``);
-
-    return lines.join('\n');
-  }
-
-  async function renderOrderHistory(
-    ctx: MyContext, 
-    isEdit: boolean = false, 
-    page: number = 1, 
-    providerFilter: 'all' | 'lootbar' | 'topupnation' = 'all',
-    scope?: 'all' | 'mine'
-  ) {
-    const pageSize = 3;
-    const chatId = ctx.chat!.id;
-    const currentAdminId = await getAdminChatId(adminChatId);
-    const isOwner = String(chatId) === currentAdminId;
-
-    // Determine actual scope: if owner and not explicitly set to 'mine', default to 'all' for owner
-    const actualScope: 'all' | 'mine' = isOwner ? (scope || 'all') : 'mine';
-    const isAllUsersView = isOwner && actualScope === 'all';
-
-    // Build base user query condition
-    const userQuery: any = isAllUsersView ? {} : { telegramChatId: chatId };
-
-    // Build query based on provider filter
-    const query: any = { ...userQuery };
-    if (providerFilter === 'topupnation') {
-      query.$or = [
-        { provider: 'topupnation' },
-        { 'extraInfo.provider': 'topupnation' }
-      ];
-    } else if (providerFilter === 'lootbar') {
-      query.$and = [
-        { provider: { $ne: 'topupnation' } },
-        { 'extraInfo.provider': { $ne: 'topupnation' } }
-      ];
-    }
-
-    // Counts for tabs
-    const [totalAll, totalLootBar, totalTopupNation] = await Promise.all([
-      Order.countDocuments(userQuery),
-      Order.countDocuments({
-        ...userQuery,
-        provider: { $ne: 'topupnation' },
-        'extraInfo.provider': { $ne: 'topupnation' }
-      }),
-      Order.countDocuments({
-        ...userQuery,
-        $or: [
-          { provider: 'topupnation' },
-          { 'extraInfo.provider': 'topupnation' }
-        ]
-      })
-    ]);
-
-    const totalOrders = providerFilter === 'topupnation' 
-      ? totalTopupNation 
-      : providerFilter === 'lootbar' 
-        ? totalLootBar 
-        : totalAll;
-
-    const providerTitle = providerFilter === 'topupnation' 
-      ? '⚡ TopupNation' 
-      : providerFilter === 'lootbar' 
-        ? '🎮 LootBar' 
-        : '🌐 All Providers';
-
-    const headerTitle = isAllUsersView 
-      ? `👑 *All Users' Orders (Admin View)* — ${providerTitle}`
-      : `⏳ *My Order History* — ${providerTitle}`;
-
-    if (totalOrders === 0) {
-      const emptyMsg = `${headerTitle}\n═════════════════════════\n\n📜 _အော်ဒါမှတ်တမ်း မရှိသေးပါ။_\n\nအခြား Category ကို ရွေးချယ်ကြည့်ရှုနိုင်ပါသည်:`;
-      const buttons: any[] = [
-        [
-          Markup.button.callback(`🌐 All (${totalAll})`, `order_filter_all_${actualScope}_page_1`),
-          Markup.button.callback(`🎮 LootBar (${totalLootBar})`, `order_filter_lootbar_${actualScope}_page_1`),
-          Markup.button.callback(`⚡ TopupNation (${totalTopupNation})`, `order_filter_topupnation_${actualScope}_page_1`)
-        ]
-      ];
-
-      if (isOwner) {
-        buttons.push([
-          isAllUsersView 
-            ? Markup.button.callback('👤 Switch to My Orders Only', `order_filter_${providerFilter}_mine_page_1`)
-            : Markup.button.callback('👑 Switch to All Users\' Orders', `order_filter_${providerFilter}_all_page_1`)
-        ]);
-      }
-
-      const emptyKeyboard = Markup.inlineKeyboard(buttons);
-      if (isEdit) {
-        return await safeEditMessageText(ctx, emptyMsg, emptyKeyboard);
-      }
-      return await safeReply(ctx, emptyMsg, emptyKeyboard);
-    }
-
-    const totalPages = Math.max(1, Math.ceil(totalOrders / pageSize));
-    const currentPage = Math.min(Math.max(1, page), totalPages);
-
-    const orders = await Order.find(query)
-      .sort({ createdAt: -1 })
-      .skip((currentPage - 1) * pageSize)
-      .limit(pageSize);
-
-    let msg = `${headerTitle}\n` +
-      `📄 Page ${currentPage} of ${totalPages}\n` +
-      `═════════════════════════\n\n`;
-
-    const startIndex = (currentPage - 1) * pageSize;
-    orders.forEach((o, i) => {
-      const orderNumber = startIndex + i + 1;
-      msg += formatOrderTreeNode(o, orderNumber, isAllUsersView) + '\n';
-      if (i < orders.length - 1) {
-        msg += `─────────────────────────\n\n`;
-      }
-    });
-
-    const showingEnd = Math.min(startIndex + pageSize, totalOrders);
-    msg += `═════════════════════════\n` +
-      `📊 Showing ${startIndex + 1}-${showingEnd} of ${totalOrders} orders`;
-
-    const buttonRows: any[] = [];
-
-    // Filter Switcher Tabs Bar
-    buttonRows.push([
-      Markup.button.callback(`${providerFilter === 'all' ? '🔘' : '🌐'} All (${totalAll})`, `order_filter_all_${actualScope}_page_1`),
-      Markup.button.callback(`${providerFilter === 'lootbar' ? '🔘' : '🎮'} LootBar (${totalLootBar})`, `order_filter_lootbar_${actualScope}_page_1`),
-      Markup.button.callback(`${providerFilter === 'topupnation' ? '🔘' : '⚡'} TopupNation (${totalTopupNation})`, `order_filter_topupnation_${actualScope}_page_1`)
-    ]);
-
-    // For Owner: Scope switcher button
-    if (isOwner) {
-      buttonRows.push([
-        isAllUsersView 
-          ? Markup.button.callback('👤 Switch: My Orders Only', `order_filter_${providerFilter}_mine_page_1`)
-          : Markup.button.callback('👑 Switch: All Users\' Orders', `order_filter_${providerFilter}_all_page_1`)
-      ]);
-    }
-
-    const navRow: any[] = [];
-
-    if (currentPage > 1) {
-      navRow.push(Markup.button.callback('◀️ Prev', `order_filter_${providerFilter}_${actualScope}_page_${currentPage - 1}`));
-    }
-    navRow.push(Markup.button.callback(`📄 ${currentPage}/${totalPages}`, 'noop_page_indicator'));
-    if (currentPage < totalPages) {
-      navRow.push(Markup.button.callback('Next ▶️', `order_filter_${providerFilter}_${actualScope}_page_${currentPage + 1}`));
-    }
-
-    if (navRow.length > 0) {
-      buttonRows.push(navRow);
-    }
-
-    buttonRows.push([
-      Markup.button.callback('🔄 Refresh List', `order_filter_${providerFilter}_${actualScope}_page_${currentPage}`)
-    ]);
-
-    const keyboard = Markup.inlineKeyboard(buttonRows);
-
-    if (isEdit) {
-      return await safeEditMessageText(ctx, msg, keyboard);
-    }
-    return await safeReply(ctx, msg, keyboard);
-  }
-
-  async function renderBulkOrderHistory(
-    ctx: MyContext,
-    isEdit: boolean = false,
-    page: number = 1
-  ) {
-    const pageSize = 3;
-    const chatId = ctx.chat!.id;
-    const currentAdminId = await getAdminChatId(adminChatId);
-    const isOwner = String(chatId) === currentAdminId;
-
-    const data = await BulkOrderService.getBulkHistory({
-      telegramChatId: isOwner ? undefined : chatId,
-      page,
-      limit: pageSize
-    });
-
-    const headerTitle = isOwner ? '👑 *Bulk Orders History (Admin View)*' : '📦 *My Bulk Order History*';
-
-    if (data.total === 0) {
-      const emptyMsg = `${headerTitle}\n═════════════════════════\n\n📜 _Bulk အော်ဒါမှတ်တမ်း မရှိသေးပါ။_\n\n/bulk ဖြင့် အော်ဒါများစွာ တစ်ခါတည်း စတင်ဝယ်ယူနိုင်ပါသည်!`;
-      const emptyKeyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('📦 Place Bulk Order', 'bulk_order_start')],
-        [Markup.button.callback('📜 Single Orders History', 'view_orders_action')],
-        [Markup.button.callback('🏠 Main Menu', 'main_menu')]
-      ]);
-      if (isEdit) return await safeEditMessageText(ctx, emptyMsg, emptyKeyboard);
-      return await safeReply(ctx, emptyMsg, emptyKeyboard);
-    }
-
-    let msg = `${headerTitle}\n` +
-      `📄 Page ${data.page} of ${data.totalPages} (Total: ${data.total} Batches)\n` +
-      `═════════════════════════\n\n`;
-
-    const detailButtons: any[] = [];
-
-    data.batches.forEach((b: any, idx: number) => {
-      const batchNum = (data.page - 1) * pageSize + idx + 1;
-      const timeStr = formatMyanmarDateTime(b.createdAt);
-      const userStr = isOwner && b.telegramChatId ? ` (${b.telegramUsername ? `@${b.telegramUsername}` : `ID:${b.telegramChatId}`})` : '';
-
-      msg += `📦 *#${batchNum} Batch: \`${b.batchId}\`*${userStr}\n` +
-        `├── 🕒 Time: \`${timeStr}\`\n` +
-        `├── 📊 Requested: *${b.totalRequested} orders*\n` +
-        `├── ✅ Success: *${b.successCount}* | ❌ Failed: *${b.failedCount}*\n` +
-        `├── 💰 Total Spent: \`$${Number(b.totalSpent || 0).toFixed(3)} USD\`\n` +
-        `└── 💳 Payment: \`${b.isApiLinked ? '⚡ Direct API' : '💰 User Wallet'}\`\n\n`;
-
-      detailButtons.push([
-        Markup.button.callback(`🔍 View Batch #${batchNum} (\`${b.batchId}\`)`, `bulk_batch_detail_${b.batchId}`)
-      ]);
-    });
-
-    msg += `═════════════════════════\n` +
-      `_💡 အသေးစိတ်ကြည့်လိုပါက သက်ဆိုင်ရာ Batch Button ကို နှိပ်ပါ_`;
-
-    const navRow: any[] = [];
-    if (data.page > 1) {
-      navRow.push(Markup.button.callback('◀️ Prev', `bulk_history_page_${data.page - 1}`));
-    }
-    navRow.push(Markup.button.callback(`📄 ${data.page}/${data.totalPages}`, 'noop_page_indicator'));
-    if (data.page < data.totalPages) {
-      navRow.push(Markup.button.callback('Next ▶️', `bulk_history_page_${data.page + 1}`));
-    }
-
-    const allButtons = [
-      ...detailButtons,
-      ...(navRow.length > 0 ? [navRow] : []),
-      [
-        Markup.button.callback('🔄 Refresh', `bulk_history_page_${data.page}`),
-        Markup.button.callback('📜 Single Orders', 'view_orders_action')
-      ],
-      [Markup.button.callback('🏠 Main Menu', 'main_menu')]
-    ];
-
-    const keyboard = Markup.inlineKeyboard(allButtons);
-    if (isEdit) return await safeEditMessageText(ctx, msg, keyboard);
-    return await safeReply(ctx, msg, keyboard);
-  }
-
-  async function renderBulkBatchDetail(ctx: MyContext, batchId: string) {
-    const batch = await BulkOrderService.getBulkBatchById(batchId);
-    if (!batch) {
-      return safeReply(ctx, '❌ Bulk batch details not found.');
-    }
-
-    let msg = `📦 *Bulk Batch Details: \`${batch.batchId}\`*\n` +
-      `═════════════════════════\n` +
-      `├── 🕒 Created: \`${formatMyanmarDateTime(batch.createdAt)}\`\n` +
-      `├── 👤 User: \`${batch.telegramChatId}\` (${escapeMd(batch.telegramUsername ? `@${batch.telegramUsername}` : batch.telegramFirstName || 'User')})\n` +
-      `├── 📊 Total Requested: *${batch.totalRequested} orders*\n` +
-      `├── ✅ Successful: *${batch.successCount}*\n` +
-      `├── ❌ Failed: *${batch.failedCount}*\n` +
-      `├── 💰 Total Spent: \`$${Number(batch.totalSpent || 0).toFixed(3)} USD\`\n` +
-      `└── 💳 Source: \`${(batch.source || 'BOT').toUpperCase()}\` (${batch.isApiLinked ? '⚡ Direct API' : '💰 User Wallet'})\n` +
-      `═════════════════════════\n\n*Order Lines Breakdown:*\n`;
-
-    (batch.results || []).slice(0, 15).forEach((r: any, idx: number) => {
-      const qtyStr = r.quantity > 1 ? ` (x${r.quantity})` : '';
-      if (r.success) {
-        msg += `✅ *#${idx + 1} ${escapeMd(r.gameName)}* — ${escapeMd(r.skuName)}${qtyStr}\n` +
-          `   └ 🆔 \`${r.orderId || r.referenceId}\` • \`$${Number(r.price || 0).toFixed(3)}\` • _${r.statusText || 'PROCESSING'}_\n`;
-      } else {
-        msg += `❌ *#${idx + 1} ${escapeMd(r.gameName)}* — ${escapeMd(r.skuName)}${qtyStr}\n` +
-          `   └ ⚠️ Error: _${escapeMd(r.error || 'Failed')}_\n`;
-      }
-    });
-
-    if ((batch.results || []).length > 15) {
-      msg += `_... နောက်ထပ် အော်ဒါ (${batch.results.length - 15}) ခု ကျန်ပါသေးသည်။_\n`;
-    }
-
-    const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('◀️ Back to Bulk History', 'bulk_history_page_1')],
-      [Markup.button.callback('🏠 Main Menu', 'main_menu')]
-    ]);
-
-    return await safeReply(ctx, msg, keyboard);
-  }
-
-  // Handle provider and scope tab switching and pagination
-  bot.action(/^bulk_history_page_(\d+)$/, async (ctx) => {
-    const page = parseInt(ctx.match[1], 10) || 1;
-    await ctx.answerCbQuery();
-    return await renderBulkOrderHistory(ctx, true, page);
-  });
-
-  bot.action(/^bulk_batch_detail_(.+)$/, async (ctx) => {
-    const batchId = ctx.match[1];
-    await ctx.answerCbQuery();
-    return await renderBulkBatchDetail(ctx, batchId);
-  });
-
-  bot.action('bulk_order_start', async (ctx) => {
-    await ctx.answerCbQuery();
-    return await handleBulkOrderFlow(ctx, '/bulk');
-  });
-  bot.action(/^order_filter_(all|lootbar|topupnation)_(all|mine)_page_(\d+)$/, async (ctx) => {
-    const provider = ctx.match[1] as 'all' | 'lootbar' | 'topupnation';
-    const scope = ctx.match[2] as 'all' | 'mine';
-    const page = parseInt(ctx.match[3], 10) || 1;
-    await ctx.answerCbQuery();
-    return await renderOrderHistory(ctx, true, page, provider, scope);
-  });
-
-  bot.action(/^order_filter_(all|lootbar|topupnation)_page_(\d+)$/, async (ctx) => {
-    const provider = ctx.match[1] as 'all' | 'lootbar' | 'topupnation';
-    const page = parseInt(ctx.match[2], 10) || 1;
-    await ctx.answerCbQuery();
-    return await renderOrderHistory(ctx, true, page, provider);
-  });
-
-  bot.action(/^order_page_(\d+)$/, async (ctx) => {
-    const page = parseInt(ctx.match[1], 10) || 1;
-    await ctx.answerCbQuery();
-    return await renderOrderHistory(ctx, true, page, 'all');
-  });
-
-  bot.action('view_orders_action', async (ctx) => {
-    await ctx.answerCbQuery();
-    return await renderOrderHistory(ctx);
-  });
-
-  bot.command(['allorders', 'adminorders', 'all_orders', 'admin_orders', 'ownerorders'], async (ctx) => {
-    const currentAdminId = await getAdminChatId(adminChatId);
-    if (String(ctx.chat.id) !== currentAdminId) {
-      return ctx.reply('🚫 Unauthorized: Owner only command.');
-    }
-    return await renderOrderHistory(ctx, false, 1, 'all', 'all');
-  });
-
-  bot.action('noop_page_indicator', async (ctx) => {
-    await ctx.answerCbQuery();
-  });
-
-  bot.hears(['📜 Order History', 'Order History', 'Orders', 'orders', '📜 Orders', 'Live Status', 'Check Status', 'Status'], async (ctx) => {
-    return await renderOrderHistory(ctx, false, 1, 'all');
-  });
-
-  bot.command(['orders', 'history', 'orderhistory'], async (ctx) => {
-    return await renderOrderHistory(ctx, false, 1, 'all');
-  });
-
-  bot.command(['status', 'track', 'checkstatus'], async (ctx) => {
-    const text = (ctx.message && 'text' in ctx.message ? ctx.message.text : '').trim();
-    const parts = text.split(/\s+/);
-    if (parts.length < 2) {
-      return ctx.reply(
-        `🔍 *Check Live Order Status*\n\n` +
-        `အော်ဒါ၏ လက်ရှိ Live Status ကို API မှ တိုက်ရိုက် စစ်ဆေးရန်အတွက် အောက်ပါအတိုင်း ရိုက်ပို့နိုင်ပါသည်:\n\n` +
-        `📌 *Format:* \`/status <Order_ID သို့မဟုတ် Ref_ID>\`\n` +
-        `💡 *ဥပမာ:* \`/status LB-12345678\`\n\n` +
-        `သို့မဟုတ် အောက်ပါခလုတ်ကိုနှိပ်၍ *Order History* မှတစ်ဆင့် အော်ဒါများကို တိုက်ရိုက်စစ်ဆေးနိုင်ပါသည်:`,
-        {
-          parse_mode: 'Markdown',
-          ...Markup.inlineKeyboard([[Markup.button.callback('📜 View Order History', 'view_orders_action')]])
-        }
-      );
-    }
-    const orderQuery = parts[1].trim();
-    return await handleTrackOrderQuery(ctx, orderQuery, false);
-  });
-
-  bot.action('refresh_order_history', async (ctx) => {
-    await ctx.answerCbQuery('Refreshing order history...');
-    return await renderOrderHistory(ctx, true, 1);
-  });
-
-  bot.hears(['🎮 LootBar Games', 'LootBar Games', 'Lootbar Games', 'LootBar', 'lootbar'], async (ctx) => {
-    return await renderLootBarGameList(ctx);
-  });
-
-  bot.hears(['💎 FZR Cards Games', 'FZR Cards Games', 'FZR Cards', 'fzrcards'], async (ctx) => {
-    return await renderFzrCardsGameList(ctx);
-  });
-
-  bot.hears(['🔥 G2Bulk Games', 'G2Bulk Games', 'G2Bulk', 'g2bulk'], async (ctx) => {
-    return await renderG2BulkGameList(ctx);
-  });
-
-  bot.hears(['🌐 TopupNation Games', 'TopupNation Games', 'TopUpNation Games', 'TopupNation', 'tpn'], async (ctx) => {
-    return await renderTopupNationGameList(ctx);
-  });
-
-  bot.hears(['📦 Bulk Order', 'Bulk Order', 'bulk order', 'Bulk order'], async (ctx) => {
-    return await handleBulkOrderFlow(ctx, '/bulk');
-  });
-
-  bot.hears(['📦 Bulk History', 'Bulk History', 'bulk history', 'Bulk history', 'Bulk Order History', '📦 Bulk Order History'], async (ctx) => {
-    return await renderBulkOrderHistory(ctx);
-  });
-
-  bot.command(['bulkhistory', 'bulkorders', 'bulkhist', 'bulk_history', 'bulk_orders'], async (ctx) => {
-    return await renderBulkOrderHistory(ctx);
-  });
-
-  bot.hears(['🎮 Game List', 'Game List', 'Games', 'games', '🎮 Games', '🎮 All Games'], async (ctx) => {
-    return await renderAllGamesList(ctx);
-  });
-
-  bot.command(['lootbar', 'lb'], async (ctx) => {
-    return await renderLootBarGameList(ctx);
-  });
-
-  bot.command(['tpn', 'topupnation'], async (ctx) => {
-    return await renderTopupNationGameList(ctx);
-  });
-
-  bot.command(['games', 'gamelist'], async (ctx) => {
-    return await renderAllGamesList(ctx);
-  });
-
-  bot.action(/^game_(.+)$/, async (ctx) => {
-    const gameId = ctx.match[1];
-    ctx.session.gameId = gameId;
-    
-    // Find game name
-    const savedGame = await SavedGame.findOne({ gameId });
-    let gameName = savedGame?.name;
-    
-    try {
-      const response = await lootbar.getSkus(gameId);
-      const skus = response?.data?.items || [];
-      
-      if (!skus || skus.length === 0) {
-        return ctx.editMessageText('⚠️ No packages/SKUs available for this game at the moment.', Markup.inlineKeyboard([[
-          Markup.button.callback('🔙 Back to Games', 'back_to_games')
-        ]]));
-      }
-
-      if (!gameName && skus[0]?.game_name) {
-        gameName = skus[0].game_name;
-      }
-      ctx.session.gameName = gameName || `Game ${gameId}`;
-      ctx.session.skus = skus;
-
-      const buttons = skus.map((sku: any) => {
-        const name = sku.sku_name || 'Unknown Item';
-        const price = sku.reseller_price ? ` ($${sku.reseller_price})` : '';
-        return Markup.button.callback(`${name}${price}`, `sku_${sku.sku_id}`);
-      });
-
-      // 1 button per row for SKUs to allow long names and prices
-      const keyboard = buttons.map(btn => [btn]);
-      keyboard.push([Markup.button.callback('🔙 Back to Games', 'back_to_games')]);
-
-      ctx.session.step = 'SELECT_SKU';
-      return ctx.editMessageText(`🎮 *${ctx.session.gameName}*\n\n🛍 Please select a product package:`, {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard(keyboard)
-      });
-    } catch (error: any) {
-      console.error('Failed to fetch SKUs:', error);
-      return ctx.editMessageText(`An error occurred while fetching SKUs: ${error.message}`, Markup.inlineKeyboard([[
-        Markup.button.callback('🔙 Back to Games', 'back_to_games')
-      ]]));
-    }
-  });
-
-  bot.action('back_to_games', async (ctx) => {
-    ctx.session.step = 'SELECT_GAME';
-    const savedGames = await SavedGame.find({}).sort({ savedAt: -1 });
-    let games: { game_id: string; game_name: string }[] = [];
-    if (savedGames && savedGames.length > 0) {
-      games = savedGames.map((g: any) => ({ game_id: String(g.gameId), game_name: g.name }));
-    } else {
-      const response = await lootbar.getGames();
-      games = (response?.data?.items || []).map((g: any) => ({ game_id: String(g.game_id), game_name: g.name || g.game_name }));
-    }
-    const buttons = games.map((game: any) => [
-      Markup.button.callback(game.game_name || 'Game', `game_${game.game_id}`)
-    ]);
-    return ctx.editMessageText('🎮 Please select a game:', Markup.inlineKeyboard(buttons));
-  });
-
-  bot.action(/^sku_(.+)$/, async (ctx) => {
-    const skuId = ctx.match[1];
-    ctx.session.skuId = skuId;
-    
-    const skus = ctx.session.skus || [];
-    const selectedSku = skus.find(s => String(s.sku_id) === skuId);
-    
-    if (!selectedSku) {
-      return ctx.editMessageText('SKU not found. Please try again.', Markup.inlineKeyboard([[
-        Markup.button.callback('🔙 Back to Games', 'back_to_games')
-      ]]));
-    }
-
-    ctx.session.skuName = selectedSku.sku_name || 'Selected Item';
-    ctx.session.skuPrice = parseFloat(selectedSku.reseller_price || selectedSku.price || '0');
-
-    // Default to 'uid' if not specified
-    const requiredFields = (selectedSku.extra_info || []).filter((f: any) => f.required);
-    if (requiredFields.length === 0) {
-      requiredFields.push({ name: 'uid', title: 'Player ID / UID', type: 'input' });
-    }
-    
-    ctx.session.requiredFields = requiredFields;
-    ctx.session.extraInfo = {};
-    ctx.session.currentFieldIndex = 0;
-    ctx.session.step = 'INPUT_EXTRA_INFO';
-
-    return await askNextRequiredField(ctx);
-  });
-
-  bot.command('cancel', async (ctx) => {
-    ctx.session = {};
-    return ctx.reply('❌ Action cancelled. Main Menu:', mainMenu);
-  });
-
-  bot.action('cancel_order', async (ctx) => {
-    ctx.session = {};
-    await ctx.answerCbQuery('Order cancelled');
-    return ctx.reply('❌ Order cancelled. Main Menu:', mainMenu);
-  });
-
+  // Interactive Question Prompter for wizard-style input
   async function askNextRequiredField(ctx: MyContext) {
     const requiredFields = ctx.session.requiredFields || [];
     const currentIndex = ctx.session.currentFieldIndex || 0;
@@ -3116,7 +509,7 @@ export function setupBot(
       ctx.session.currentFieldIndex = nextIndex;
       await askNextRequiredField(ctx);
     } else {
-      await showOrderConfirmation(ctx);
+      await showOrderConfirmation(ctx, lootbar, topupNation);
     }
   });
 
@@ -3134,12 +527,13 @@ export function setupBot(
       const photoFileId = largestPhoto.file_id;
       const note = ctx.message.caption || '';
 
-      return await submitTopupRequest(ctx, amount, note, photoFileId);
+      return await submitTopupRequest(bot, ctx, amount, adminChatId, mainMenu, note, photoFileId);
     }
 
     return next();
   });
 
+  // General Text Input Dispatcher
   bot.on('text', async (ctx, next) => {
     const userInput = ctx.message.text.trim();
 
@@ -3148,7 +542,6 @@ export function setupBot(
       return safeReply(ctx, '❌ Cancelled. Main Menu:', mainMenu);
     }
 
-    // Top-up flow: Custom amount input
     if (ctx.session?.step === 'INPUT_TOPUP_AMOUNT') {
       const sanitized = userInput.replace(/[$USD,\s]/gi, '');
       const parsedAmount = parseFloat(sanitized);
@@ -3172,7 +565,6 @@ export function setupBot(
       return safeReply(ctx, promptMsg, keyboard);
     }
 
-    // Top-up flow: User sent text when photo is required
     if (ctx.session?.step === 'INPUT_TOPUP_PHOTO') {
       const amount = ctx.session.topupAmount || 0;
       return safeReply(
@@ -3184,7 +576,6 @@ export function setupBot(
       );
     }
 
-    // Order flow: User inputting custom quantity/count
     if (ctx.session?.step === 'INPUT_QUANTITY') {
       const parsedQty = parseInt(userInput.trim(), 10);
       if (isNaN(parsedQty) || parsedQty < 1 || parsedQty > 100) {
@@ -3192,10 +583,9 @@ export function setupBot(
       }
       ctx.session.quantity = parsedQty;
       ctx.session.step = 'CONFIRM_ORDER';
-      return await showOrderConfirmation(ctx);
+      return await showOrderConfirmation(ctx, lootbar, topupNation);
     }
 
-    // Order flow: Required extra info input
     if (ctx.session?.step === 'INPUT_EXTRA_INFO') {
       const requiredFields = ctx.session.requiredFields || [];
       const currentIndex = ctx.session.currentFieldIndex || 0;
@@ -3204,7 +594,6 @@ export function setupBot(
 
       const currentField = requiredFields[currentIndex];
       
-      // Ignore text if we are expecting a select
       if (currentField.type === 'select') {
         return ctx.reply(`Please use the buttons above to select your ${currentField.title || currentField.name}.`);
       }
@@ -3218,1285 +607,106 @@ export function setupBot(
         ctx.session.currentFieldIndex = nextIndex;
         await askNextRequiredField(ctx);
       } else {
-        await showOrderConfirmation(ctx);
+        await showOrderConfirmation(ctx, lootbar, topupNation);
       }
       return;
     }
 
     if (userInput.includes('\n')) {
-      return await handleBulkOrderFlow(ctx, userInput);
+      return await handleBulkOrderFlow(ctx, userInput, lootbar);
     }
 
     return next();
   });
 
-  async function showOrderConfirmation(ctx: MyContext, editMessage: boolean = false) {
-    ctx.session.step = 'CONFIRM_ORDER';
-    const userDoc = await User.findOne({ telegramChatId: ctx.chat!.id });
-    const isApiLinked = !!(userDoc?.useDirectApiBalance || userDoc?.balanceMode === 'api');
-    const userBalance = userDoc?.balance || 0;
-    
-    const gameId = ctx.session.gameId;
-    const gameName = ctx.session.gameName || 'Game';
-    const skuName = ctx.session.skuName || 'Product';
-    const quantity = Math.max(1, Math.min(100, ctx.session.quantity || 1));
-    ctx.session.quantity = quantity;
-    const unitPrice = ctx.session.skuPrice || 0;
-    const price = unitPrice * quantity;
-    let playerName = ctx.session.playerName;
-    const extraInfo = ctx.session.extraInfo || {};
+  // Register all modular handlers
+  registerLootBarHandlers(bot, lootbar, askNextRequiredField, (c: any) => showOrderConfirmation(c, lootbar, topupNation));
+  registerTopupNationHandlers(bot, topupNation, (c: any) => showOrderConfirmation(c, lootbar, topupNation), askNextRequiredField);
+  registerG2BulkHandlers(bot, g2bulk, (c: any) => showOrderConfirmation(c, lootbar, topupNation));
+  registerBulkOrderHandlers(bot, lootbar, topupNation, g2bulk, adminChatId, mainMenu, activeUserOrderLocks, processedOrderMessages);
+  registerAccountHandlers(bot, adminChatId, mainMenu, (c: any) => renderOrderHistory(c, adminChatId));
+  registerOrderHandlers(bot, lootbar, topupNation, g2bulk, adminChatId, mainMenu, activeUserOrderLocks, processedOrderMessages);
 
-    // Optional: Try to resolve player name in background if available
-    if (!playerName && gameId && Object.keys(extraInfo).length > 0) {
-      try {
-        let checkResult;
-        if (ctx.session.provider === 'topupnation' && topupNation) {
-          checkResult = await topupNation.checkRole(gameId, extraInfo);
-        } else if (ctx.session.provider === 'lootbar') {
-          checkResult = await lootbar.checkRole(gameId, extraInfo);
-        }
-        
-        if (checkResult?.playerName) {
-          playerName = checkResult.playerName;
-          ctx.session.playerName = checkResult.playerName;
-        }
-      } catch (err) {
-        // Never block purchase
-      }
-    }
-
-    // Generate unique idempotency key for this confirmation card
-    const chatId = ctx.chat?.id;
-    const provider = ctx.session.provider || 'ORD';
-    const idempotencyKey = `BOT-${provider.toUpperCase()}-${chatId}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
-    ctx.session.orderIdempotencyKey = idempotencyKey;
-
-    let playerId = '';
-    let serverId = '';
-    const otherDetails: { key: string; val: string }[] = [];
-
-    for (const [rawKey, rawVal] of Object.entries(extraInfo)) {
-      if (!isValidValue(rawVal)) continue;
-      const key = String(rawKey || '').trim();
-      const val = String(rawVal).trim();
-      const lk = key.toLowerCase();
-      if (!key || lk === 'undefined' || lk === 'null' || lk === 'paymentsource' || lk === 'provider') continue;
-      if (!playerId && (lk === 'uid' || lk === 'userid' || lk === 'user_id' || lk === 'player_id' || lk === 'account_id' || lk === 'useraccount')) {
-        playerId = val;
-      } else if (!serverId && (lk === 'zoneid' || lk === 'zone_id' || lk === 'server' || lk === 'server_id' || lk === 'serverid')) {
-        serverId = val;
-      } else if (!playerName && (lk === 'player_name' || lk === 'role_name' || lk === 'nickname' || lk === 'playername' || lk === 'role')) {
-        playerName = val;
-      } else {
-        otherDetails.push({ key: key.toUpperCase(), val });
-      }
-    }
-
-    const balanceAfter = userBalance - price;
-
-    const failKeyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('💰 Top Up Balance', 'topup_flow_start')],
-      [Markup.button.callback('❌ Cancel', 'cancel_order')]
-    ]);
-
-    if (!isApiLinked && userBalance < price) {
-      const needed = (price - userBalance).toFixed(3);
-      let failMsg = `⚠️ *Insufficient Balance!*\n═════════════════════════\n` +
-        `├── 🎮 Game: *${escapeMd(gameName)}*\n` +
-        `├── 📦 Package: *${escapeMd(skuName)}*\n`;
-      if (quantity > 1) {
-        failMsg += `├── 🔢 Quantity: *${quantity}x*\n`;
-      }
-      failMsg += `├── 💰 Required: \`$${price.toFixed(3)}\`\n` +
-        `└── 💳 Your Balance: \`$${userBalance.toFixed(3)}\`\n` +
-        `═════════════════════════\n` +
-        `_You need $${needed} USD more to place this order._`;
-
-      if (editMessage) {
-        try {
-          return await ctx.editMessageText(failMsg, { parse_mode: 'Markdown', ...failKeyboard });
-        } catch {
-          // fallback
-        }
-      }
-      return ctx.reply(failMsg, {
-        parse_mode: 'Markdown',
-        ...failKeyboard
-      });
-    }
-
-    const lines: string[] = [];
-    lines.push(`🛒 *Confirm Top-Up Order*`);
-    lines.push(`═════════════════════════`);
-    lines.push(`├── 🎮 Game: *${escapeMd(gameName)}*`);
-    lines.push(`├── 📦 Package: *${escapeMd(skuName)}*`);
-    if (quantity > 1) {
-      lines.push(`├── 🔢 Quantity: *${quantity}x*`);
-    }
-    if (isValidValue(playerName)) {
-      lines.push(`├── 👤 Player: \`${escapeCode(playerName)}\``);
-    }
-    if (isValidValue(playerId)) {
-      lines.push(`├── 🎯 Player ID: \`${escapeCode(playerId)}\``);
-    }
-    if (isValidValue(serverId)) {
-      lines.push(`├── 🌐 Server ID: \`${escapeCode(serverId)}\``);
-    }
-    for (const item of otherDetails) {
-      if (isValidValue(item.val)) {
-        lines.push(`├── ▫️ ${escapeMd(item.key)}: \`${escapeCode(item.val)}\``);
-      }
-    }
-    if (quantity > 1) {
-      lines.push(`├── 🏷 Unit Price: \`$${unitPrice.toFixed(3)}\``);
-      lines.push(`├── 💰 Total Price: \`$${price.toFixed(3)}\``);
-    } else {
-      lines.push(`├── 💰 Price: \`$${price.toFixed(3)}\``);
-    }
-    if (isApiLinked) {
-      lines.push(`└── 💳 Payment: \`⚡ Direct API Balance Linked\``);
-    } else {
-      lines.push(`├── 💳 Payment: \`Wallet Balance ($${userBalance.toFixed(3)})\``);
-      lines.push(`└── 💵 Remaining After: \`$${balanceAfter.toFixed(3)}\``);
-    }
-    lines.push(`═════════════════════════`);
-
-    const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback(`✅ Confirm & Pay ($${price.toFixed(3)})`, 'confirm_place_order')],
-      [Markup.button.callback('❌ Cancel Order', 'cancel_order')]
-    ]);
-
-    if (editMessage) {
-      try {
-        return await ctx.editMessageText(lines.join('\n'), {
-          parse_mode: 'Markdown',
-          ...keyboard
-        });
-      } catch {
-        // fallback
-      }
-    }
-
-    return ctx.reply(lines.join('\n'), {
-      parse_mode: 'Markdown',
-      ...keyboard
+  // Initialize and Launch Bot
+  if (options.isServerless && options.webhookUrl) {
+    const webhookPath = `/api/bot-webhook-${botToken.split(':')[0]}`;
+    bot.telegram.setWebhook(`${options.webhookUrl}${webhookPath}`).then(() => {
+      console.log(`Telegram Bot Webhook set to ${options.webhookUrl}${webhookPath}`);
+    }).catch(err => {
+      console.error('Failed to set Telegram Bot Webhook:', err);
     });
-  }
-
-  bot.action('qty_inc', async (ctx) => {
-    await ctx.answerCbQuery();
-    ctx.session.quantity = Math.min(100, (ctx.session.quantity || 1) + 1);
-    await showOrderConfirmation(ctx, true);
-  });
-
-  bot.action('qty_dec', async (ctx) => {
-    await ctx.answerCbQuery();
-    ctx.session.quantity = Math.max(1, (ctx.session.quantity || 1) - 1);
-    await showOrderConfirmation(ctx, true);
-  });
-
-  bot.action(/^qty_set_(\d+)$/, async (ctx) => {
-    await ctx.answerCbQuery();
-    const qty = parseInt(ctx.match[1], 10) || 1;
-    ctx.session.quantity = Math.max(1, Math.min(100, qty));
-    await showOrderConfirmation(ctx, true);
-  });
-
-  bot.action('qty_prompt', async (ctx) => {
-    await ctx.answerCbQuery();
-    ctx.session.step = 'INPUT_QUANTITY';
-    return ctx.reply(
-      `🔢 *အကြိမ်အရေအတွက် (Quantity / Count) သတ်မှတ်ရန်*\n\n` +
-      `ဝယ်ယူလိုသော Package အကြိမ်အရေအတွက်ကို 1 မှ 100 အတွင်း ဂဏန်းဖြင့် ရိုက်ထည့်ပေးပါ (ဥပမာ- \`5\` သို့မဟုတ် \`10\`):\n\n` +
-      `_သို့မဟုတ် မပြောင်းလဲလိုပါက အောက်ပါ Button ကို နှိပ်ပါ:_`,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('🔙 Back to Confirmation', 'qty_back')],
-          [Markup.button.callback('❌ Cancel Order', 'cancel_order')]
-        ])
-      }
-    );
-  });
-
-  bot.action('qty_back', async (ctx) => {
-    await ctx.answerCbQuery();
-    ctx.session.step = 'CONFIRM_ORDER';
-    await showOrderConfirmation(ctx);
-  });
-
-  bot.action('confirm_place_order', async (ctx) => {
-    const chatId = ctx.chat?.id;
-    if (!chatId) return;
-
-    // 1. SYNCHRONOUS IN-MEMORY MUTEX LOCK (Must be checked & claimed immediately before ANY await!)
-    const now = Date.now();
-    const lastLock = activeUserOrderLocks.get(chatId);
-    if (lastLock && now - lastLock < 60000) {
-      return await ctx.answerCbQuery('⚠️ Your order is already being processed! Please wait a moment...', { show_alert: true });
-    }
-    activeUserOrderLocks.set(chatId, now);
-
-    // 2. MESSAGE-LEVEL DEDUPLICATION (Prevent double callbacks from clicking the same confirmation card)
-    const messageId = ctx.callbackQuery?.message?.message_id;
-    const messageKey = messageId ? `${chatId}_${messageId}` : undefined;
-    if (messageKey) {
-      if (processedOrderMessages.has(messageKey)) {
-        activeUserOrderLocks.delete(chatId);
-        return await ctx.answerCbQuery('⚠️ This order was already submitted or is in progress!', { show_alert: true });
-      }
-      processedOrderMessages.add(messageKey);
-      if (processedOrderMessages.size > 5000) {
-        const toRemove = Array.from(processedOrderMessages).slice(0, 1000);
-        toRemove.forEach(k => processedOrderMessages.delete(k));
-      }
-    }
-
-    // 3. IN-MEMORY SESSION STATUS CHECK
-    if (ctx.session?.orderInProgress || ctx.session?.step === 'PROCESSING' || ctx.session?.step === 'DONE') {
-      activeUserOrderLocks.delete(chatId);
-      return await ctx.answerCbQuery('⚠️ This order was already submitted or is in progress!', { show_alert: true });
-    }
-    ctx.session.orderInProgress = true;
-    ctx.session.step = 'PROCESSING';
-
-    // 4. ATOMIC DATABASE SESSION & ORDER LOCK (Protects multi-instance / cluster environments)
-    let orderLockCreated = false;
-    const extra = ctx.session?.extraInfo || {};
-    const targetAccount = String(extra.userAccount || extra.uid || extra.player_id || ctx.session?.playerName || 'unknown').trim();
-    const dbLockKey = `lock_${chatId}_${ctx.session?.gameId}_${ctx.session?.skuId}_${targetAccount}`;
-
-    try {
-      await OrderLock.create({ lockKey: dbLockKey, telegramChatId: chatId });
-      orderLockCreated = true;
-    } catch (lockErr: any) {
-      if (lockErr?.code === 11000) {
-        console.warn(`[OrderLock] Duplicate order blocked by MongoDB unique lock: ${dbLockKey}`);
-        activeUserOrderLocks.delete(chatId);
-        return await ctx.answerCbQuery('⚠️ Order is already being processed or was just submitted!', { show_alert: true });
-      }
-    }
-
-    try {
-      const lockDoc = await Session.findOneAndUpdate(
-        {
-          chatId,
-          'data.orderInProgress': { $ne: true },
-          'data.step': { $nin: ['PROCESSING', 'DONE'] }
-        },
-        {
-          $set: {
-            'data.orderInProgress': true,
-            'data.step': 'PROCESSING'
-          }
-        }
-      );
-      if (!lockDoc) {
-        activeUserOrderLocks.delete(chatId);
-        if (orderLockCreated) {
-          await OrderLock.deleteOne({ lockKey: dbLockKey }).catch(() => {});
-        }
-        return await ctx.answerCbQuery('⚠️ Order already in progress!', { show_alert: true });
-      }
-    } catch (e) {
-      // Continue with OrderLock if session check encounters transient error
-    }
-
-    // 5. Fire & forget removing inline buttons so UI updates quickly without blocking event loop
-    ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
-
-    await ctx.answerCbQuery('⏳ Processing order...');
-
-    try {
-      await finalizeOrder(ctx);
-    } finally {
-      activeUserOrderLocks.delete(chatId);
-      if (ctx.session) {
-        ctx.session.orderInProgress = false;
-      }
-    }
-  });
-
-  async function finalizeOrder(ctx: MyContext) {
-    const isTopupNation = ctx.session.provider === 'topupnation';
-    const isG2Bulk = ctx.session.provider === 'g2bulk';
-    const isFzrCards = ctx.session.provider === 'fzrcards';
-    const providerName = isG2Bulk ? 'G2Bulk' : isFzrCards ? 'FZR Cards' : isTopupNation ? 'TopupNation' : 'LootBar';
-    
-    // Copy order state and clear immediately to avoid reuse
-    const referenceId = uuidv4().replace(/-/g, '').substring(0, 32);
-    const idempotencyKey = ctx.session.orderIdempotencyKey || `BOT-${(ctx.session.provider || 'ORD').toUpperCase()}-${referenceId}`;
-    const gameId = ctx.session.gameId!;
-    const skuId = ctx.session.skuId!;
-    const gameName = ctx.session.gameName || 'Game';
-    const skuName = ctx.session.skuName || 'Product';
-    const quantity = ctx.session.quantity || 1;
-    let playerName = ctx.session.playerName || undefined;
-    const extraInfo = ctx.session.extraInfo || {};
-    let orderCost = (ctx.session.skuPrice || 1) * quantity;
-
-    ctx.session.step = 'DONE';
-    ctx.session.gameId = undefined;
-    ctx.session.skuId = undefined;
-    ctx.session.extraInfo = undefined;
-    ctx.session.orderIdempotencyKey = undefined;
-
-    // 0. Guard against recent identical order submission (within 30 seconds)
-    const thirtySecsAgo = new Date(Date.now() - 30 * 1000);
-    const existingRecentOrder = await Order.findOne({
-      telegramChatId: ctx.chat!.id,
-      gameId,
-      skuId,
-      createdAt: { $gte: thirtySecsAgo }
-    });
-
-    if (existingRecentOrder) {
-      console.warn(`[Duplicate Guard] Prevented twin order for chat ${ctx.chat!.id}. Reusing order ${existingRecentOrder.orderId || existingRecentOrder.referenceId}`);
-      const safeGame = escapeMd(gameName);
-      const safeSku = escapeMd(skuName);
-      const existingOrderId = existingRecentOrder.providerOrderId || existingRecentOrder.orderId;
-      return await ctx.reply(
-        `⚠️ *Duplicate Order Prevented!*\n` +
-        `═════════════════════════\n` +
-        `အော်ဒါနှစ်ခါ မကျစေရန် စနစ်မှ အလိုအလျောက် တားဆီးပေးထားပါသည်:\n` +
-        `├── 🎮 Game: *${safeGame}*\n` +
-        `├── 📦 Package: *${safeSku}*\n` +
-        `└── 🆔 Existing Order ID: \`${existingOrderId}\`\n` +
-        `═════════════════════════\n` +
-        `_တူညီသောအော်ဒါကို လွန်ခဲ့သော စက္ကန့်အနည်းငယ်က တင်ပြီးဖြစ်သောကြောင့် ထပ်မံဖြတ်တောက်ခြင်း မပြုလုပ်တော့ပါ။_`,
-        { parse_mode: 'Markdown' }
-      );
-    }
-
-    await ctx.reply(`⏳ Processing your top-up order with ${providerName} API, please wait...`);
-    
-    const userDoc = await User.findOne({ telegramChatId: ctx.chat!.id });
-    if (!userDoc) {
-      return ctx.reply('❌ User account not found.');
-    }
-
-    const currentTelegramUsername = ctx.from?.username || (ctx.chat as any)?.username || userDoc.username || undefined;
-    const currentTelegramFirstName = ctx.from?.first_name || (ctx.chat as any)?.first_name || userDoc.firstName || undefined;
-    const currentTelegramLastName = ctx.from?.last_name || (ctx.chat as any)?.last_name || undefined;
-    
-    const isApiLinked = !!(userDoc.useDirectApiBalance || userDoc.balanceMode === 'api');
-
-    
-    if (isG2Bulk && g2bulk) {
-      const result = await g2bulk.placeOrder(
-        playerName || (extraInfo.player_id ? String(extraInfo.player_id) : 'Unknown'),
-        userDoc._id.toString(),
-        gameId,
-        skuId,
-        extraInfo,
-        ctx.chat!.id
-      );
-      if (result.success) {
-        if (!result.order) return;
-        return; // Handled by service
-      } else {
-        return await safeReply(ctx, `❌ G2Bulk Order Failed: ${escapeMd(result.error || 'Unknown Error')}`);
-      }
-    }
-
-    if (isTopupNation && topupNation) {
-      // Execute through TopupNation Service
-      const result = await topupNation.placeOrder({
-        telegramChatId: ctx.chat!.id,
-        telegramUsername: currentTelegramUsername,
-        telegramFirstName: currentTelegramFirstName,
-        telegramLastName: currentTelegramLastName,
-        productId: gameId,
-        sku: skuId,
-        fields: extraInfo,
-        quantity: quantity,
-        existingIdempotencyKey: idempotencyKey
-      });
-
-      if (!result.success || !result.order) {
-        return ctx.reply(`❌ Order failed: ${result.error || 'TopupNation rejected order'}`, mainMenu);
-      }
-
-      const order = result.order;
-      const orderId = order.providerOrderId || order.orderId;
-      const statusKeyboard = Markup.inlineKeyboard([
-        [
-          Markup.button.callback('🔄 Check Live Status', `track_order_${order.referenceId}`),
-          Markup.button.callback('📜 Order History', 'view_orders_action')
-        ]
-      ]);
-
-      const safeGame = escapeMd(gameName);
-      const safeSku = escapeMd(skuName);
-
-      const lines: string[] = [];
-      lines.push(`✅ *Top-Up Order Submitted!*`);
-      lines.push(`═════════════════════════`);
-      lines.push(`├── 🆔 Order ID: \`${orderId}\``);
-      lines.push(`├── 🌐 Provider: *TopupNation*`);
-      lines.push(`├── 🎮 Game: *${safeGame}*`);
-      lines.push(`├── 📦 Package: *${safeSku}*`);
-      if (order.playerName) {
-        lines.push(`├── 👤 Player/Account: \`${escapeCode(order.playerName)}\``);
-      }
-      lines.push(`├── 🔄 Status: *PROCESSING*`);
-      lines.push(`├── 💬 Message: _Order accepted by TopupNation API_`);
-      lines.push(`├── 💰 Price: \`$${orderCost.toFixed(3)}\``);
-      lines.push(`├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\``);
-      if (!isApiLinked) {
-        const updatedUser = await User.findOne({ telegramChatId: ctx.chat!.id });
-        lines.push(`└── 💳 Remaining Balance: \`$${(updatedUser?.balance || 0).toFixed(3)}\``);
-      } else {
-        lines.push(`└── 💳 Payment: \`⚡ Direct API Balance Linked\``);
-      }
-      lines.push(`═════════════════════════`);
-
-      await safeReply(ctx, lines.join('\n'), statusKeyboard);
-
-      // Notify Owner ONLY
-      const currentAdminIdForNotify = await getAdminChatId(adminChatId);
-      const fromUser = ctx.from?.username 
-        ? `@${ctx.from.username}` 
-        : (ctx.chat as any)?.username 
-          ? `@${(ctx.chat as any).username}` 
-          : ctx.from?.first_name || 'User';
-
-      const safeFromUser = escapeMd(fromUser);
-      const adminOrderNotificationMsg = `🔔 *New Top-Up Order (TopupNation)!*\n` +
-        `═════════════════════════\n` +
-        `├── 👤 User: \`${ctx.chat!.id}\` (${safeFromUser})\n` +
-        `├── 🌐 Provider: \`TopupNation\`\n` +
-        `├── 🎮 Game: *${safeGame}*\n` +
-        `├── 📦 Package: *${safeSku}*\n` +
-        `├── 💰 Price: \`$${orderCost.toFixed(3)} USD\`\n` +
-        (order.playerName ? `├── 🎯 Player/Account: \`${escapeCode(order.playerName)}\`\n` : '') +
-        `├── 💳 Payment: \`${isApiLinked ? 'Direct API Linked' : 'Wallet Balance'}\`\n` +
-        `├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
-        `└── 🆔 Order ID: \`${orderId}\`\n` +
-        `═════════════════════════`;
-
-      if (currentAdminIdForNotify) {
-        await safeSendMessage(bot.telegram, currentAdminIdForNotify, adminOrderNotificationMsg);
-      }
-      return;
-    }
-
-    if (isFzrCards && fzrCards) {
-      // Execute through FZR Cards Service
-      const result = await fzrCards.placeOrder({
-        telegramChatId: ctx.chat!.id,
-        telegramUsername: currentTelegramUsername,
-        telegramFirstName: currentTelegramFirstName,
-        telegramLastName: currentTelegramLastName,
-        productId: gameId,
-        sku: skuId,
-        fields: extraInfo,
-        quantity: quantity,
-        existingIdempotencyKey: idempotencyKey
-      });
-
-      if (!result.success || !result.order) {
-        return ctx.reply(`❌ Order failed: ${result.error || 'FZR Cards rejected order'}`, mainMenu);
-      }
-
-      const order = result.order;
-      const orderId = order.providerOrderId || order.orderId;
-      const statusKeyboard = Markup.inlineKeyboard([
-        [
-          Markup.button.callback('🔄 Check Live Status', `track_order_${order.referenceId}`),
-          Markup.button.callback('📜 Order History', 'view_orders_action')
-        ]
-      ]);
-
-      const safeGame = escapeMd(gameName);
-      const safeSku = escapeMd(skuName);
-
-      const lines: string[] = [];
-      lines.push(`✅ *Top-Up Order Submitted!*`);
-      lines.push(`═════════════════════════`);
-      lines.push(`├── 🆔 Order ID: \`${orderId}\``);
-      lines.push(`├── 🌐 Provider: *FZR Cards*`);
-      lines.push(`├── 🎮 Game: *${safeGame}*`);
-      lines.push(`├── 📦 Package: *${safeSku}*`);
-      if (order.playerName) {
-        lines.push(`├── 👤 Player/Account: \`${escapeCode(order.playerName)}\``);
-      }
-      lines.push(`├── 🔄 Status: *PROCESSING*`);
-      lines.push(`├── 💬 Message: _Order accepted by FZR Cards API_`);
-      lines.push(`├── 💰 Price: \`$${orderCost.toFixed(3)}\``);
-      lines.push(`├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\``);
-      if (!isApiLinked) {
-        const updatedUser = await User.findOne({ telegramChatId: ctx.chat!.id });
-        lines.push(`└── 💳 Remaining Balance: \`$${(updatedUser?.balance || 0).toFixed(3)}\``);
-      } else {
-        lines.push(`└── 💳 Payment: \`⚡ Direct API Balance Linked\``);
-      }
-      lines.push(`═════════════════════════`);
-
-      await safeReply(ctx, lines.join('\n'), statusKeyboard);
-
-      // Notify Owner ONLY
-      const currentAdminIdForNotify = await getAdminChatId(adminChatId);
-      const fromUser = ctx.from?.username 
-        ? `@${ctx.from.username}` 
-        : (ctx.chat as any)?.username 
-          ? `@${(ctx.chat as any).username}` 
-          : ctx.from?.first_name || 'User';
-
-      const safeFromUser = escapeMd(fromUser);
-      const adminOrderNotificationMsg = `🔔 *New Top-Up Order (FZR Cards)!*\n` +
-        `═════════════════════════\n` +
-        `├── 👤 User: \`${ctx.chat!.id}\` (${safeFromUser})\n` +
-        `├── 🌐 Provider: \`FZR Cards\`\n` +
-        `├── 🎮 Game: *${safeGame}*\n` +
-        `├── 📦 Package: *${safeSku}*\n` +
-        `├── 💰 Price: \`$${orderCost.toFixed(3)} USD\`\n` +
-        (order.playerName ? `├── 🎯 Player/Account: \`${escapeCode(order.playerName)}\`\n` : '') +
-        `├── 💳 Payment: \`${isApiLinked ? 'Direct API Linked' : 'Wallet Balance'}\`\n` +
-        `├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
-        `└── 🆔 Order ID: \`${orderId}\`\n` +
-        `═════════════════════════`;
-
-      if (currentAdminIdForNotify) {
-        await safeSendMessage(bot.telegram, currentAdminIdForNotify, adminOrderNotificationMsg);
-      }
-      return;
-    }
-
-    if (!isApiLinked) {
-      // Atomic Balance Deduction for standard wallet users to avoid race conditions and double charging
-      const deductedUser = await User.findOneAndUpdate(
-        { telegramChatId: ctx.chat!.id, balance: { $gte: orderCost } },
-        { $inc: { balance: -orderCost } },
-        { returnDocument: 'after' }
-      );
-      if (!deductedUser) {
-        return ctx.reply(`❌ Insufficient balance or order already in progress. Cost is $${orderCost.toFixed(3)}, but your balance is insufficient.`, mainMenu);
-      }
-      userDoc.balance = deductedUser.balance;
-    }
-
-    try {
-      const orderResponse = await lootbar.createOrder(referenceId, gameId, skuId, quantity, extraInfo);
-      
-      if (orderResponse?.status === 'ok' && orderResponse?.data?.order_id) {
-        const orderId = orderResponse.data.order_id;
-        
-        try {
-          await Order.create({
-            referenceId,
-            orderId,
-            telegramChatId: ctx.chat!.id,
-            telegramUsername: currentTelegramUsername,
-            telegramFirstName: currentTelegramFirstName,
-            telegramLastName: currentTelegramLastName,
-            gameId,
-            gameName,
-            skuId,
-            skuName,
-            playerName,
-            price: orderCost,
-            extraInfo: {
-              ...extraInfo,
-              quantity,
-              paymentSource: isApiLinked ? 'api_balance' : 'wallet_balance'
-            },
-            state: 1, // 1 = In transaction
-          });
-        } catch (dbErr) {
-          console.error('Failed to save order to MongoDB:', dbErr);
-        }
-
-        const statusKeyboard = Markup.inlineKeyboard([
-          [
-            Markup.button.callback('🔄 Check Live Status', `track_order_${referenceId}`),
-            Markup.button.callback('📜 Order History', 'view_orders_action')
-          ]
-        ]);
-
-        let playerId = '';
-        let serverId = '';
-        const otherDetails: { key: string; val: string }[] = [];
-
-        if (extraInfo && typeof extraInfo === 'object') {
-          for (const [k, v] of Object.entries(extraInfo)) {
-            if (k === 'paymentSource') continue;
-            const lk = k.toLowerCase();
-            if (!playerId && (lk === 'uid' || lk === 'userid' || lk === 'user_id' || lk === 'player_id' || lk === 'account_id')) {
-              playerId = String(v);
-            } else if (!serverId && (lk === 'zoneid' || lk === 'zone_id' || lk === 'server' || lk === 'server_id' || lk === 'serverid')) {
-              serverId = String(v);
-            } else if (!playerName && (lk === 'player_name' || lk === 'role_name' || lk === 'nickname' || lk === 'playername')) {
-              playerName = String(v);
-            } else {
-              otherDetails.push({ key: k.toUpperCase(), val: String(v) });
-            }
-          }
-        }
-
-        const safeGame = escapeMd(gameName);
-        const safeSku = escapeMd(skuName);
-
-        const lines: string[] = [];
-        lines.push(`✅ *Top-Up Order Submitted!*`);
-        lines.push(`═════════════════════════`);
-        lines.push(`├── 🆔 Order ID: \`${orderId}\``);
-        lines.push(`├── 🎮 Game: *${safeGame}*`);
-        lines.push(`├── 📦 Package: *${safeSku}*`);
-        if (playerName) {
-          lines.push(`├── 👤 Player: \`${escapeCode(playerName)}\``);
-        }
-        if (playerId) {
-          lines.push(`├── 🎯 Player ID: \`${escapeCode(playerId)}\``);
-        }
-        if (serverId) {
-          lines.push(`├── 🌐 Server ID: \`${escapeCode(serverId)}\``);
-        }
-        for (const item of otherDetails) {
-          lines.push(`├── ▫️ ${escapeMd(item.key)}: \`${escapeCode(item.val)}\``);
-        }
-        lines.push(`├── 🔄 Status: *PROCESSING*`);
-        lines.push(`├── 💬 Message: _Order accepted by LootBar API_`);
-        lines.push(`├── 💰 Price: \`$${orderCost.toFixed(3)}\``);
-        lines.push(`├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\``);
-        if (!isApiLinked) {
-          lines.push(`└── 💳 Remaining Balance: \`$${userDoc.balance.toFixed(3)}\``);
-        } else {
-          lines.push(`└── 💳 Payment: \`⚡ Direct API Balance Linked\``);
-        }
-        lines.push(`═════════════════════════`);
-
-        const successMsg = lines.join('\n');
-
-        await safeReply(ctx, successMsg, statusKeyboard);
-        
-        // Notify Owner ONLY (No broadcast to other users)
-        const currentAdminIdForNotify = await getAdminChatId(adminChatId);
-        const fromUser = ctx.from?.username 
-          ? `@${ctx.from.username}` 
-          : (ctx.chat as any)?.username 
-            ? `@${(ctx.chat as any).username}` 
-            : ctx.from?.first_name 
-              ? ctx.from.first_name 
-              : 'User';
-
-        const safeFromUser = escapeMd(fromUser);
-
-        const adminOrderNotificationMsg = `🔔 *New Top-Up Order Received!*\n` +
-          `═════════════════════════\n` +
-          `├── 👤 User: \`${ctx.chat!.id}\` (${safeFromUser})\n` +
-          `├── 🎮 Game: *${safeGame}*\n` +
-          `├── 📦 Package: *${safeSku}*\n` +
-          `├── 💰 Price: \`$${orderCost.toFixed(3)} USD\`\n` +
-          (playerName ? `├── 🎯 Player: \`${escapeCode(playerName)}\`\n` : '') +
-          (playerId ? `├── 🎯 Player ID: \`${escapeCode(playerId)}\`\n` : '') +
-          `├── 💳 Payment: \`${isApiLinked ? 'Direct API Linked' : 'Wallet Balance'}\`\n` +
-          `├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
-          `└── 🆔 Order ID: \`${orderId}\`\n` +
-          `═════════════════════════`;
-        
-        if (currentAdminIdForNotify) {
-          await safeSendMessage(bot.telegram, currentAdminIdForNotify, adminOrderNotificationMsg);
-        }
-
-        // Background poller to check if order completes
-        setTimeout(async () => {
-          try {
-            const queryRes = await lootbar.queryOrder(referenceId);
-            if (queryRes?.data?.state === 2) {
-              await Order.findOneAndUpdate({ referenceId }, { state: 2 });
-              await safeSendMessage(
-                bot.telegram, 
-                ctx.chat!.id, 
-                `🎉 *Top-Up Completed!*\n═════════════════════════\n` +
-                `├── 🆔 Order ID: \`${orderId}\`\n` +
-                `├── 🎮 Game: *${safeGame}*\n` +
-                `├── 📦 Package: *${safeSku}*\n` +
-                (playerName ? `├── 👤 Player: \`${escapeCode(playerName)}\`\n` : '') +
-                `├── ✅ Status: *COMPLETED*\n` +
-                `└── 💬 Message: _Fulfilled successfully on game server_\n` +
-                `═════════════════════════`
-              );
-            } else if (queryRes?.data?.state === 3) {
-              // Order failed, refund balance
-              await Order.findOneAndUpdate({ referenceId }, { state: 3 });
-              if (!isApiLinked) {
-                const userToRefund = await User.findOne({ telegramChatId: ctx.chat!.id });
-                if (userToRefund) {
-                  userToRefund.balance += orderCost;
-                  await userToRefund.save();
-                }
-              }
-              await safeSendMessage(
-                bot.telegram, 
-                ctx.chat!.id, 
-                `❌ *Order Failed*\n═════════════════════════\n` +
-                `├── 🆔 Order ID: \`${orderId || referenceId}\`\n` +
-                `├── 🎮 Game: *${safeGame}*\n` +
-                `├── ❌ Status: *FAILED*\n` +
-                `└── 💬 Message: _Could not be fulfilled on game server_${!isApiLinked ? ` (Refunded $${orderCost.toFixed(3)} USD)` : ''}\n` +
-                `═════════════════════════`
-              );
-            }
-          } catch (pollErr) {
-            console.error('Polling order status error:', pollErr);
-          }
-        }, 12000);
-      
-      } else {
-        // Atomic refund balance if order failed
-        if (!isApiLinked) {
-          await User.updateOne({ telegramChatId: ctx.chat!.id }, { $inc: { balance: orderCost } });
-        }
-        const msg = orderResponse?.msg || orderResponse?.message || 'LootBar rejected the transaction';
-        await safeReply(ctx, `❌ *Failed to Place Order*\n\nReason: \`${escapeCode(msg)}\`${!isApiLinked ? `\n\nYour balance of $${orderCost.toFixed(3)} has been refunded to your wallet.` : ''}`, mainMenu);
-      }
-    
-    } catch (error: any) {
-      // Atomic refund balance on exception
-      if (!isApiLinked) {
-        await User.updateOne({ telegramChatId: ctx.chat!.id }, { $inc: { balance: orderCost } });
-      }
-      console.error('Order placement failed:', error);
-
-      await safeReply(ctx, `❌ *Order Error*\n\nReason: \`${escapeCode(error.message || 'Server error')}\`${!isApiLinked ? `\n\nYour balance of $${orderCost.toFixed(3)} has been refunded to your wallet.` : ''}`, mainMenu);
-    }
-  }
-
-  // Action: Confirm Bulk Orders Execution
-  bot.action('confirm_bulk_orders', async (ctx) => {
-    const chatId = ctx.chat?.id;
-    if (!chatId) return;
-
-    // 1. SYNCHRONOUS IN-MEMORY MUTEX LOCK (Set immediately before any await!)
-    const now = Date.now();
-    const lastLock = activeUserOrderLocks.get(chatId);
-    if (lastLock && now - lastLock < 60000) {
-      return await ctx.answerCbQuery('⚠️ Bulk order is already being processed! Please wait...', { show_alert: true });
-    }
-    activeUserOrderLocks.set(chatId, now);
-
-    // 2. MESSAGE-LEVEL DEDUPLICATION
-    const messageId = ctx.callbackQuery?.message?.message_id;
-    const messageKey = messageId ? `bulk_${chatId}_${messageId}` : undefined;
-    if (messageKey) {
-      if (processedOrderMessages.has(messageKey)) {
-        activeUserOrderLocks.delete(chatId);
-        return await ctx.answerCbQuery('⚠️ This bulk order was already submitted!', { show_alert: true });
-      }
-      processedOrderMessages.add(messageKey);
-      if (processedOrderMessages.size > 5000) {
-        const toRemove = Array.from(processedOrderMessages).slice(0, 1000);
-        toRemove.forEach(k => processedOrderMessages.delete(k));
-      }
-    }
-
-    const bulkItems: BulkOrderItem[] = ctx.session?.bulkOrders || [];
-    if (!bulkItems || bulkItems.length === 0) {
-      activeUserOrderLocks.delete(chatId);
-      return await ctx.answerCbQuery('⚠️ Bulk order already processed or expired!', { show_alert: true });
-    }
-
-    // 3. Fire and forget markup removal
-    ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
-
-    await ctx.answerCbQuery('Processing bulk order...');
-
-    try {
-      const userDoc = await User.findOne({ telegramChatId: ctx.chat!.id });
-      if (!userDoc) return safeReply(ctx, '❌ User account not found.', mainMenu);
-
-      // Clear session so double clicks do not execute twice
-      const itemsToRun = [...bulkItems];
-      ctx.session.bulkOrders = [];
-      ctx.session.bulkTotalPrice = 0;
-
-      const progressMsg = await ctx.reply(
-        `⏳ *Processing Bulk Order...*\n═════════════════════════\n` +
-        `အော်ဒါ ${itemsToRun.length} ခုအား တစ်ခုချင်းစီ ဆာဗာသို့ ပေးပို့ဆောင်ရွက်နေပါသည်...\n` +
-        `_ကျေးဇူးပြု၍ ခေတ္တစောင့်ဆိုင်းပေးပါ..._`,
-        { parse_mode: 'Markdown' }
-      );
-
-      const rawText = ctx.session?.bulkRawText;
-      const summary = await BulkOrderService.executeBulkOrders(
-        userDoc,
-        itemsToRun,
-        lootbar,
-        topupNation,
-        fzrCards,
-        { rawText, source: 'bot' }
-      );
-
-      let finalMsg = `📦 *Bulk Top-Up Order Report*\n═════════════════════════\n` +
-        `├── 🆔 Batch ID: \`${summary.batchId}\`\n` +
-        `├── 📊 Total Requested: *${summary.totalRequested} orders*\n` +
-        `├── ✅ Successful: *${summary.successCount}*\n` +
-        `├── ❌ Failed: *${summary.failedCount}*\n` +
-        `├── 💰 Total Spent: \`$${summary.totalSpent.toFixed(3)} USD\`\n`;
-
-      if (!summary.isApiLinked) {
-        finalMsg += `└── 💳 Remaining Balance: \`$${summary.userBalanceAfter.toFixed(3)} USD\`\n`;
-      } else {
-        finalMsg += `└── 💳 Payment: \`⚡ Direct API Balance Linked\`\n`;
-      }
-      finalMsg += `═════════════════════════\n\n*Detailed Order Results:*\n`;
-
-      summary.results.slice(0, 12).forEach((r, idx) => {
-        const qtyStr = r.quantity > 1 ? ` (x${r.quantity})` : '';
-        if (r.success) {
-          finalMsg += `✅ *#${idx + 1} ${escapeMd(r.gameName)}* — ${escapeMd(r.skuName)}${qtyStr}\n` +
-            `   └ 🆔 \`${r.orderId || r.referenceId}\` • \`$${r.price.toFixed(3)}\` • _${r.statusText || 'PROCESSING'}_\n`;
-        } else {
-          finalMsg += `❌ *#${idx + 1} ${escapeMd(r.gameName)}* — ${escapeMd(r.skuName)}${qtyStr}\n` +
-            `   └ ⚠️ Error: _${escapeMd(r.error || 'Failed')}_\n`;
-        }
-      });
-
-      if (summary.results.length > 12) {
-        finalMsg += `_... နောက်ထပ် အော်ဒါ (${summary.results.length - 12}) ခု ပြီးဆုံးပါပြီ။_\n`;
-      }
-
-      const keyboard = Markup.inlineKeyboard([
-        [
-          Markup.button.callback('📜 Bulk History', 'bulk_history_page_1'),
-          Markup.button.callback('📑 All Orders', 'view_orders_action')
-        ],
-        [Markup.button.callback('🏠 Main Menu', 'main_menu')]
-      ]);
-
-      if (progressMsg) {
-        try {
-          await ctx.deleteMessage(progressMsg.message_id);
-        } catch {}
-      }
-
-      await safeReply(ctx, finalMsg, keyboard);
-
-      // Notify Owner/Admin
-      const currentAdminIdForNotify = await getAdminChatId(adminChatId);
-      if (currentAdminIdForNotify) {
-        const fromUser = ctx.from?.username ? `@${ctx.from.username}` : ctx.from?.first_name || 'User';
-        const adminBulkNotify = `🔔 *New Bulk Top-Up Order!*\n` +
-          `═════════════════════════\n` +
-          `├── 👤 User: \`${ctx.chat!.id}\` (${escapeMd(fromUser)})\n` +
-          `├── 📦 Total Orders: *${summary.totalRequested}*\n` +
-          `├── ✅ Success: *${summary.successCount}* | ❌ Failed: *${summary.failedCount}*\n` +
-          `├── 💰 Total Spent: \`$${summary.totalSpent.toFixed(3)} USD\`\n` +
-          `└── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
-          `═════════════════════════`;
-        await safeSendMessage(bot.telegram, currentAdminIdForNotify, adminBulkNotify);
-      }
-    } catch (err: any) {
-      console.error('Bulk order execution error:', err);
-      return safeReply(ctx, `❌ Bulk Order Execution Error: ${err.message}`, mainMenu);
-    } finally {
-      activeUserOrderLocks.delete(chatId);
-    }
-  });
-
-  // Live multi-provider order status tracking logic
-  async function handleTrackOrderQuery(ctx: any, queryId: string, isCallback: boolean = false) {
-    const cleanId = (queryId || '').trim();
-    if (!cleanId) {
-      if (isCallback) {
-        try { await ctx.answerCbQuery('Invalid order identifier'); } catch {}
-      }
-      return ctx.reply('⚠️ Please provide a valid Order ID or Reference ID.');
-    }
-
-    try {
-      // 1. Try finding in MongoDB by exact match on referenceId, orderId, providerOrderId, or providerReceiptNumber
-      let order = await Order.findOne({
-        $or: [
-          { referenceId: cleanId },
-          { orderId: cleanId },
-          { providerOrderId: cleanId },
-          { providerReceiptNumber: cleanId }
-        ]
-      });
-
-      // 1.1 If not found, try case-insensitive regex search
-      if (!order) {
-        order = await Order.findOne({
-          $or: [
-            { referenceId: { $regex: new RegExp(`^${cleanId}$`, 'i') } },
-            { orderId: { $regex: new RegExp(`^${cleanId}$`, 'i') } },
-            { providerOrderId: { $regex: new RegExp(`^${cleanId}$`, 'i') } }
-          ]
-        });
-      }
-
-      // Determine provider
-      let isTopupNationOrder = order?.provider === 'topupnation' || order?.extraInfo?.provider === 'topupnation';
-      if (!order && topupNation) {
-        if (cleanId.startsWith('TPN-') || cleanId.startsWith('cmt') || cleanId.length > 20) {
-          isTopupNationOrder = true;
-        }
-      }
-
-      let state = order?.state ?? 1;
-      let orderId = order?.providerOrderId || order?.orderId || cleanId;
-      let syncNote = '';
-
-      if (isTopupNationOrder && topupNation) {
-        if (isCallback) {
-          try { await ctx.answerCbQuery('📡 Querying live TopupNation API status...'); } catch {}
-        }
-        try {
-          const tpnOrderId = order?.providerOrderId || order?.orderId || cleanId;
-          const queryRes = await topupNation.getClient().queryOrder(tpnOrderId);
-          if (queryRes && queryRes.status) {
-            const statusUpper = String(queryRes.status).toUpperCase();
-            if (statusUpper === 'SUCCESS' || statusUpper === 'COMPLETED') {
-              state = 2;
-              syncNote = 'Fulfilled successfully via TopupNation';
-            } else if (statusUpper === 'FAILED' || statusUpper === 'REFUNDED' || statusUpper === 'CANCELLED') {
-              state = 3;
-              syncNote = queryRes.errorMessage || 'Failed on game server (Refunded)';
-              const isApiLinked = order?.extraInfo?.paymentSource === 'api_balance';
-              if (!isApiLinked && order && order.price > 0 && order.state !== 3) {
-                const userDoc = await User.findOne({ telegramChatId: order.telegramChatId });
-                if (userDoc) {
-                  userDoc.balance += order.price;
-                  await userDoc.save();
-                }
-              }
-            } else if (statusUpper === 'PROCESSING') {
-              state = 1;
-              syncNote = 'TopupNation is currently processing the order';
-            } else if (statusUpper === 'PENDING') {
-              state = 0;
-              syncNote = 'Order received, pending API queue';
-            }
-
-            if (order) {
-              order.state = state;
-              order.statusText = statusUpper;
-              if (queryRes.receiptNumber) order.providerReceiptNumber = queryRes.receiptNumber;
-              await order.save();
-            }
-          }
-        } catch (tpnErr: any) {
-          console.error('[Track Order] TopupNation query error:', tpnErr?.message || tpnErr);
-          syncNote = order ? `Processing (${order.statusText || 'In Progress'})` : 'Processing via TopupNation API';
-        }
-      } else {
-        // LootBar Order Query
-        if (isCallback) {
-          try { await ctx.answerCbQuery('📡 Querying live LootBar API status...'); } catch {}
-        }
-        try {
-          const refToQuery = order?.referenceId || cleanId;
-          const queryRes = await lootbar.queryOrder(refToQuery);
-          if (queryRes && queryRes.status === 'ok' && queryRes.data) {
-            state = queryRes.data.state !== undefined ? queryRes.data.state : state;
-            orderId = queryRes.data.order_id || orderId;
-
-            if (state === 3) {
-              const isApiLinked = order?.extraInfo?.paymentSource === 'api_balance';
-              if (!isApiLinked && order && order.price > 0 && order.state !== 3) {
-                const userDoc = await User.findOne({ telegramChatId: order.telegramChatId });
-                if (userDoc) {
-                  userDoc.balance += order.price;
-                  await userDoc.save();
-                }
-              }
-            }
-
-            if (order) {
-              order.state = state;
-              if (orderId) order.orderId = orderId;
-              await order.save();
-            }
-          }
-        } catch (lbErr: any) {
-          console.error('[Track Order] LootBar query error:', lbErr?.message || lbErr);
-          // If Lootbar query fails, try TopupNation fallback if not yet checked
-          if (topupNation && !isTopupNationOrder) {
-            try {
-              const tpnOrderId = order?.providerOrderId || order?.orderId || cleanId;
-              const queryRes = await topupNation.getClient().queryOrder(tpnOrderId);
-              if (queryRes && queryRes.status) {
-                isTopupNationOrder = true;
-                const statusUpper = String(queryRes.status).toUpperCase();
-                if (statusUpper === 'SUCCESS' || statusUpper === 'COMPLETED') {
-                  state = 2;
-                  syncNote = 'Fulfilled successfully via TopupNation';
-                } else if (statusUpper === 'FAILED' || statusUpper === 'REFUNDED') {
-                  state = 3;
-                  syncNote = queryRes.errorMessage || 'Failed on game server (Refunded)';
-                } else if (statusUpper === 'PROCESSING') {
-                  state = 1;
-                  syncNote = 'TopupNation is currently processing the order';
-                }
-                if (order) {
-                  order.state = state;
-                  order.statusText = statusUpper;
-                  await order.save();
-                }
-              }
-            } catch (fallbackErr) {
-              // Ignore fallback error
-            }
-          }
-          if (!syncNote) {
-            syncNote = order ? `Processing (${order.statusText || 'In Progress'})` : 'Live processing in progress';
-          }
-        }
-      }
-
-      const stateMap: Record<number, { statusText: string; icon: string; message: string }> = {
-        0: { statusText: 'PENDING', icon: '⏳', message: 'Order created, awaiting transaction' },
-        1: { statusText: 'PROCESSING', icon: '🔄', message: isTopupNationOrder ? 'TopupNation API delivering top-up' : 'LootBar API delivering top-up' },
-        2: { statusText: 'COMPLETED', icon: '✅', message: 'Order completed successfully' },
-        3: { statusText: 'FAILED', icon: '❌', message: 'Order failed on game server (Refunded)' },
-        4: { statusText: 'SETTLING', icon: '⚡', message: 'Transaction in settlement stage' },
-        5: { statusText: 'PARTIAL', icon: '⚠️', message: 'Order partially fulfilled' },
-        6: { statusText: 'CANCELLED', icon: '🚫', message: 'Order was cancelled' }
-      };
-
-      const status = stateMap[state] || { statusText: 'PROCESSING', icon: '⏳', message: syncNote || 'In progress' };
-      const checkedAt = formatMyanmarDateTime(new Date());
-
-      let playerName = isValidValue(order?.playerName) ? String(order?.playerName).trim() : '';
-      let playerId = '';
-      let serverId = '';
-      const otherDetails: { key: string; val: string }[] = [];
-
-      if (order?.extraInfo && typeof order.extraInfo === 'object') {
-        for (const [k, v] of Object.entries(order.extraInfo)) {
-          if (!isValidValue(v)) continue;
-          if (k === 'paymentSource' || k === 'provider') continue;
-          const lk = k.toLowerCase();
-          if (!playerId && (lk === 'uid' || lk === 'userid' || lk === 'user_id' || lk === 'player_id' || lk === 'account_id' || lk === 'useraccount')) {
-            playerId = String(v).trim();
-          } else if (!serverId && (lk === 'zoneid' || lk === 'zone_id' || lk === 'server' || lk === 'server_id' || lk === 'serverid')) {
-            serverId = String(v).trim();
-          } else if (!playerName && (lk === 'player_name' || lk === 'role_name' || lk === 'nickname' || lk === 'playername' || lk === 'role')) {
-            playerName = String(v).trim();
-          } else {
-            otherDetails.push({ key: k.toUpperCase(), val: String(v).trim() });
-          }
-        }
-      }
-
-      const safeGameName = escapeMd(order?.gameName || 'Game');
-      const safeSkuName = escapeMd(order?.skuName || 'Package');
-      const targetRefId = order?.providerOrderId || order?.orderId || order?.referenceId || cleanId;
-
-      const lines: string[] = [];
-      lines.push(`📡 *Live Order Status*`);
-      lines.push(`═════════════════════════`);
-      lines.push(`├── 🆔 Order ID: \`${orderId || targetRefId}\``);
-      lines.push(`├── 🌐 Provider: \`${isTopupNationOrder ? 'TopupNation API' : 'LootBar API'}\``);
-      lines.push(`├── 🎮 Game: *${safeGameName}*`);
-      lines.push(`├── 📦 Package: *${safeSkuName}*`);
-      if (isValidValue(playerName)) {
-        lines.push(`├── 👤 Player: \`${escapeCode(playerName)}\``);
-      }
-      if (isValidValue(playerId)) {
-        lines.push(`├── 🎯 Player ID: \`${escapeCode(playerId)}\``);
-      }
-      if (isValidValue(serverId)) {
-        lines.push(`├── 🌐 Server ID: \`${escapeCode(serverId)}\``);
-      }
-      for (const item of otherDetails) {
-        if (isValidValue(item.val)) {
-          lines.push(`├── ▫️ ${escapeMd(item.key)}: \`${escapeCode(item.val)}\``);
-        }
-      }
-      lines.push(`├── ${status.icon} Status: *${status.statusText}*`);
-      lines.push(`├── 💬 Message: _${escapeMd(syncNote || status.message)}_`);
-      if (order?.price) {
-        lines.push(`├── 💰 Price: \`$${Number(order.price).toFixed(3)}\``);
-      }
-      lines.push(`└── 🕒 Checked At: \`${checkedAt}\``);
-      lines.push(`═════════════════════════`);
-
-      const updateMsg = lines.join('\n');
-
-      const keyboard = Markup.inlineKeyboard([
-        [
-          Markup.button.callback('🔄 Refresh Status Again', `track_order_${targetRefId}`),
-          Markup.button.callback('📜 Order History', 'view_orders_action')
-        ]
-      ]);
-
-      if (isCallback) {
-        await safeEditMessageText(ctx, updateMsg, keyboard);
-      } else {
-        await safeReply(ctx, updateMsg, keyboard);
-      }
-    } catch (err: any) {
-      console.error('Error tracking order status:', err);
-      if (isCallback) {
-        try { await ctx.answerCbQuery('Status synced'); } catch {}
-      }
-      await safeReply(
-        ctx, 
-        `📡 *Live Order Status*\n═════════════════════════\n├── 🆔 Order: \`${escapeCode(cleanId)}\`\n├── 🔄 Status: *PROCESSING*\n└── 💬 Message: _Order is being processed on provider server_\n═════════════════════════`, 
-        Markup.inlineKeyboard([
-          [
-            Markup.button.callback('🔄 Refresh Status Again', `track_order_${cleanId}`),
-            Markup.button.callback('📜 Order History', 'view_orders_action')
-          ]
-        ])
-      );
-    }
-  }
-
-  // Live order status tracking callback from inline button
-  bot.action(/^track_order_(.+)$/, async (ctx) => {
-    const referenceId = ctx.match[1];
-    return await handleTrackOrderQuery(ctx, referenceId, true);
-  });
-
-  bot.action('view_orders_action', async (ctx) => {
-    await ctx.answerCbQuery();
-    return await renderOrderHistory(ctx, false);
-  });
-
-  // If not serverless, manage polling via distributed leader election
-  if (!options.isServerless) {
-    const instanceId = `${process.env.RAILWAY_REPLICA_ID || process.pid}_${Math.random().toString(36).slice(2, 8)}`;
-    let isPolling = false;
-    let isLeader = false;
-    let pollerBackoffUntil = 0;
-    let hasLoggedStandby = false;
-    let botStopped = false;
-
-    const originalStop = bot.stop.bind(bot);
-
-    const stopPolling = () => {
-      if (isPolling) {
-        try { originalStop(); } catch (e) {}
-        isPolling = false;
-      }
-    };
-
-    const startPolling = async () => {
-      if (isPolling || botStopped) return;
+  } else {
+    // Polling mode with leadership lock
+    const leaderLockId = uuidv4();
+    const lockKey = 'telegram_bot_polling_leader';
+
+    async function acquireLeaderLock(): Promise<boolean> {
       try {
-        isPolling = true;
-        console.log(`[Bot Leader] Instance ${instanceId} starting Telegram bot polling...`);
-        await bot.launch({ dropPendingUpdates: true });
-        console.log(`[Bot Leader] Instance ${instanceId} Telegram bot polling active.`);
-      } catch (err: any) {
-        isPolling = false;
-        if (err?.response?.error_code === 409) {
-          console.warn(`[Bot Leader] Telegram 409 Conflict: Another instance is currently polling. Stepping down to standby for 30s.`);
-          isLeader = false;
-          pollerBackoffUntil = Date.now() + 30000;
-          stopPolling();
-          await BotLeaderLock.deleteOne({ lockKey: 'telegram_bot_poller', instanceId }).catch(() => {});
-        } else {
-          console.error('[Bot Leader] Failed to launch bot. Will retry on next heartbeat check:', err?.message || err);
-          stopPolling();
-        }
-      }
-    };
+        const now = new Date();
+        const staleThreshold = new Date(now.getTime() - 25000);
 
-    const checkLeaderStatus = async () => {
-      if (botStopped) return;
-      if (Date.now() < pollerBackoffUntil) return;
-      if (mongoose.connection.readyState !== 1) return;
-
-      const now = new Date();
-      const staleThreshold = new Date(Date.now() - 25000); // 25s heartbeat expiry
-
-      try {
-        if (isLeader) {
-          // Renew heartbeat
-          const renewed = await BotLeaderLock.findOneAndUpdate(
-            { lockKey: 'telegram_bot_poller', instanceId },
-            { $set: { lastHeartbeat: now } },
-            { returnDocument: 'after' }
-          );
-          if (!renewed) {
-            console.log(`[Bot Leader] Instance ${instanceId} lost leader lock in DB. Stepping down.`);
-            isLeader = false;
-            stopPolling();
-          } else if (!isPolling) {
-            startPolling();
-          }
-          return;
-        }
-
-        // We are NOT currently leader: check if lock is expired
-        const acquired = await BotLeaderLock.findOneAndUpdate(
-          { lockKey: 'telegram_bot_poller', lastHeartbeat: { $lt: staleThreshold } },
-          { $set: { instanceId, lastHeartbeat: now } },
-          { returnDocument: 'after' }
+        const lock = await BotLeaderLock.findOneAndUpdate(
+          {
+            lockKey,
+            $or: [
+              { instanceId: leaderLockId },
+              { lastHeartbeat: { $lt: staleThreshold } }
+            ]
+          },
+          {
+            $set: {
+              instanceId: leaderLockId,
+              lastHeartbeat: now
+            }
+          },
+          { upsert: true, returnDocument: 'after' }
         );
 
-        if (acquired && acquired.instanceId === instanceId) {
-          console.log(`[Bot Leader] Instance ${instanceId} claimed expired leader lock. Becoming active leader.`);
-          isLeader = true;
-          hasLoggedStandby = false;
-          startPolling();
-          return;
-        }
-
-        // If no lock exists at all, try to create it
-        const existing = await BotLeaderLock.findOne({ lockKey: 'telegram_bot_poller' });
-        if (!existing) {
-          try {
-            await BotLeaderLock.create({ lockKey: 'telegram_bot_poller', instanceId, lastHeartbeat: now });
-            console.log(`[Bot Leader] Instance ${instanceId} initialized leader lock. Becoming active leader.`);
-            isLeader = true;
-            hasLoggedStandby = false;
-            startPolling();
-            return;
-          } catch (createErr: any) {
-            // Concurrent creation race handled by unique index
-          }
-        } else if (!hasLoggedStandby) {
-          console.log(`[Bot Leader] Instance ${instanceId} is in STANDBY (active leader is ${existing.instanceId}). Polling handled by leader.`);
-          hasLoggedStandby = true;
-        }
-      } catch (dbErr: any) {
-        // Transient DB error
+        return lock.instanceId === leaderLockId;
+      } catch (err: any) {
+        return false;
       }
-    };
-
-    // Override bot.stop to properly release leader lock
-    bot.stop = (reason?: string) => {
-      botStopped = true;
-      if (leaderInterval) clearInterval(leaderInterval);
-      stopPolling();
-      if (isLeader) {
-        BotLeaderLock.deleteOne({ lockKey: 'telegram_bot_poller', instanceId }).catch(() => {});
-      }
-      return originalStop(reason);
-    };
-
-    // Start checking immediately and every 10 seconds
-    checkLeaderStatus();
-    const leaderInterval = setInterval(checkLeaderStatus, 10000);
-
-    const onShutdown = async () => {
-      botStopped = true;
-      if (leaderInterval) clearInterval(leaderInterval);
-      stopPolling();
-      if (isLeader) {
-        await BotLeaderLock.deleteOne({ lockKey: 'telegram_bot_poller', instanceId }).catch(() => {});
-      }
-    };
-
-    process.once('SIGINT', onShutdown);
-    process.once('SIGTERM', onShutdown);
-    console.log("Telegram bot initialized with Distributed Leader Election (VPS / Railway).");
-  } else {
-    console.log("Telegram bot initialized in Webhook / Serverless mode.");
-    if (options.webhookUrl) {
-      bot.telegram.setWebhook(options.webhookUrl).then(() => {
-        console.log(`Telegram webhook set to: ${options.webhookUrl}`);
-      }).catch(err => {
-        console.error("Failed to set Telegram webhook:", err?.message || err);
-      });
     }
+
+    let isPolling = false;
+
+    setInterval(async () => {
+      const isLeader = await acquireLeaderLock();
+      if (isLeader && !isPolling) {
+        console.log(`[Bot Leader] Instance ${leaderLockId} acquired polling leadership.`);
+        isPolling = true;
+        bot.launch({
+          dropPendingUpdates: true
+        }).then(() => {
+          console.log('Telegram Bot successfully started via Polling mode');
+        }).catch((err: any) => {
+          console.error('Failed to start Telegram Bot in Polling mode:', err);
+          isPolling = false;
+        });
+      } else if (!isLeader && isPolling) {
+        console.log(`[Bot Leader] Instance ${leaderLockId} lost polling leadership. Stopping polling...`);
+        isPolling = false;
+        try { bot.stop('Lost leadership'); } catch (e) {}
+      }
+    }, 10000);
+
+    acquireLeaderLock().then(isLeader => {
+      if (isLeader && !isPolling) {
+        isPolling = true;
+        bot.launch({
+          dropPendingUpdates: true
+        }).then(() => {
+          console.log('Telegram Bot successfully launched in polling mode.');
+        }).catch((err: any) => {
+          console.error('Failed to launch Telegram Bot:', err);
+          isPolling = false;
+        });
+      }
+    });
   }
-  
+
+  process.once('SIGINT', () => bot.stop('SIGINT'));
+  process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
   return bot;
 }

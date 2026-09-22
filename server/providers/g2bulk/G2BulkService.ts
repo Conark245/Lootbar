@@ -3,6 +3,8 @@ import { G2BulkClient } from './G2BulkClient';
 import { G2BulkProduct } from '../../models/G2BulkProduct';
 import { Order } from '../../models/Order';
 import { User } from '../../models/User';
+import { isProviderApiLinked } from '../../bot/helpers';
+import { getNotificationSettings } from '../../notificationSettings';
 import mongoose from 'mongoose';
 
 export class G2BulkService {
@@ -153,13 +155,15 @@ export class G2BulkService {
     productId: string, 
     skuId: string, 
     fields: any, 
-    telegramChatId?: number
+    telegramChatId?: number,
+    skipBalanceDeduction?: boolean
   ) {
     if (!this.client.getStatus().isConfigured) {
       return { success: false, error: 'G2Bulk API is not configured' };
     }
 
     let deductedCost = 0;
+    let isApiLinked = false;
     try {
       const product = await G2BulkProduct.findOne({ productId });
       if (!product) throw new Error('Product not found in database');
@@ -171,16 +175,19 @@ export class G2BulkService {
       if (!user) throw new Error('User not found');
 
       const totalCost = Number(skuObj.price) || 0;
-      deductedCost = totalCost;
+      isApiLinked = isProviderApiLinked(user, 'g2bulk');
 
-      // Atomic balance deduction
-      const deductedUser = await User.findOneAndUpdate(
-        { _id: userId, balance: { $gte: totalCost } },
-        { $inc: { balance: -totalCost } },
-        { returnDocument: 'after' }
-      );
-      if (!deductedUser) {
-        throw new Error(`Insufficient wallet balance. Need $${totalCost.toFixed(3)} USD, have $${user.balance.toFixed(3)} USD.`);
+      if (!isApiLinked && !skipBalanceDeduction) {
+        deductedCost = totalCost;
+        // Atomic balance deduction
+        const deductedUser = await User.findOneAndUpdate(
+          { _id: userId, balance: { $gte: totalCost } },
+          { $inc: { balance: -totalCost } },
+          { returnDocument: 'after' }
+        );
+        if (!deductedUser) {
+          throw new Error(`Insufficient wallet balance. Need $${totalCost.toFixed(3)} USD, have $${user.balance.toFixed(3)} USD.`);
+        }
       }
 
       const callbackUrl = this.webhookBaseUrl ? `${this.webhookBaseUrl.replace(/\/+$/, '')}/api/webhooks/g2bulk` : undefined;
@@ -213,12 +220,17 @@ export class G2BulkService {
         playerName: userAccount,
         telegramChatId: telegramChatId || user.telegramChatId,
         price: totalCost,
-        extraInfo: { ...fields, provider: 'g2bulk' },
+        extraInfo: { 
+          ...fields, 
+          provider: 'g2bulk',
+          paymentSource: isApiLinked ? 'api_balance' : 'wallet_balance'
+        },
         state: internalState,
         statusText
       });
 
-      if (this.telegramNotifier && telegramChatId) {
+      const notiSettings = await getNotificationSettings();
+      if (this.telegramNotifier && telegramChatId && notiSettings.g2bulkEnabled) {
         const msg = internalState === 2
           ? `🎉 *G2Bulk Top-up Succeeded!*\n\n🎮 *Game:* ${product.name}\n💎 *Package:* ${skuObj.name}\n👤 *Account:* \`${userAccount}\`\n💰 *Total:* $${totalCost.toFixed(3)} USD\n🧾 *Order ID:* \`${providerOrderId}\``
           : `⏳ *G2Bulk Top-up Submitted!*\n\n🎮 *Game:* ${product.name}\n💎 *Package:* ${skuObj.name}\n👤 *Account:* \`${userAccount}\`\n💰 *Total:* $${totalCost.toFixed(3)} USD\n🧾 *Order ID:* \`${providerOrderId}\`\nStatus: Processing...`;
@@ -228,11 +240,12 @@ export class G2BulkService {
       return { success: true, order: newOrder };
 
     } catch (err: any) {
-      if (deductedCost > 0) {
+      if (deductedCost > 0 && !isApiLinked && !skipBalanceDeduction) {
         await User.updateOne({ _id: userId }, { $inc: { balance: deductedCost } }).catch(() => {});
       }
 
-      if (this.telegramNotifier && telegramChatId) {
+      const notiSettings = await getNotificationSettings();
+      if (this.telegramNotifier && telegramChatId && notiSettings.g2bulkEnabled) {
         this.telegramNotifier(telegramChatId, `❌ *G2Bulk Order Failed*\n\n⚠️ *Reason:* ${err.message}`);
       }
 
@@ -251,12 +264,14 @@ export class G2BulkService {
     
     if (order.state === 2 || order.state === 3) return; // already completed or failed — ignore duplicate webhooks
 
+    const notiSettings = await getNotificationSettings();
+
     if (status === 'COMPLETED' || status === 'SUCCESS') {
       order.state = 2;
       order.statusText = 'Completed via Webhook';
       await order.save();
       
-      if (this.telegramNotifier && order.telegramChatId) {
+      if (this.telegramNotifier && order.telegramChatId && notiSettings.g2bulkEnabled) {
         this.telegramNotifier(order.telegramChatId, `✅ *G2Bulk Order Completed!*\n\n🧾 *Order ID:* \`${orderId}\`\n💎 *Package:* ${order.skuName}`);
       }
     } else if (status === 'FAILED' || status === 'REFUNDED' || status === 'CANCELED' || status === 'CANCELLED') {
@@ -264,12 +279,13 @@ export class G2BulkService {
       order.statusText = 'Failed/Refunded via Webhook';
       await order.save();
 
-      // Refund
+      // Refund if not API linked
       const user = await User.findOne({ telegramChatId: order.telegramChatId });
-      if (user) {
+      const isApiLinked = isProviderApiLinked(user, 'g2bulk');
+      if (user && !isApiLinked && (order.price || 0) > 0) {
         user.balance += (order.price || 0);
         await user.save();
-        if (this.telegramNotifier && order.telegramChatId) {
+        if (this.telegramNotifier && order.telegramChatId && notiSettings.g2bulkEnabled) {
           this.telegramNotifier(order.telegramChatId, `❌ *G2Bulk Order Failed*\n\n🧾 *Order ID:* \`${orderId}\`\n💰 *Refunded:* $${Number(order.price || 0).toFixed(3)} USD`);
         }
       }

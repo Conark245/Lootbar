@@ -1,21 +1,20 @@
 import { v4 as uuidv4 } from 'uuid';
 import { LootBarClient } from './providers/lootbar/LootBarClient';
 import { TopupNationService } from './providers/topupnation/TopupNationService';
-import { FzrCardsService } from './providers/fzrcards/FzrCardsService';
 import { G2BulkService } from './providers/g2bulk/G2BulkService';
 import { TopupNationProduct } from './models/TopupNationProduct';
-import { FzrCardsProduct } from './models/FzrCardsProduct';
+import { G2BulkProduct } from './models/G2BulkProduct';
 import { SavedGame } from './models/SavedGame';
 import { Order } from './models/Order';
 import { User, IUser } from './models/User';
 import { BulkOrderBatch, IBulkOrderBatch } from './models/BulkOrderBatch';
 import { parseSkuWithQuantity } from './bot/matching';
-import { parseCommandArgs } from './bot/helpers';
+import { parseCommandArgs, isProviderApiLinked } from './bot/helpers';
 
 export interface BulkOrderItem {
   lineIndex: number;
   rawLine: string;
-  provider: 'lootbar' | 'topupnation' | 'fzrcards' | 'g2bulk';
+  provider: 'lootbar' | 'topupnation' | 'g2bulk';
   gameId: string;
   gameName: string;
   skuId: string;
@@ -45,7 +44,7 @@ export interface BulkParseResult {
 export interface BulkExecuteItemResult {
   lineIndex: number;
   rawLine: string;
-  provider: 'lootbar' | 'topupnation' | 'fzrcards' | 'g2bulk';
+  provider: 'lootbar' | 'topupnation' | 'g2bulk';
   gameName: string;
   skuName: string;
   quantity: number;
@@ -125,9 +124,9 @@ export class BulkOrderService {
     }
 
     // Cache database & SKU lookups for speed
-    const savedGames = await SavedGame.find({ isEnabled: { $ne: false } });
-    const tpnProducts = await TopupNationProduct.find({ isEnabled: { $ne: false } });
-    const fzrProducts = await FzrCardsProduct.find({ isEnabled: { $ne: false } });
+    const savedGames = await SavedGame.find();
+    const tpnProducts = await TopupNationProduct.find();
+    const g2bProducts = await G2BulkProduct.find();
     const skuCache: Record<string, any[]> = {};
 
     for (let i = 0; i < rawLines.length; i++) {
@@ -169,6 +168,15 @@ export class BulkOrderService {
       });
 
       if (matchedGame) {
+        if (matchedGame.isEnabled === false) {
+          errors.push({
+            lineIndex,
+            rawLine: rawLines[i],
+            error: `Game "${matchedGame.name}" is currently disabled by Admin.`
+          });
+          continue;
+        }
+
         const gameId = String(matchedGame.gameId);
         const gameName = matchedGame.name || 'Game';
 
@@ -266,6 +274,15 @@ export class BulkOrderService {
       });
 
       if (matchedTpn) {
+        if (matchedTpn.isEnabled === false || matchedTpn.status === 'DISABLED') {
+          errors.push({
+            lineIndex,
+            rawLine: rawLines[i],
+            error: `Game "${matchedTpn.name}" (TopupNation) is currently disabled by Admin.`
+          });
+          continue;
+        }
+
         const productId = String(matchedTpn.productId);
         const productName = matchedTpn.name || 'Game';
         const skus = (matchedTpn.skus || []).filter((s: any) => s.available !== false && s.availability !== false);
@@ -344,34 +361,43 @@ export class BulkOrderService {
         continue;
       }
 
-      // Check FZR Cards Products
-      const matchedFzr = fzrProducts.find((p: any) => {
+      // Check G2Bulk Products
+      const matchedG2b = g2bProducts.find((p: any) => {
         const k = (p.shortKey || '').toLowerCase();
         return k === inputKey || String(p.productId).toLowerCase() === inputKey;
       });
 
-      if (matchedFzr) {
-        const productId = String(matchedFzr.productId);
-        const productName = matchedFzr.name || 'Game';
-        const skus = (matchedFzr.skus || []).filter((s: any) => s.available !== false && s.availability !== false);
+      if (matchedG2b) {
+        if (matchedG2b.isEnabled === false || matchedG2b.status === 'DISABLED') {
+          errors.push({
+            lineIndex,
+            rawLine: rawLines[i],
+            error: `Game "${matchedG2b.name}" (G2Bulk) is currently disabled by Admin.`
+          });
+          continue;
+        }
+
+        const productId = String(matchedG2b.productId);
+        const productName = matchedG2b.name || 'Game';
+        const skus = (matchedG2b.skus || []).filter((s: any) => s.available !== false && s.availability !== false);
 
         if (skus.length === 0) {
           errors.push({
             lineIndex,
             rawLine: rawLines[i],
-            error: `No packages available for ${productName} (FZR Cards)`
+            error: `No packages available for ${productName} (G2Bulk)`
           });
           continue;
         }
 
-        const requiredFields = (matchedFzr.fields || []).filter((f: any) => f.required);
+        const requiredFields = (matchedG2b.fields || []).filter((f: any) => f.required);
         const minFields = requiredFields.length > 0 ? requiredFields.length : 1;
 
         if (rawArgs.length < minFields + 1) {
           errors.push({
             lineIndex,
             rawLine: rawLines[i],
-            error: `Missing parameters for ${productName} (FZR). Need ${minFields} account field(s) + Package.`
+            error: `Missing parameters for ${productName} (G2Bulk). Need ${minFields} account field(s) + Package.`
           });
           continue;
         }
@@ -389,11 +415,11 @@ export class BulkOrderService {
 
         const rawProductQuery = rawArgs.slice(minFields).join(' ').trim();
         let skuKeys: Record<string, string> = {};
-        if (matchedFzr.skuShortKeys) {
-          if (matchedFzr.skuShortKeys instanceof Map || typeof (matchedFzr.skuShortKeys as any).entries === 'function') {
-            skuKeys = Object.fromEntries((matchedFzr.skuShortKeys as any).entries());
-          } else if (typeof matchedFzr.skuShortKeys === 'object') {
-            skuKeys = { ...matchedFzr.skuShortKeys };
+        if (matchedG2b.skuShortKeys) {
+          if (matchedG2b.skuShortKeys instanceof Map || typeof (matchedG2b.skuShortKeys as any).entries === 'function') {
+            skuKeys = Object.fromEntries((matchedG2b.skuShortKeys as any).entries());
+          } else if (typeof matchedG2b.skuShortKeys === 'object') {
+            skuKeys = { ...matchedG2b.skuShortKeys };
           }
         }
 
@@ -405,7 +431,7 @@ export class BulkOrderService {
           errors.push({
             lineIndex,
             rawLine: rawLines[i],
-            error: `Package "${rawProductQuery}" not found for ${productName} (FZR Cards)`
+            error: `Package "${rawProductQuery}" not found for ${productName} (G2Bulk)`
           });
           continue;
         }
@@ -416,7 +442,7 @@ export class BulkOrderService {
         validItems.push({
           lineIndex,
           rawLine: rawLines[i],
-          provider: 'fzrcards',
+          provider: 'g2bulk',
           gameId: productId,
           gameName: productName,
           skuId: String(matchedSku.sku),
@@ -424,16 +450,17 @@ export class BulkOrderService {
           unitPrice,
           quantity,
           totalPrice,
-          extraInfo
+          extraInfo,
+          playerName: extraInfo['player_id'] || rawArgs[0]
         });
         continue;
       }
 
-      // Neither LootBar, TopupNation, nor FZR Cards matched
+      // Neither LootBar, TopupNation nor G2Bulk matched
       errors.push({
         lineIndex,
         rawLine: rawLines[i],
-        error: `Unknown game shortKey: "${inputKey}". Send .games or .fzr to see available shortcuts.`
+        error: `Unknown game shortKey: "${inputKey}". Send .games, .tpn or .g2bulk to see available shortcuts.`
       });
     }
 
@@ -458,10 +485,9 @@ export class BulkOrderService {
     items: BulkOrderItem[],
     lootbarClient: LootBarClient,
     topupNationService?: TopupNationService,
-    fzrCardsService?: FzrCardsService,
+    g2bulkService?: G2BulkService,
     options?: { rawText?: string; source?: 'bot' | 'web' }
   ): Promise<BulkExecuteSummary> {
-    const isApiLinked = !!(user.useDirectApiBalance || user.balanceMode === 'api');
     const balanceBefore = user.balance || 0;
     let currentBalance = balanceBefore;
     let totalSpent = 0;
@@ -472,6 +498,8 @@ export class BulkOrderService {
 
     for (const item of items) {
       const orderCost = item.totalPrice;
+      const itemProvider = item.provider || 'lootbar';
+      const isApiLinked = isProviderApiLinked(user, itemProvider);
 
       // 1. Balance check and atomic deduction for standard wallet users
       if (!isApiLinked) {
@@ -503,19 +531,20 @@ export class BulkOrderService {
       const referenceId = uuidv4();
 
       try {
-        if (item.provider === 'fzrcards' && fzrCardsService) {
-          // Execute FZR Cards order
-          const fzrResult = await fzrCardsService.placeOrder({
+        if (item.provider === 'topupnation' && topupNationService) {
+          // Execute TopupNation order
+          const tpnResult = await topupNationService.placeOrder({
             telegramChatId: user.telegramChatId,
             telegramUsername: user.username,
             telegramFirstName: user.firstName,
             productId: item.gameId,
             sku: item.skuId,
-            fields: item.extraInfo, skipBalanceDeduction: true,
+            fields: item.extraInfo,
+            skipBalanceDeduction: true,
             quantity: item.quantity
           });
 
-          if (!fzrResult.success || !fzrResult.order) {
+          if (!tpnResult.success || !tpnResult.order) {
             if (!isApiLinked) {
               await User.updateOne({ _id: user._id }, { $inc: { balance: orderCost } });
               currentBalance += orderCost;
@@ -530,7 +559,7 @@ export class BulkOrderService {
               quantity: item.quantity,
               price: orderCost,
               success: false,
-              error: fzrResult.error || 'FZR Cards rejected order'
+              error: tpnResult.error || 'TopupNation rejected order'
             });
           } else {
             successCount++;
@@ -543,14 +572,14 @@ export class BulkOrderService {
               skuName: item.skuName,
               quantity: item.quantity,
               price: orderCost,
-              playerName: fzrResult.order.playerName,
+              playerName: tpnResult.order.playerName,
               success: true,
-              referenceId: fzrResult.order.referenceId,
-              orderId: fzrResult.order.providerOrderId || fzrResult.order.orderId,
+              referenceId: tpnResult.order.referenceId,
+              orderId: tpnResult.order.providerOrderId || tpnResult.order.orderId,
               statusText: 'PROCESSING'
             });
           }
-        } else if (item.provider === 'topupnation' && topupNationService) {
+        } else if (item.provider === 'g2bulk' && g2bulkService) {
           // Execute TopupNation order
           const tpnResult = await topupNationService.placeOrder({
             telegramChatId: user.telegramChatId,
@@ -595,6 +624,53 @@ export class BulkOrderService {
               success: true,
               referenceId: tpnResult.order.referenceId,
               orderId: tpnResult.order.providerOrderId || tpnResult.order.orderId,
+              statusText: 'PROCESSING'
+            });
+          }
+        } else if (item.provider === 'g2bulk' && g2bulkService) {
+          // Execute G2Bulk order
+          const userAccount = item.playerName || item.extraInfo['player_id'] || item.extraInfo['userAccount'] || item.extraInfo['uid'] || '';
+          const g2bResult = await g2bulkService.placeOrder(
+            userAccount,
+            String(user._id),
+            item.gameId,
+            item.skuId,
+            item.extraInfo,
+            user.telegramChatId
+          );
+
+          if (!g2bResult.success || !g2bResult.order) {
+            if (!isApiLinked) {
+              await User.updateOne({ _id: user._id }, { $inc: { balance: orderCost } });
+              currentBalance += orderCost;
+            }
+            failedCount++;
+            results.push({
+              lineIndex: item.lineIndex,
+              rawLine: item.rawLine,
+              provider: item.provider,
+              gameName: item.gameName,
+              skuName: item.skuName,
+              quantity: item.quantity,
+              price: orderCost,
+              success: false,
+              error: g2bResult.error || 'G2Bulk rejected order'
+            });
+          } else {
+            successCount++;
+            totalSpent += orderCost;
+            results.push({
+              lineIndex: item.lineIndex,
+              rawLine: item.rawLine,
+              provider: item.provider,
+              gameName: item.gameName,
+              skuName: item.skuName,
+              quantity: item.quantity,
+              price: orderCost,
+              playerName: g2bResult.order.playerName,
+              success: true,
+              referenceId: g2bResult.order.referenceId,
+              orderId: g2bResult.order.providerOrderId || g2bResult.order.orderId,
               statusText: 'PROCESSING'
             });
           }
@@ -707,6 +783,7 @@ export class BulkOrderService {
     }
 
     const updatedUser = await User.findOne({ telegramChatId: user.telegramChatId });
+    const isApiLinked = items.length > 0 && items.every(item => isProviderApiLinked(user, item.provider || 'lootbar'));
 
     // Save batch history record to DB
     let savedBatch: IBulkOrderBatch | null = null;
