@@ -26,7 +26,7 @@ const topupNationProductSchema = new mongoose.Schema({
   iconUrl: { type: String },
   fields: { type: Array, default: [] },
   skus: { type: Array, default: [] },
-  shortKey: { type: String, trim: true, lowercase: true },
+  shortKey: { type: String, trim: true, lowercase: true, index: true },
   skuShortKeys: { type: Map, of: String, default: {} },
   lastSyncedAt: { type: Date, default: Date.now }
 }, { timestamps: true });

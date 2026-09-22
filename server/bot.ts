@@ -1,12 +1,10 @@
 import { Telegraf, Markup, Context } from 'telegraf';
 import { v4 as uuidv4 } from 'uuid';
-import { LootBarClient } from './providers/lootbar/LootBarClient';
 import { TopupNationService } from './providers/topupnation/TopupNationService';
 import { G2BulkService } from './providers/g2bulk/G2BulkService';
 import { User } from './models/User';
 import { Session } from './models/Session';
 import { AppConfig } from './models/AppConfig';
-import { SavedGame } from './models/SavedGame';
 import { TopupNationProduct } from './models/TopupNationProduct';
 import { G2BulkProduct } from './models/G2BulkProduct';
 import { BotLeaderLock } from './models/BotLeaderLock';
@@ -26,13 +24,6 @@ import {
   isProviderApiLinked,
   getGameDefaultShortKey
 } from './bot/helpers';
-
-import {
-  renderLootBarGameList,
-  handleGamePackageList,
-  handleGameDirectOrder,
-  registerLootBarHandlers
-} from './bot/lootbar';
 
 import {
   renderTopupNationGameList,
@@ -82,10 +73,39 @@ const processedOrderMessages = new Set<string>();
 const userLastCommandTime = new Map<number | string, number>();
 const userLastCommandText = new Map<number | string, string>();
 
+// Fast in-memory caching to eliminate DB latency on every command/callback
+const inMemorySessions = new Map<number, { data: SessionData; lastSavedStr: string }>();
+const inMemoryUsers = new Map<number, { user: any; cachedAt: number }>();
+let cachedAdminChatId: { id: string | undefined; cachedAt: number } = { id: undefined, cachedAt: 0 };
+
+async function getCachedAdminChatId(defaultId: string | undefined): Promise<string | undefined> {
+  const now = Date.now();
+  if (now - cachedAdminChatId.cachedAt < 30000) {
+    return cachedAdminChatId.id;
+  }
+  const id = await getAdminChatId(defaultId);
+  cachedAdminChatId = { id, cachedAt: now };
+  return id;
+}
+
+let catalogCache: { tpn: any[]; g2b: any[]; lastFetched: number } = { tpn: [], g2b: [], lastFetched: 0 };
+
+async function getCachedProducts() {
+  const now = Date.now();
+  if (now - catalogCache.lastFetched < 15000 && (catalogCache.tpn.length > 0 || catalogCache.g2b.length > 0)) {
+    return catalogCache;
+  }
+  const [tpnGames, g2bGames] = await Promise.all([
+    TopupNationProduct.find({ isEnabled: { $ne: false }, status: { $ne: 'DISABLED' } }).sort({ name: 1 }).lean(),
+    G2BulkProduct.find({ isEnabled: { $ne: false }, status: { $ne: 'DISABLED' } }).sort({ name: 1 }).lean()
+  ]);
+  catalogCache = { tpn: tpnGames, g2b: g2bGames, lastFetched: now };
+  return catalogCache;
+}
+
 export function setupBot(
   botToken: string, 
   adminChatId: string | undefined, 
-  lootbar: LootBarClient,
   options: { isServerless?: boolean; webhookUrl?: string } = {},
   topupNation?: TopupNationService,
   g2bulk?: G2BulkService
@@ -114,66 +134,88 @@ export function setupBot(
     return next();
   });
   
+  // Fast Session Middleware
   bot.use(async (ctx, next) => {
     const chatId = ctx.chat?.id;
-    if (chatId) {
-      let sessionDoc = await Session.findOne({ chatId });
-      if (!sessionDoc) {
-        sessionDoc = await Session.create({ chatId, data: {} });
+    if (!chatId) return next();
+
+    let memSession = inMemorySessions.get(chatId);
+    if (!memSession) {
+      const sessionDoc = await Session.findOne({ chatId }).lean();
+      if (sessionDoc) {
+        memSession = { data: (sessionDoc.data as SessionData) || {}, lastSavedStr: JSON.stringify(sessionDoc.data || {}) };
+      } else {
+        memSession = { data: {}, lastSavedStr: '{}' };
+        Session.create({ chatId, data: {} }).catch(() => {});
       }
-      ctx.session = (sessionDoc.data as SessionData) || {};
-      
-      await next();
-      
-      if (ctx.session) {
-        await Session.updateOne({ chatId }, { data: ctx.session }, { upsert: true });
-      }
-    } else {
-      return next();
+      inMemorySessions.set(chatId, memSession);
+    }
+
+    ctx.session = memSession.data || {};
+    
+    await next();
+
+    // Async non-blocking session update if changed
+    const currentStr = JSON.stringify(ctx.session || {});
+    if (currentStr !== memSession.lastSavedStr) {
+      memSession.data = ctx.session;
+      memSession.lastSavedStr = currentStr;
+      Session.updateOne({ chatId }, { data: ctx.session }, { upsert: true }).catch(err => {
+        console.error('Session async save error:', err);
+      });
     }
   });
 
+  // Fast User Auth Middleware
   bot.use(async (ctx, next) => {
     const chatId = ctx.chat?.id;
     if (!chatId) return next();
 
     const fromUsername = ctx.from?.username || (ctx.chat as any)?.username || undefined;
     const fromFirstName = ctx.from?.first_name || (ctx.chat as any)?.first_name || undefined;
+    const now = Date.now();
 
-    let user = await User.findOne({ telegramChatId: chatId });
-    
-    const currentAdminId = await getAdminChatId(adminChatId);
-    if (String(chatId) === currentAdminId) {
-      if (!user) {
-        user = await User.create({ 
-          telegramChatId: chatId, 
-          isAuthorized: true,
-          username: fromUsername,
-          firstName: fromFirstName
-        });
+    let cached = inMemoryUsers.get(chatId);
+    let user = cached && (now - cached.cachedAt < 20000) ? cached.user : null;
+
+    if (!user) {
+      user = await User.findOne({ telegramChatId: chatId }).lean();
+      const currentAdminId = await getCachedAdminChatId(adminChatId);
+
+      if (String(chatId) === currentAdminId) {
+        if (!user) {
+          user = await User.create({ 
+            telegramChatId: chatId, 
+            isAuthorized: true,
+            username: fromUsername,
+            firstName: fromFirstName
+          });
+        } else if (!user.isAuthorized || (fromUsername && user.username !== fromUsername) || (fromFirstName && user.firstName !== fromFirstName)) {
+          user = await User.findOneAndUpdate(
+            { telegramChatId: chatId }, 
+            { isAuthorized: true, username: fromUsername, firstName: fromFirstName }, 
+            { returnDocument: 'after' }
+          ).lean();
+        }
       } else {
-        const updateData: any = {};
-        if (!user.isAuthorized) updateData.isAuthorized = true;
-        if (fromUsername && user.username !== fromUsername) updateData.username = fromUsername;
-        if (fromFirstName && user.firstName !== fromFirstName) updateData.firstName = fromFirstName;
-        if (Object.keys(updateData).length > 0) {
-          user = await User.findOneAndUpdate({ telegramChatId: chatId }, updateData, { returnDocument: 'after' });
+        if (!user) {
+          user = await User.create({ 
+            telegramChatId: chatId, 
+            isAuthorized: false,
+            username: fromUsername,
+            firstName: fromFirstName
+          });
+        } else if ((fromUsername && user.username !== fromUsername) || (fromFirstName && user.firstName !== fromFirstName)) {
+          user = await User.findOneAndUpdate(
+            { telegramChatId: chatId }, 
+            { username: fromUsername, firstName: fromFirstName }, 
+            { returnDocument: 'after' }
+          ).lean();
         }
       }
-    } else {
-      if (!user) {
-        user = await User.create({ 
-          telegramChatId: chatId, 
-          isAuthorized: false,
-          username: fromUsername,
-          firstName: fromFirstName
-        });
-      } else if ((fromUsername && user.username !== fromUsername) || (fromFirstName && user.firstName !== fromFirstName)) {
-        user = await User.findOneAndUpdate(
-          { telegramChatId: chatId }, 
-          { username: fromUsername, firstName: fromFirstName }, 
-          { returnDocument: 'after' }
-        );
+
+      if (user) {
+        inMemoryUsers.set(chatId, { user, cachedAt: now });
       }
     }
 
@@ -182,7 +224,7 @@ export function setupBot(
         await ctx.reply(`🚫 You are not authorized to use this bot.\n\nYour Chat ID is: \`${chatId}\`\n\nA request has been sent to the admin. Please wait for approval.`, { parse_mode: 'Markdown' });
         
         const chatObj = ctx.chat as any;
-        const currentAdminIdForNotify = await getAdminChatId(adminChatId);
+        const currentAdminIdForNotify = await getCachedAdminChatId(adminChatId);
         if (currentAdminIdForNotify) {
           try {
             await bot.telegram.sendMessage(
@@ -210,37 +252,20 @@ export function setupBot(
 
   const mainMenu = Markup.keyboard([
     ['🎮 All Games', '⚡ TopupNation'],
-    ['🔥 G2Bulk Games', '🎮 LootBar Games'],
-    ['💳 My Balance', '👤 My Profile'],
-    ['📜 Order History', '📦 Bulk Orders']
+    ['🔥 G2Bulk Games', '💳 My Balance'],
+    ['👤 My Profile', '📜 Order History'],
+    ['📦 Bulk Orders']
   ]).resize();
 
   async function renderAllGamesList(ctx: MyContext) {
     try {
-      const lootbarGames = await SavedGame.find({ isEnabled: { $ne: false } }).sort({ savedAt: -1 });
-      const tpnGames = await TopupNationProduct.find({ 
-        isEnabled: { $ne: false }, 
-        status: { $ne: 'DISABLED' } 
-      }).sort({ name: 1 });
-      const g2bGames = await G2BulkProduct.find({ 
-        isEnabled: { $ne: false }, 
-        status: { $ne: 'DISABLED' } 
-      }).sort({ name: 1 });
+      const { tpn: tpnGames, g2b: g2bGames } = await getCachedProducts();
 
-      if (lootbarGames.length === 0 && tpnGames.length === 0 && g2bGames.length === 0) {
+      if (tpnGames.length === 0 && g2bGames.length === 0) {
         return ctx.reply('⚠️ No games are currently enabled by the Owner.');
       }
 
       let msg = `🎮 *ရရှိနိုင်သော Games စာရင်း အားလုံး (All Available Games)*\n\n`;
-
-      if (lootbarGames.length > 0) {
-        msg += `🔹 *[LootBar API Games]*\n`;
-        lootbarGames.forEach(g => {
-          const sk = (g.shortKey || getGameDefaultShortKey(g.name, g.gameId)).toLowerCase();
-          msg += `• *${g.name}* ➔ \`.${sk}\`\n`;
-        });
-        msg += `\n`;
-      }
 
       if (tpnGames.length > 0) {
         msg += `🌐 *[TopupNation API Games]*\n`;
@@ -261,7 +286,7 @@ export function setupBot(
       }
 
       msg += `━━━━━━━━━━━━━━━━━━━━\n` +
-        `💡 *အသုံးပြုနည်း:* Package စာရင်းကြည့်ရန် \`.\` နောက်တွင် short key ရိုက်ပို့ပါ (ဥပမာ: \`.p\` သို့မဟုတ် \`.tp\`)`;
+        `💡 *အသုံးပြုနည်း:* Package စာရင်းကြည့်ရန် \`.\` နောက်တွင် short key ရိုက်ပို့ပါ (ဥပမာ: \`.tp\`)`;
 
       return ctx.reply(msg, { parse_mode: 'Markdown' });
     } catch (err: any) {
@@ -297,7 +322,7 @@ export function setupBot(
   bot.start(async (ctx) => {
     ctx.session = {};
     const welcome = `👋 *Welcome to Multi-Provider Game Top-Up Bot!*\n\n` +
-      `⚡ *Supported Direct APIs:* LootBar, TopupNation, G2Bulk\n\n` +
+      `⚡ *Supported Direct APIs:* TopupNation, G2Bulk\n\n` +
       `📌 *အသုံးပြုနည်း လမ်းညွှန်:*\n` +
       `• *All Games စာရင်း:* \`/games\` သို့မဟုတ် Menu မှ \`🎮 All Games\`\n` +
       `• *Packages ကြည့်ရန်:* \`.<shortKey>\` (ဥပမာ: \`.p\`, \`.ml\`, \`.tp\`)\n` +
@@ -351,7 +376,7 @@ export function setupBot(
   bot.hears(/^[./]([a-zA-Z0-9_-]+)(\s+.*)?$/i, async (ctx, next) => {
     const text = ctx.message.text.trim();
     if (text.includes('\n')) {
-      return await handleBulkOrderFlow(ctx, text, lootbar);
+      return await handleBulkOrderFlow(ctx, text);
     }
     const match = text.match(/^[./]([a-zA-Z0-9_-]+)(\s+.*)?$/i);
     if (!match) return next();
@@ -372,80 +397,64 @@ export function setupBot(
     const rawArgs = match[2] ? parseCommandArgs(match[2]) : [];
 
     if (inputKey === 'bulk' || inputKey === 'bulkorder') {
-      return await handleBulkOrderFlow(ctx, text, lootbar);
+      return await handleBulkOrderFlow(ctx, text);
     }
 
     const reservedCommands = [
       'start', 'cancel', 'auth', 'unauth', 'users', 'addbalance', 'orders', 'balance',
       'games', 'gamelist', 'help', 'account', 'profile', 'wallet', 'myaccount', 'mywallet',
       'mybalance', 'topup', 'deposit', 'requesttopup', 'requestbalance', 'addmoney',
-      'lootbar', 'lb', 'tpn', 'topupnation', 'bulk', 'bulkorder', 'bulkhistory', 'status', 'track'
+      'tpn', 'topupnation', 'bulk', 'bulkorder', 'bulkhistory', 'status', 'track'
     ];
     if (reservedCommands.includes(inputKey)) {
       return next();
     }
 
     try {
-      const savedGames = await SavedGame.find();
-      const matchedGame = savedGames.find((g: any) => {
-        const k = (g.shortKey || getGameDefaultShortKey(g.name, g.gameId)).toLowerCase();
-        return k === inputKey || String(g.gameId) === inputKey;
-      });
+      const { tpn: tpnGames, g2b: g2bGames } = await getCachedProducts();
 
-      if (!matchedGame) {
-        const tpnProducts = await TopupNationProduct.find();
-        let matchedTpn = tpnProducts.find((p: any) => {
-          const k = (p.shortKey || '').toLowerCase();
-          return k === inputKey || String(p.productId).toLowerCase() === inputKey;
-        });
+      let matchedTpn = tpnGames.find((p: any) => (p.shortKey && p.shortKey.toLowerCase() === inputKey) || String(p.productId).toLowerCase() === inputKey);
+      if (!matchedTpn) {
+        matchedTpn = await TopupNationProduct.findOne({
+          $or: [{ shortKey: inputKey }, { productId: inputKey }]
+        }).lean();
+      }
 
-        if (matchedTpn) {
-          if (matchedTpn.isEnabled === false || matchedTpn.status === 'DISABLED') {
-            return ctx.reply(`⚠️ *${matchedTpn.name}* is currently disabled by Admin.`, { parse_mode: 'Markdown' });
-          }
-
-          const activeShortKey = (matchedTpn.shortKey || inputKey).toLowerCase();
-          matchedTpn = await syncTopupNationProductLive(matchedTpn, activeShortKey, topupNation);
-          if (rawArgs.length === 0) {
-            return await handleTopupNationPackageList(ctx, matchedTpn, activeShortKey);
-          } else {
-            return await handleTopupNationDirectOrder(ctx, matchedTpn, activeShortKey, rawArgs, (c) => showOrderConfirmation(c, lootbar, topupNation));
-          }
+      if (matchedTpn) {
+        if (matchedTpn.isEnabled === false || matchedTpn.status === 'DISABLED') {
+          return ctx.reply(`⚠️ *${matchedTpn.name}* is currently disabled by Admin.`, { parse_mode: 'Markdown' });
         }
 
-        const g2bProducts = await G2BulkProduct.find();
-        const matchedG2b = g2bProducts.find((p: any) => {
-          const k = (p.shortKey || '').toLowerCase();
-          return k === inputKey || String(p.productId).toLowerCase() === inputKey;
-        });
+        const activeShortKey = (matchedTpn.shortKey || inputKey).toLowerCase();
+        matchedTpn = await syncTopupNationProductLive(matchedTpn, activeShortKey, topupNation);
+        if (rawArgs.length === 0) {
+          return await handleTopupNationPackageList(ctx, matchedTpn, activeShortKey);
+        } else {
+          return await handleTopupNationDirectOrder(ctx, matchedTpn, activeShortKey, rawArgs, (c) => showOrderConfirmation(c, topupNation));
+        }
+      }
 
-        if (matchedG2b) {
-          if (matchedG2b.isEnabled === false || matchedG2b.status === 'DISABLED') {
-            return ctx.reply(`⚠️ *${matchedG2b.name}* is currently disabled by Admin.`, { parse_mode: 'Markdown' });
-          }
+      let matchedG2b = g2bGames.find((p: any) => (p.shortKey && p.shortKey.toLowerCase() === inputKey) || String(p.productId).toLowerCase() === inputKey);
+      if (!matchedG2b) {
+        matchedG2b = await G2BulkProduct.findOne({
+          $or: [{ shortKey: inputKey }, { productId: inputKey }]
+        }).lean();
+      }
 
-          const activeShortKey = (matchedG2b.shortKey || inputKey).toLowerCase();
-          if (rawArgs.length === 0) {
-            return await handleG2BulkPackageList(ctx, matchedG2b, activeShortKey);
-          } else {
-            return await handleG2BulkDirectOrder(ctx, matchedG2b, activeShortKey, rawArgs, (c) => showOrderConfirmation(c, lootbar, topupNation));
-          }
+      if (matchedG2b) {
+        if (matchedG2b.isEnabled === false || matchedG2b.status === 'DISABLED') {
+          return ctx.reply(`⚠️ *${matchedG2b.name}* is currently disabled by Admin.`, { parse_mode: 'Markdown' });
         }
 
-        return next();
+        const activeShortKey = (matchedG2b.shortKey || inputKey).toLowerCase();
+        if (rawArgs.length === 0) {
+          return await handleG2BulkPackageList(ctx, matchedG2b, activeShortKey);
+        } else {
+          return await handleG2BulkDirectOrder(ctx, matchedG2b, activeShortKey, rawArgs, (c) => showOrderConfirmation(c, topupNation));
+        }
       }
 
-      if (matchedGame.isEnabled === false) {
-        return ctx.reply(`⚠️ *${matchedGame.name}* is currently disabled by Admin.`, { parse_mode: 'Markdown' });
-      }
-
-      const activeShortKey = (matchedGame.shortKey || inputKey).toLowerCase();
-
-      if (rawArgs.length === 0) {
-        return await handleGamePackageList(ctx, matchedGame, activeShortKey, lootbar);
-      } else {
-        return await handleGameDirectOrder(ctx, matchedGame, activeShortKey, rawArgs, lootbar, (c) => showOrderConfirmation(c, lootbar, topupNation));
-      }
+      return next();
     } catch (err: any) {
       console.error('Short key processing error:', err);
       return ctx.reply(`❌ Error: ${err.message}`);
@@ -509,7 +518,7 @@ export function setupBot(
       ctx.session.currentFieldIndex = nextIndex;
       await askNextRequiredField(ctx);
     } else {
-      await showOrderConfirmation(ctx, lootbar, topupNation);
+      await showOrderConfirmation(ctx, topupNation);
     }
   });
 
@@ -583,7 +592,7 @@ export function setupBot(
       }
       ctx.session.quantity = parsedQty;
       ctx.session.step = 'CONFIRM_ORDER';
-      return await showOrderConfirmation(ctx, lootbar, topupNation);
+      return await showOrderConfirmation(ctx, topupNation);
     }
 
     if (ctx.session?.step === 'INPUT_EXTRA_INFO') {
@@ -607,25 +616,24 @@ export function setupBot(
         ctx.session.currentFieldIndex = nextIndex;
         await askNextRequiredField(ctx);
       } else {
-        await showOrderConfirmation(ctx, lootbar, topupNation);
+        await showOrderConfirmation(ctx, topupNation);
       }
       return;
     }
 
     if (userInput.includes('\n')) {
-      return await handleBulkOrderFlow(ctx, userInput, lootbar);
+      return await handleBulkOrderFlow(ctx, userInput);
     }
 
     return next();
   });
 
   // Register all modular handlers
-  registerLootBarHandlers(bot, lootbar, askNextRequiredField, (c: any) => showOrderConfirmation(c, lootbar, topupNation));
-  registerTopupNationHandlers(bot, topupNation, (c: any) => showOrderConfirmation(c, lootbar, topupNation), askNextRequiredField);
-  registerG2BulkHandlers(bot, g2bulk, (c: any) => showOrderConfirmation(c, lootbar, topupNation));
-  registerBulkOrderHandlers(bot, lootbar, topupNation, g2bulk, adminChatId, mainMenu, activeUserOrderLocks, processedOrderMessages);
-  registerAccountHandlers(bot, adminChatId, mainMenu, (c: any) => renderOrderHistory(c, adminChatId));
-  registerOrderHandlers(bot, lootbar, topupNation, g2bulk, adminChatId, mainMenu, activeUserOrderLocks, processedOrderMessages);
+  registerTopupNationHandlers(bot, topupNation, (c: any) => showOrderConfirmation(c, topupNation), askNextRequiredField);
+  registerG2BulkHandlers(bot, g2bulk, (c: any) => showOrderConfirmation(c, topupNation));
+  registerBulkOrderHandlers(bot, topupNation, g2bulk, adminChatId, mainMenu, activeUserOrderLocks, processedOrderMessages);
+  registerAccountHandlers(bot, adminChatId, mainMenu, (c: any) => renderOrderHistory(c, adminChatId), topupNation, g2bulk);
+  registerOrderHandlers(bot, topupNation, g2bulk, adminChatId, mainMenu, activeUserOrderLocks, processedOrderMessages);
 
   // Initialize and Launch Bot
   if (options.isServerless && options.webhookUrl) {
@@ -636,14 +644,14 @@ export function setupBot(
       console.error('Failed to set Telegram Bot Webhook:', err);
     });
   } else {
-    // Polling mode with distributed leadership lock and graceful conflict resolution
+    // Polling mode with leadership lock
     const leaderLockId = uuidv4();
     const lockKey = 'telegram_bot_polling_leader';
 
     async function acquireLeaderLock(): Promise<boolean> {
       try {
         const now = new Date();
-        const staleThreshold = new Date(now.getTime() - 18000); // 18s stale threshold
+        const staleThreshold = new Date(now.getTime() - 25000);
 
         const lock = await BotLeaderLock.findOneAndUpdate(
           {
@@ -659,102 +667,54 @@ export function setupBot(
               lastHeartbeat: now
             }
           },
-          { returnDocument: 'after' }
+          { upsert: true, returnDocument: 'after' }
         );
 
-        if (lock && lock.instanceId === leaderLockId) {
-          return true;
-        }
-
-        const count = await BotLeaderLock.countDocuments({ lockKey });
-        if (count === 0) {
-          try {
-            await BotLeaderLock.create({
-              lockKey,
-              instanceId: leaderLockId,
-              lastHeartbeat: now
-            });
-            return true;
-          } catch {
-            return false;
-          }
-        }
-
-        return false;
-      } catch {
+        return lock.instanceId === leaderLockId;
+      } catch (err: any) {
         return false;
       }
     }
 
     let isPolling = false;
-    let isStarting = false;
 
-    async function startPolling() {
-      if (isPolling || isStarting) return;
-      isStarting = true;
-      try {
-        // Reset existing webhook & drop pending updates to clear 409 conflicts
-        await bot.telegram.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
-        
-        // Give previous long-polling connection 1.2s to release cleanly
-        await new Promise(r => setTimeout(r, 1200));
-
-        await bot.launch({
-          dropPendingUpdates: true,
-          allowedUpdates: ['message', 'callback_query']
-        });
-        isPolling = true;
-        console.log('Telegram Bot successfully started via Polling mode');
-      } catch (err: any) {
-        isPolling = false;
-        if (
-          err?.response?.error_code === 409 || 
-          err?.message?.includes('409') || 
-          err?.code === 409 || 
-          err?.message?.includes('getUpdates')
-        ) {
-          console.warn('⚠️ [Telegram Bot] 409 Conflict absorbed: Previous connection is releasing. Will automatically retry in next cycle.');
-        } else {
-          console.error('Failed to start Telegram Bot in Polling mode:', err?.message || err);
-        }
-      } finally {
-        isStarting = false;
-      }
-    }
-
-    async function stopPolling() {
-      if (!isPolling) return;
-      isPolling = false;
-      try {
-        bot.stop('Leadership change or shutdown');
-      } catch (e) {}
-    }
-
-    const leaderInterval = setInterval(async () => {
+    setInterval(async () => {
       const isLeader = await acquireLeaderLock();
-      if (isLeader && !isPolling && !isStarting) {
-        await startPolling();
+      if (isLeader && !isPolling) {
+        console.log(`[Bot Leader] Instance ${leaderLockId} acquired polling leadership.`);
+        isPolling = true;
+        bot.launch({
+          dropPendingUpdates: true
+        }).then(() => {
+          console.log('Telegram Bot successfully started via Polling mode');
+        }).catch((err: any) => {
+          console.error('Failed to start Telegram Bot in Polling mode:', err);
+          isPolling = false;
+        });
       } else if (!isLeader && isPolling) {
         console.log(`[Bot Leader] Instance ${leaderLockId} lost polling leadership. Stopping polling...`);
-        await stopPolling();
+        isPolling = false;
+        try { bot.stop('Lost leadership'); } catch (e) {}
       }
-    }, 8000);
+    }, 10000);
 
     acquireLeaderLock().then(isLeader => {
-      if (isLeader && !isPolling && !isStarting) {
-        startPolling();
+      if (isLeader && !isPolling) {
+        isPolling = true;
+        bot.launch({
+          dropPendingUpdates: true
+        }).then(() => {
+          console.log('Telegram Bot successfully launched in polling mode.');
+        }).catch((err: any) => {
+          console.error('Failed to launch Telegram Bot:', err);
+          isPolling = false;
+        });
       }
     });
-
-    const cleanup = () => {
-      clearInterval(leaderInterval);
-      stopPolling();
-      BotLeaderLock.deleteOne({ lockKey, instanceId: leaderLockId }).catch(() => {});
-    };
-
-    process.once('SIGINT', cleanup);
-    process.once('SIGTERM', cleanup);
   }
+
+  process.once('SIGINT', () => bot.stop('SIGINT'));
+  process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
   return bot;
 }

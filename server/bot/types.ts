@@ -1,11 +1,10 @@
 import { Context } from 'telegraf';
 import { BulkOrderItem } from '../bulkOrderService';
-import { LootBarClient } from '../providers/lootbar/LootBarClient';
 import { TopupNationService } from '../providers/topupnation/TopupNationService';
 import { G2BulkService } from '../providers/g2bulk/G2BulkService';
 
 export interface SessionData {
-  provider?: 'lootbar' | 'topupnation' | 'g2bulk';
+  provider?: 'topupnation' | 'g2bulk';
   step?: string;
   gameId?: string;
   gameName?: string;
@@ -33,7 +32,6 @@ export interface MyContext extends Context {
 }
 
 export interface BotServices {
-  lootbar: LootBarClient;
   topupNation?: TopupNationService;
   g2bulk?: G2BulkService;
   adminChatId?: string;

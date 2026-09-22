@@ -3,7 +3,6 @@ import path from "path";
 import cors from "cors";
 import dotenv from "dotenv";
 import mongoose from "mongoose";
-import { LootBarClient } from "./server/providers/lootbar/LootBarClient";
 import { TopupNationClient } from "./server/providers/topupnation/TopupNationClient";
 import { TopupNationService } from "./server/providers/topupnation/TopupNationService";
 import { G2BulkClient } from "./server/providers/g2bulk/G2BulkClient";
@@ -11,7 +10,6 @@ import { G2BulkService } from "./server/providers/g2bulk/G2BulkService";
 import { setupBot } from "./server/bot";
 import { PricePoller } from "./server/pricePoller";
 import { connectDB } from "./server/db";
-import { SavedGame } from "./server/models/SavedGame";
 import { Order } from "./server/models/Order";
 import { AppConfig } from "./server/models/AppConfig";
 import { User } from "./server/models/User";
@@ -27,13 +25,8 @@ dotenv.config();
 
 // Prevent server crash from unhandled rejections (e.g. Telegram 409 Conflict)
 process.on('unhandledRejection', (reason: any, promise) => {
-  if (
-    reason?.response?.error_code === 409 ||
-    reason?.code === 409 ||
-    reason?.message?.includes('409') ||
-    reason?.message?.includes('getUpdates')
-  ) {
-    console.warn('⚠️ Telegram Bot Polling Conflict (409) absorbed: Another instance or previous connection is active. Handled safely.');
+  if (reason?.response?.error_code === 409 || reason?.message?.includes('409: Conflict')) {
+    console.warn('⚠️ Telegram Bot Polling Conflict (409) absorbed: Another instance is running. Ignoring to prevent crash...');
   } else {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
   }
@@ -45,11 +38,9 @@ process.on('uncaughtException', (error: any) => {
     error?.code === 'ECONNRESET' ||
     error?.code === 'ETIMEDOUT' ||
     error?.code === 'ENOTFOUND' ||
-    error?.code === 409 ||
-    error?.message?.includes('409') ||
-    error?.message?.includes('getUpdates')
+    error?.message?.includes('409: Conflict')
   ) {
-    console.warn(`⚠️ [Transient Network / Telegram Polling Exception absorbed]:`, error.message || error);
+    console.warn(`⚠️ [Transient Network Exception absorbed]:`, error.message || error);
     return;
   }
   console.error('Uncaught Exception:', error);
@@ -79,13 +70,6 @@ app.use(express.json({
   }
 }));
 
-// Initialize LootBar Client
-const LOOTBAR_NICKNAME = process.env.LOOTBAR_NICKNAME || "";
-const LOOTBAR_EMAIL = process.env.LOOTBAR_EMAIL || "";
-const LOOTBAR_PASSWORD = process.env.LOOTBAR_PASSWORD || "";
-const APP_URL = (process.env.APP_URL || "").replace(/\/$/, "");
-const lootbarClient = new LootBarClient(LOOTBAR_NICKNAME, LOOTBAR_EMAIL, LOOTBAR_PASSWORD, undefined, APP_URL);
-
 // Initialize TopupNation Client & Service
 const TOPUPNATION_API_KEY = process.env.TOPUPNATION_API_KEY || "";
 const TOPUPNATION_API_SECRET = process.env.TOPUPNATION_API_SECRET || "";
@@ -98,12 +82,12 @@ const topupNationClient = new TopupNationClient({
 const topupNationService = new TopupNationService(topupNationClient);
 
 const g2bulkClient = new G2BulkClient({
-  apiKey: process.env.G2BULK_API_KEY || ''
+  apiKey: process.env.G2BULK_API_KEY || process.env.G2BULK_KEY || '',
+  baseUrl: process.env.G2BULK_BASE_URL || process.env.G2BULK_API_URL || 'https://api.g2bulk.com/v2'
 });
 const g2bulkService = new G2BulkService(g2bulkClient);
 
-
-const pricePoller = new PricePoller(lootbarClient, topupNationService, g2bulkService);
+const pricePoller = new PricePoller(topupNationService, g2bulkService);
 
 // Initialize Telegram Bot State
 let telegramBot: ReturnType<typeof setupBot> | undefined;
@@ -125,7 +109,7 @@ async function initOrRestartTelegramBot(token: string, adminChatId: string) {
     activeBotToken = token;
     activeAdminChatId = adminChatId;
     
-    telegramBot = setupBot(token, adminChatId, lootbarClient, {
+    telegramBot = setupBot(token, adminChatId, {
       isServerless,
       webhookUrl
     }, topupNationService, g2bulkService);
@@ -154,12 +138,6 @@ if (isServerless || webhookUrl) {
 // Initialize MongoDB and load config
 connectDB().then(async () => {
   try {
-    const config = await AppConfig.findOne({ key: 'lootbar_credentials' });
-    if (config && config.value) {
-      lootbarClient.updateCredentials(config.value.nickname, config.value.email, config.value.password);
-      console.log("Loaded LootBar credentials from MongoDB");
-    }
-
     const tpnConfig = await AppConfig.findOne({ key: 'topupnation_credentials' });
     if (tpnConfig && tpnConfig.value) {
       topupNationClient.updateCredentials(tpnConfig.value);
@@ -167,8 +145,21 @@ connectDB().then(async () => {
     }
 
     const g2bulkConfig = await AppConfig.findOne({ key: 'g2bulk_credentials' });
+    const envG2bKey = process.env.G2BULK_API_KEY || process.env.G2BULK_KEY || '';
+    const envG2bUrl = process.env.G2BULK_BASE_URL || process.env.G2BULK_API_URL || 'https://api.g2bulk.com/v2';
+
     if (g2bulkConfig?.value?.apiKey) {
-      (g2bulkClient as any).apiKey = g2bulkConfig.value.apiKey;
+      g2bulkClient.updateCredentials({
+        apiKey: g2bulkConfig.value.apiKey,
+        baseUrl: g2bulkConfig.value.baseUrl || envG2bUrl
+      });
+      console.log("Loaded G2Bulk credentials from MongoDB");
+    } else if (envG2bKey) {
+      g2bulkClient.updateCredentials({
+        apiKey: envG2bKey,
+        baseUrl: envG2bUrl
+      });
+      console.log("Loaded G2Bulk credentials from environment variables");
     }
     
     // Load Telegram configuration from DB
@@ -222,54 +213,15 @@ setTimeout(() => {
 // ---------------------------------------------------------
 
 app.post("/api/settings/lootbar", async (req, res) => {
-  const { email, password, nickname } = req.body;
-  
-  if (!email || !password || !nickname) {
-    return res.status(400).json({ error: "Missing required credentials" });
-  }
-
-  try {
-    // 1. Temporarily test credentials
-    const testClient = new LootBarClient(nickname, email, password);
-    await testClient.testLogin(); // This will test the login directly
-
-    // 2. If successful, update global client
-    lootbarClient.updateCredentials(nickname, email, password);
-
-    // 3. Save to MongoDB
-    await AppConfig.findOneAndUpdate(
-      { key: 'lootbar_credentials' },
-      { value: { email, password, nickname } },
-      { upsert: true, returnDocument: 'after' }
-    );
-
-    res.json({ success: true });
-  } catch (err: any) {
-    res.status(401).json({ error: err.message || "Failed to authenticate with LootBar" });
-  }
+  res.json({ success: true, message: "LootBar API has been disabled" });
 });
 
 app.get("/api/settings/lootbar/status", async (req, res) => {
-  try {
-    const config = await AppConfig.findOne({ key: 'lootbar_credentials' });
-    res.json({ 
-      isConfigured: !!config || (!!process.env.LOOTBAR_EMAIL && !!process.env.LOOTBAR_PASSWORD)
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+  res.json({ isConfigured: false });
 });
 
 app.get("/api/lootbar/balance", async (req, res) => {
-  try {
-    if (!lootbarClient.isConfigured()) {
-      return res.json({ success: false, data: null, error: "LootBar not configured" });
-    }
-    const asset = await lootbarClient.queryAsset();
-    res.json({ success: true, data: asset.data });
-  } catch (err: any) {
-    res.json({ success: false, data: null, error: err.message });
-  }
+  res.json({ success: false, data: null, error: "LootBar not configured" });
 });
 
 app.get("/api/settings/admin", async (req, res) => {
@@ -623,52 +575,15 @@ app.post("/api/topup-requests/:requestId/reject", async (req, res) => {
 });
 
 app.get("/api/games", async (req, res) => {
-  try {
-    if (!lootbarClient.isConfigured()) {
-      return res.json({ error: "LootBar not configured", data: { items: [] } });
-    }
-    const data = await lootbarClient.getGames(1, 100);
-    if (data?.data?.total_page && data.data.total_page > 1) {
-      let allItems = [...(data.data.items || [])];
-      for (let p = 2; p <= data.data.total_page; p++) {
-        try {
-          const nextData = await lootbarClient.getGames(p, 100);
-          if (nextData?.data?.items) {
-            allItems = allItems.concat(nextData.data.items);
-          }
-        } catch (e) {
-          console.error(`Failed to fetch LootBar games page ${p}`, e);
-        }
-      }
-      data.data.items = allItems;
-    }
-    res.json(data);
-  } catch (err: any) {
-    res.json({ error: err.message, data: { items: [] } });
-  }
+  res.json({ data: { items: [] } });
 });
 
-
 app.get("/api/skus", async (req, res) => {
-  try {
-    if (!lootbarClient.isConfigured()) {
-      return res.json({ error: "LootBar not configured", data: { items: [] } });
-    }
-    const data = await lootbarClient.getSkus(req.query.game_id as string);
-    res.json(data);
-  } catch (err: any) {
-    res.json({ error: err.message, data: { items: [] } });
-  }
+  res.json({ data: { items: [] } });
 });
 
 app.post("/api/order", async (req, res) => {
-  try {
-    const { reference_id, game_id, sku_id, quantity, extra_info } = req.body;
-    const data = await lootbarClient.createOrder(reference_id, game_id, sku_id, quantity || 1, extra_info);
-    res.json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+  res.status(400).json({ error: "LootBar ordering is disabled" });
 });
 
 // Bulk Order: Parse & Preview
@@ -678,7 +593,7 @@ app.post("/api/orders/bulk/preview", async (req, res) => {
     if (!text || typeof text !== 'string') {
       return res.status(400).json({ success: false, error: "Text is required" });
     }
-    const result = await BulkOrderService.parseBulkText(text, lootbarClient);
+    const result = await BulkOrderService.parseBulkText(text);
     res.json({ success: true, data: result });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -718,7 +633,6 @@ app.post("/api/orders/bulk/execute", async (req, res) => {
     const summary = await BulkOrderService.executeBulkOrders(
       targetUser,
       items,
-      lootbarClient,
       topupNationService,
       g2bulkService,
       { rawText: req.body.rawText, source: 'web' }
@@ -764,125 +678,16 @@ app.get("/api/orders/bulk/batch/:batchId", async (req, res) => {
 
 app.get("/api/order/:referenceId", async (req, res) => {
   try {
-    const data = await lootbarClient.queryOrder(req.params.referenceId);
-    res.json(data);
+    const order = await Order.findOne({ referenceId: req.params.referenceId });
+    res.json({ success: true, data: order });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
 app.get("/api/asset", async (req, res) => {
-  try {
-    const data = await lootbarClient.queryAsset();
-    res.json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+  res.json({ success: false, data: null });
 });
-
-// ---------------------------------------------------------
-// Real-Time Order Sync Engine
-// ---------------------------------------------------------
-async function syncActiveOrders() {
-  if (!lootbarClient.isConfigured()) return;
-  if (mongoose.connection.readyState !== 1) return;
-  try {
-    // Find active orders that are in Pending (0), In Transaction (1), or Settling (4)
-    const activeOrders = await Order.find({
-      state: { $in: [0, 1, 4] }
-    }).sort({ createdAt: -1 }).limit(20);
-
-    for (const order of activeOrders) {
-      try {
-        const queryRes = await lootbarClient.queryOrder(order.referenceId);
-        if (queryRes && queryRes.status === 'ok' && queryRes.data) {
-          const newState = queryRes.data.state;
-          const orderId = queryRes.data.order_id || order.orderId;
-          
-          if (newState !== undefined && newState !== order.state) {
-            console.log(`[Order Sync] Order ${order.referenceId} transitioned from state ${order.state} -> ${newState}`);
-            
-            order.state = newState;
-            if (orderId) order.orderId = orderId;
-            await order.save();
-
-            // Notify only the relevant user who placed this order
-            const notiSettings = await getNotificationSettings();
-            if (telegramBot && notiSettings.lootbarEnabled) {
-              const safeGame = (order.gameName || 'Game').replace(/[*_`\[\]]/g, '');
-              const safeSku = (order.skuName || 'Top-up').replace(/[*_`\[\]]/g, '');
-              const safeOrderNum = (order.orderId || order.referenceId || '').replace(/[*_`\[\]]/g, '');
-              const safePlayer = order.playerName ? order.playerName.replace(/[*_`\[\]]/g, '') : '';
-
-              if (newState === 2) {
-                // Completed
-                const lines = [
-                  `🎉 *Top-Up Completed!*`,
-                  `═════════════════════════`,
-                  `├── 🆔 Order ID: \`${safeOrderNum}\``,
-                  `├── 🎮 Game: *${safeGame}*`,
-                  `├── 📦 Package: *${safeSku}*`,
-                ];
-                if (safePlayer) {
-                  lines.push(`├── 👤 Player: \`${safePlayer}\``);
-                }
-                lines.push(`├── ✅ Status: *COMPLETED*`);
-                lines.push(`└── 💬 Message: _Fulfilled successfully on game server_`);
-                lines.push(`═════════════════════════`);
-
-                const msg = lines.join('\n');
-                try {
-                  await telegramBot.telegram.sendMessage(order.telegramChatId, msg, { parse_mode: 'Markdown' });
-                } catch (e) {
-                  try {
-                    await telegramBot.telegram.sendMessage(order.telegramChatId, msg.replace(/[*_`]/g, ''));
-                  } catch (err2) {
-                    console.error('Failed to notify user of order completion:', err2);
-                  }
-                }
-              } else if (newState === 3) {
-                // Failed -> Auto Refund
-                const user = await User.findOne({ telegramChatId: order.telegramChatId });
-                const orderProvider = order.provider || (order.extraInfo as any)?.provider || 'lootbar';
-                const isApiLinked = isProviderApiLinked(user, orderProvider);
-                if (user && order.price > 0 && !isApiLinked) {
-                  user.balance += order.price;
-                  await user.save();
-                }
-
-                const lines = [
-                  `❌ *Top-Up Order Failed*`,
-                  `═════════════════════════`,
-                  `├── 🆔 Order ID: \`${safeOrderNum}\``,
-                  `├── 🎮 Game: *${safeGame}*`,
-                  `├── 📦 Package: *${safeSku}*`,
-                  `├── ❌ Status: *FAILED*`,
-                  `└── 💬 Message: _Could not be fulfilled on game server_${!isApiLinked ? ` (Refunded $${order.price.toFixed(2)} USD to wallet)` : ''}`,
-                  `═════════════════════════`
-                ];
-
-                const msg = lines.join('\n');
-                try {
-                  await telegramBot.telegram.sendMessage(order.telegramChatId, msg, { parse_mode: 'Markdown' });
-                } catch (e) {
-                  try {
-                    await telegramBot.telegram.sendMessage(order.telegramChatId, msg.replace(/[*_`]/g, ''));
-                  } catch (err2) {
-                    console.error('Failed to notify user of order failure:', err2);
-                  }
-                }
-              }
-            }
-          }
-        }
-      } catch (err: any) {
-        // Individual order query failed (e.g. rate limit), continue next
-      }
-    }
-  } catch (err) {
-    console.error('Active order sync cycle error:', err);
-  }
-}
 
 // Backfill missing telegramUsername and info on existing orders
 async function backfillOrderUsernames() {
@@ -923,9 +728,6 @@ async function backfillOrderUsernames() {
 // Trigger initial backfill
 setTimeout(backfillOrderUsernames, 2000);
 
-// Run active order sync every 8 seconds
-setInterval(syncActiveOrders, 8000);
-
 app.get("/api/orders", async (req, res) => {
   try {
     const limit = Math.min(Math.max(Number(req.query.limit) || 500, 1), 1000);
@@ -952,15 +754,13 @@ app.get("/api/orders", async (req, res) => {
     const orders = await Order.find(query).sort({ createdAt: -1 }).limit(limit);
     res.setHeader('Content-Type', 'application/json');
     res.json({ success: true, data: orders });
-    // Trigger sync in background non-blocking
-    syncActiveOrders().catch(() => {});
     topupNationService.pollActiveOrders().catch(() => {});
   } catch (err: any) {
     res.status(500).json({ success: false, data: [], error: err.message });
   }
 });
 
-// Force sync a specific order in real time (Supports LootBar and TopupNation)
+// Force sync a specific order in real time (Supports TopupNation and G2Bulk)
 app.post("/api/orders/:referenceId/sync", async (req, res) => {
   try {
     const { referenceId } = req.params;
@@ -1022,310 +822,46 @@ app.post("/api/orders/:referenceId/sync", async (req, res) => {
       return res.json({ success: true, data: order, message: "No change from G2Bulk API" });
     }
 
-    if (!lootbarClient.isConfigured()) {
-      return res.status(400).json({ error: "LootBar API not configured" });
-    }
-
-    const queryRes = await lootbarClient.queryOrder(order.referenceId);
-    if (queryRes && queryRes.status === 'ok' && queryRes.data) {
-      const newState = queryRes.data.state;
-      const orderId = queryRes.data.order_id || order.orderId;
-      
-      if (newState !== undefined) {
-        order.state = newState;
-        if (orderId) order.orderId = orderId;
-        await order.save();
-      }
-
-      return res.json({
-        success: true,
-        data: order,
-        apiData: queryRes.data
-      });
-    }
-
-    res.json({ success: true, data: order, message: "No change from API" });
+    res.json({ success: true, data: order, message: "No API sync handler for this provider" });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // ---------------------------------------------------------
-// MongoDB Endpoints (Saved Games)
+// Saved Games Endpoints (Legacy Stub)
 // ---------------------------------------------------------
 
 app.get("/api/saved-games", async (req, res) => {
-  try {
-    if (!process.env.MONGODB_URI) {
-      return res.json({ data: [] });
-    }
-    const savedGames = await SavedGame.find().sort({ savedAt: -1 });
-    res.json({ data: savedGames });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+  res.json({ data: [] });
 });
 
-function getDefaultShortKey(name: string, gameId: string): string {
-  const n = (name || '').toLowerCase();
-  if (n.includes('pubg')) return 'p';
-  if (n.includes('mobile legends') || n.includes('mlbb')) return 'ml';
-  if (n.includes('free fire')) return 'ff';
-  if (n.includes('genshin')) return 'gi';
-  if (n.includes('honkai') || n.includes('star rail')) return 'hsr';
-  if (n.includes('roblox')) return 'rbx';
-  if (n.includes('arena of valor') || n.includes('aov')) return 'aov';
-  if (n.includes('call of duty') || n.includes('codm')) return 'codm';
-  if (n.includes('clash of clans') || n.includes('coc')) return 'coc';
-  if (n.includes('brawl stars')) return 'bs';
-  
-  // Extract acronym or clean first word
-  const words = n.replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
-  if (words.length > 1) {
-    return words.map(w => w[0]).join('').slice(0, 4);
-  }
-  return words[0]?.slice(0, 4) || `g${gameId}`;
-}
-
 app.post("/api/saved-games", async (req, res) => {
-  try {
-    if (!process.env.MONGODB_URI) {
-      return res.status(400).json({ error: "Database not configured" });
-    }
-    const { gameId, name, shortKey } = req.body;
-    if (!gameId || !name) {
-      return res.status(400).json({ error: "gameId and name are required" });
-    }
-
-    const cleanShortKey = (shortKey || getDefaultShortKey(name, gameId))
-      .toLowerCase()
-      .replace(/^[./]+/, '')
-      .trim();
-    
-    // Fetch initial SKUs from LootBar if available
-    let initialSkus: any[] = [];
-    if (lootbarClient.isConfigured()) {
-      try {
-        const skuRes = await lootbarClient.getSkus(gameId);
-        if (skuRes?.data?.items && Array.isArray(skuRes.data.items)) {
-          initialSkus = skuRes.data.items;
-        }
-      } catch (e) {}
-    }
-
-    const updateDoc: any = { name, shortKey: cleanShortKey };
-    if (initialSkus.length > 0) {
-      updateDoc.lastKnownSkus = initialSkus;
-    }
-
-    // Upsert the game with shortKey
-    const saved = await SavedGame.findOneAndUpdate(
-      { gameId },
-      updateDoc,
-      { upsert: true, returnDocument: 'after' }
-    );
-    res.json({ data: saved });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+  res.json({ data: null });
 });
 
 app.get("/api/saved-games/:gameId/skus", async (req, res) => {
-  try {
-    const { gameId } = req.params;
-    let skus: any[] = [];
-
-    // 1. Try to fetch live SKUs from LootBar API
-    if (lootbarClient.isConfigured()) {
-      try {
-        const skuRes = await lootbarClient.getSkus(gameId);
-        if (skuRes?.data?.items && Array.isArray(skuRes.data.items) && skuRes.data.items.length > 0) {
-          skus = skuRes.data.items;
-          // Cache to database
-          if (process.env.MONGODB_URI) {
-            await SavedGame.findOneAndUpdate({ gameId }, { lastKnownSkus: skus });
-          }
-        }
-      } catch (err: any) {
-        console.warn(`Could not fetch live SKUs from LootBar for ${gameId}:`, err.message);
-      }
-    }
-
-    // 2. Fallback to cached SKUs in DB if live fetch was empty
-    if (skus.length === 0 && process.env.MONGODB_URI) {
-      const game = await SavedGame.findOne({ gameId });
-      if (game && game.lastKnownSkus && game.lastKnownSkus.length > 0) {
-        skus = game.lastKnownSkus;
-      }
-    }
-
-    res.json({ success: true, data: skus });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message, data: [] });
-  }
+  res.json({ success: true, data: [] });
 });
 
 app.patch("/api/saved-games/:gameId", async (req, res) => {
-  try {
-    if (!process.env.MONGODB_URI) {
-      return res.status(400).json({ error: "Database not configured" });
-    }
-    const { shortKey, name, skuShortKeys } = req.body;
-    const updateData: any = {};
-    if (shortKey !== undefined) {
-      updateData.shortKey = String(shortKey).toLowerCase().replace(/^[./]+/, '').trim();
-    }
-    if (name) updateData.name = name;
-    if (skuShortKeys !== undefined) updateData.skuShortKeys = skuShortKeys;
-
-    const saved = await SavedGame.findOneAndUpdate(
-      { gameId: req.params.gameId },
-      updateData,
-      { returnDocument: 'after' }
-    );
-    res.json({ success: true, data: saved });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
+  res.json({ success: true, data: null });
 });
 
 app.delete("/api/saved-games/:gameId", async (req, res) => {
-  try {
-    if (!process.env.MONGODB_URI) {
-      return res.status(400).json({ error: "Database not configured" });
-    }
-    await SavedGame.findOneAndDelete({ gameId: req.params.gameId });
-    res.json({ success: true });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+  res.json({ success: true });
 });
 
 app.post("/api/saved-games/:gameId/toggle", async (req, res) => {
-  try {
-    if (!process.env.MONGODB_URI) {
-      return res.status(400).json({ error: "Database not configured" });
-    }
-    const { isEnabled } = req.body;
-    const game = await SavedGame.findOne({ gameId: req.params.gameId });
-    if (!game) {
-      return res.status(404).json({ error: "Game not found" });
-    }
-    game.isEnabled = isEnabled !== undefined ? Boolean(isEnabled) : !game.isEnabled;
-    await game.save();
-    res.json({ success: true, data: game });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+  res.json({ success: true, data: null });
 });
 
 app.post("/api/saved-games/bulk-toggle", async (req, res) => {
-  try {
-    if (!process.env.MONGODB_URI) {
-      return res.status(400).json({ error: "Database not configured" });
-    }
-    const { gameIds, isEnabled, gamesData } = req.body;
-    if (!Array.isArray(gameIds)) {
-      return res.status(400).json({ error: "gameIds array is required." });
-    }
-
-    const enabledVal = Boolean(isEnabled);
-
-    // If enabling and gamesData (name, id) provided, upsert them
-    if (enabledVal && Array.isArray(gamesData) && gamesData.length > 0) {
-      const ops = gamesData.map((g: any) => {
-        const gId = String(g.id || g.game_id || g.gameId);
-        const gName = g.name || g.game_name || 'Game';
-        const shortKey = g.shortKey || getDefaultShortKey(gName, gId);
-        return {
-          updateOne: {
-            filter: { gameId: gId },
-            update: {
-              $set: {
-                name: gName,
-                isEnabled: true
-              },
-              $setOnInsert: {
-                shortKey,
-                savedAt: new Date(),
-                skuShortKeys: {}
-              }
-            },
-            upsert: true
-          }
-        };
-      });
-      await SavedGame.bulkWrite(ops);
-    } else {
-      await SavedGame.updateMany(
-        { gameId: { $in: gameIds.map(String) } },
-        { $set: { isEnabled: enabledVal } }
-      );
-    }
-
-    const allSaved = await SavedGame.find().sort({ savedAt: -1 });
-    res.json({ success: true, count: gameIds.length, data: allSaved });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+  res.json({ success: true, count: 0, data: [] });
 });
 
 app.post("/api/saved-games/toggle-all", async (req, res) => {
-  try {
-    if (!process.env.MONGODB_URI) {
-      return res.status(400).json({ error: "Database not configured" });
-    }
-    const { isEnabled, allGamesData } = req.body;
-    const enabledVal = Boolean(isEnabled);
-
-    if (enabledVal) {
-      // Upsert all games from allGamesData if provided, or fetch from LootBar
-      let gamesList = allGamesData;
-      if (!Array.isArray(gamesList) || gamesList.length === 0) {
-        try {
-          const resp = await lootbarClient.getGames();
-          gamesList = resp?.data?.items || [];
-        } catch (e) {
-          gamesList = [];
-        }
-      }
-
-      if (Array.isArray(gamesList) && gamesList.length > 0) {
-        const ops = gamesList.map((g: any) => {
-          const gId = String(g.id || g.game_id || g.gameId);
-          const gName = g.name || g.game_name || 'Game';
-          const shortKey = g.shortKey || getDefaultShortKey(gName, gId);
-          return {
-            updateOne: {
-              filter: { gameId: gId },
-              update: {
-                $set: {
-                  name: gName,
-                  isEnabled: true
-                },
-                $setOnInsert: {
-                  shortKey,
-                  savedAt: new Date(),
-                  skuShortKeys: {}
-                }
-              },
-              upsert: true
-            }
-          };
-        });
-        await SavedGame.bulkWrite(ops);
-      } else {
-        await SavedGame.updateMany({}, { $set: { isEnabled: true } });
-      }
-    } else {
-      await SavedGame.updateMany({}, { $set: { isEnabled: false } });
-    }
-
-    const allSaved = await SavedGame.find().sort({ savedAt: -1 });
-    res.json({ success: true, count: allSaved.length, isEnabled: enabledVal, data: allSaved });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+  res.json({ success: true, count: 0, data: [] });
 });
 
 // Global Master Toggle across all or selected providers
@@ -1339,14 +875,9 @@ app.post("/api/games/global-bulk-toggle", async (req, res) => {
     const results: any = {};
 
     if (Array.isArray(items) && items.length > 0) {
-      const lbIds = items.filter(it => it.provider === 'lootbar').map(it => String(it.id));
       const tpnIds = items.filter(it => it.provider === 'topupnation').map(it => String(it.id));
       const g2bIds = items.filter(it => it.provider === 'g2bulk').map(it => String(it.id));
 
-      if (lbIds.length > 0) {
-        await SavedGame.updateMany({ gameId: { $in: lbIds } }, { $set: { isEnabled: enabledVal } });
-        results.lootbar = lbIds.length;
-      }
       if (tpnIds.length > 0) {
         await TopupNationProduct.updateMany(
           { productId: { $in: tpnIds } },
@@ -1363,22 +894,15 @@ app.post("/api/games/global-bulk-toggle", async (req, res) => {
       }
 
       return res.json({ success: true, isEnabled: enabledVal, modified: results });
+    } else {
+      if (provider === 'all' || provider === 'topupnation') {
+        await TopupNationProduct.updateMany({}, { $set: { isEnabled: enabledVal, status: enabledVal ? 'ACTIVE' : 'DISABLED' } });
+      }
+      if (provider === 'all' || provider === 'g2bulk') {
+        await G2BulkProduct.updateMany({}, { $set: { isEnabled: enabledVal, status: enabledVal ? 'ACTIVE' : 'DISABLED' } });
+      }
+      return res.json({ success: true, isEnabled: enabledVal });
     }
-
-    if (provider === 'all' || provider === 'lootbar') {
-      await SavedGame.updateMany({}, { $set: { isEnabled: enabledVal } });
-      results.lootbar = await SavedGame.countDocuments();
-    }
-    if (provider === 'all' || provider === 'topupnation') {
-      await TopupNationProduct.updateMany({}, { $set: { isEnabled: enabledVal, status: enabledVal ? 'ACTIVE' : 'DISABLED' } });
-      results.topupnation = await TopupNationProduct.countDocuments();
-    }
-    if (provider === 'all' || provider === 'g2bulk') {
-      await G2BulkProduct.updateMany({}, { $set: { isEnabled: enabledVal, status: enabledVal ? 'ACTIVE' : 'DISABLED' } });
-      results.g2bulk = await G2BulkProduct.countDocuments();
-    }
-
-    res.json({ success: true, isEnabled: enabledVal, provider, modified: results });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1591,63 +1115,6 @@ app.post("/api/webhooks/topupnation", async (req: any, res) => {
 // ---------------------------------------------------------
 
 app.post("/notify", async (req: any, res) => {
-  const xInnerAuthorization = req.header("X-Inner-Authorization");
-  
-  if (!xInnerAuthorization) {
-    return res.status(401).json({ detail: "Missing signature header." });
-  }
-
-  // Ensure auth to have callbackKey
-  try {
-    if (!lootbarClient.callbackKey) {
-      await lootbarClient.getGames(); // Trigger login to fetch callbackKey if not present
-    }
-  } catch(e) {}
-
-  if (!lootbarClient.callbackKey) {
-    return res.status(500).json({ detail: "Callback key not available to verify webhook." });
-  }
-
-  const method = req.method;
-  const pathQuery = req.originalUrl; // express originalUrl includes path + query
-  const bodyStr = req.rawBody || "";
-
-  const isValid = lootbarClient.verifyWebhookSignature(method, pathQuery, bodyStr, xInnerAuthorization);
-
-  if (!isValid) {
-    return res.status(401).json({ detail: "Invalid signature. Unauthorized webhook request." });
-  }
-
-  const { reference_id, order_id, state } = req.body;
-
-  try {
-    const order = await Order.findOneAndUpdate(
-      { referenceId: reference_id, state: { $ne: state } },
-      { orderId: order_id, state },
-      { returnDocument: 'after' }
-    );
-
-    const notiSettings = await getNotificationSettings();
-    if (order && telegramBot && notiSettings.lootbarEnabled) {
-      const stateMessages: Record<number, string> = {
-        2: `✅ Your top-up (Ref: ${reference_id}) was completed successfully!`,
-        3: `❌ Your top-up (Ref: ${reference_id}) failed. Please contact support.`,
-        5: `⚠️ Your top-up (Ref: ${reference_id}) was partially successful. Please contact support.`,
-        6: `🚫 Your top-up (Ref: ${reference_id}) was cancelled.`,
-      };
-      const msg = stateMessages[state];
-      if (msg) {
-        try {
-          await telegramBot.telegram.sendMessage(order.telegramChatId, msg);
-        } catch (e) {
-          console.error('Failed to notify user of order status change:', e);
-        }
-      }
-    }
-  } catch (error) {
-    console.error('Error processing webhook order update:', error);
-  }
-
   res.json({ status: "success", message: "Webhook processed" });
 });
 
@@ -1672,20 +1139,22 @@ async function startServer() {
 app.get('/api/settings/g2bulk/status', async (req, res) => {
   try {
     const config = await AppConfig.findOne({ key: 'g2bulk_credentials' });
-    const hasEnvKey = !!process.env.G2BULK_API_KEY;
-    const isConfigured = hasEnvKey || !!config?.value?.apiKey;
+    const envKey = process.env.G2BULK_API_KEY || process.env.G2BULK_KEY || '';
+    const envUrl = process.env.G2BULK_BASE_URL || process.env.G2BULK_API_URL || 'https://api.g2bulk.com/v2';
+    const isConfigured = !!envKey || !!config?.value?.apiKey;
     
     // If env key exists but no DB config exists, create a default DB config for isEnabled
-    if (hasEnvKey && !config) {
+    if (envKey && !config) {
       await AppConfig.create({
         key: 'g2bulk_credentials',
-        value: { apiKey: '', isEnabled: true }
+        value: { apiKey: '', baseUrl: envUrl, isEnabled: true }
       });
     }
 
     res.json({
       success: true,
       isConfigured: isConfigured,
+      baseUrl: config?.value?.baseUrl || envUrl,
       webhookUrl: `https://${req.headers.host}/api/webhooks/g2bulk`,
       isEnabled: config?.value?.isEnabled !== false
     });
@@ -1696,23 +1165,28 @@ app.get('/api/settings/g2bulk/status', async (req, res) => {
 
 app.post('/api/settings/g2bulk', async (req, res) => {
   try {
-    const { apiKey, isEnabled } = req.body;
+    const { apiKey, baseUrl, isEnabled } = req.body;
+    const envKey = process.env.G2BULK_API_KEY || process.env.G2BULK_KEY || '';
+    const envUrl = process.env.G2BULK_BASE_URL || process.env.G2BULK_API_URL || 'https://api.g2bulk.com/v2';
+
+    const effectiveKey = apiKey || envKey;
+    const effectiveUrl = baseUrl || envUrl;
     
     // Test the API key if provided
-    if (apiKey) {
-        g2bulkClient.updateCredentials({ apiKey });
+    if (effectiveKey) {
+        g2bulkClient.updateCredentials({ apiKey: effectiveKey, baseUrl: effectiveUrl });
         try {
             await g2bulkClient.getBalance();
         } catch (e: any) {
              return res.json({ success: false, error: 'Invalid API Key or API error: ' + e.message });
         }
-    } else if (process.env.G2BULK_API_KEY) {
-        g2bulkClient.updateCredentials({ apiKey: process.env.G2BULK_API_KEY });
+    } else if (envKey) {
+        g2bulkClient.updateCredentials({ apiKey: envKey, baseUrl: effectiveUrl });
     }
     
     await AppConfig.findOneAndUpdate(
       { key: 'g2bulk_credentials' },
-      { value: { apiKey, isEnabled } },
+      { value: { apiKey, baseUrl: effectiveUrl, isEnabled } },
       { upsert: true }
     );
     
@@ -1725,7 +1199,7 @@ app.post('/api/settings/g2bulk', async (req, res) => {
 app.get('/api/g2bulk/balance', async (req, res) => {
   try {
     const balance = await g2bulkClient.getBalance();
-    res.json({ success: true, data: balance });
+    res.json({ success: true, balance: balance, data: { balance } });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

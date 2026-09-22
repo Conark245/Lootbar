@@ -1,10 +1,8 @@
 import { v4 as uuidv4 } from 'uuid';
-import { LootBarClient } from './providers/lootbar/LootBarClient';
 import { TopupNationService } from './providers/topupnation/TopupNationService';
 import { G2BulkService } from './providers/g2bulk/G2BulkService';
 import { TopupNationProduct } from './models/TopupNationProduct';
 import { G2BulkProduct } from './models/G2BulkProduct';
-import { SavedGame } from './models/SavedGame';
 import { Order } from './models/Order';
 import { User, IUser } from './models/User';
 import { BulkOrderBatch, IBulkOrderBatch } from './models/BulkOrderBatch';
@@ -14,7 +12,7 @@ import { parseCommandArgs, isProviderApiLinked } from './bot/helpers';
 export interface BulkOrderItem {
   lineIndex: number;
   rawLine: string;
-  provider: 'lootbar' | 'topupnation' | 'g2bulk';
+  provider: 'topupnation' | 'g2bulk';
   gameId: string;
   gameName: string;
   skuId: string;
@@ -44,7 +42,7 @@ export interface BulkParseResult {
 export interface BulkExecuteItemResult {
   lineIndex: number;
   rawLine: string;
-  provider: 'lootbar' | 'topupnation' | 'g2bulk';
+  provider: 'topupnation' | 'g2bulk';
   gameName: string;
   skuName: string;
   quantity: number;
@@ -70,29 +68,6 @@ export interface BulkExecuteSummary {
   createdAt?: Date;
 }
 
-function getGameDefaultShortKey(name: string, gameId: string): string {
-  const n = (name || '').toLowerCase();
-  if (n.includes('mobile legends') || n.includes('mlbb')) return 'ml';
-  if (n.includes('pubg')) return 'pubg';
-  if (n.includes('free fire') || n.includes('freefire')) return 'ff';
-  if (n.includes('genshin')) return 'gi';
-  if (n.includes('honkai: star rail') || n.includes('star rail') || n.includes('hsr')) return 'hsr';
-  if (n.includes('arena of valor') || n.includes('aov')) return 'aov';
-  if (n.includes('honor of kings') || n.includes('hok')) return 'hok';
-  if (n.includes('call of duty') || n.includes('codm')) return 'codm';
-  if (n.includes('clash of clans') || n.includes('coc')) return 'coc';
-  if (n.includes('brawl stars')) return 'bs';
-  if (n.includes('roblox')) return 'rbx';
-  if (n.includes('valorant')) return 'val';
-  if (n.includes('blood strike') || n.includes('bloodstrike')) return 'blood';
-  if (n.includes('zenless zone zero') || n.includes('zzz')) return 'zzz';
-  if (n.includes('identity v') || n.includes('idv')) return 'idv';
-  if (n.includes('farlight')) return 'farlight';
-  if (n.includes('undawn')) return 'undawn';
-  if (n.includes('lifeafter')) return 'lifeafter';
-  return `g${gameId.slice(0, 4)}`;
-}
-
 /**
  * Service to parse and execute Bulk Top-Up orders uniformly across Bot & Web Dashboard
  */
@@ -101,8 +76,7 @@ export class BulkOrderService {
    * Parse multi-line bulk order text into validated BulkOrderItems
    */
   public static async parseBulkText(
-    rawText: string,
-    lootbarClient: LootBarClient
+    rawText: string
   ): Promise<BulkParseResult> {
     const rawLines = rawText
       .split(/\r?\n/)
@@ -123,11 +97,9 @@ export class BulkOrderService {
       };
     }
 
-    // Cache database & SKU lookups for speed
-    const savedGames = await SavedGame.find();
+    // Cache database lookups for speed
     const tpnProducts = await TopupNationProduct.find();
     const g2bProducts = await G2BulkProduct.find();
-    const skuCache: Record<string, any[]> = {};
 
     for (let i = 0; i < rawLines.length; i++) {
       const lineIndex = i + 1;
@@ -160,112 +132,6 @@ export class BulkOrderService {
 
       const inputKey = tokens[0].toLowerCase();
       const rawArgs = tokens.slice(1);
-
-      // Check LootBar Games
-      const matchedGame = savedGames.find((g: any) => {
-        const k = (g.shortKey || getGameDefaultShortKey(g.name, g.gameId)).toLowerCase();
-        return k === inputKey || String(g.gameId).toLowerCase() === inputKey;
-      });
-
-      if (matchedGame) {
-        if (matchedGame.isEnabled === false) {
-          errors.push({
-            lineIndex,
-            rawLine: rawLines[i],
-            error: `Game "${matchedGame.name}" is currently disabled by Admin.`
-          });
-          continue;
-        }
-
-        const gameId = String(matchedGame.gameId);
-        const gameName = matchedGame.name || 'Game';
-
-        try {
-          if (!skuCache[gameId]) {
-            const resp = await lootbarClient.getSkus(gameId);
-            skuCache[gameId] = resp?.data?.items || [];
-          }
-          const skus = skuCache[gameId] || [];
-          if (skus.length === 0) {
-            errors.push({
-              lineIndex,
-              rawLine: rawLines[i],
-              error: `No packages available for ${gameName}`
-            });
-            continue;
-          }
-
-          const requiredFields = (skus[0]?.extra_info || []).filter((f: any) => f.required);
-          const minFields = requiredFields.length > 0 ? requiredFields.length : 1;
-
-          if (rawArgs.length < minFields + 1) {
-            errors.push({
-              lineIndex,
-              rawLine: rawLines[i],
-              error: `Missing parameters. Need ${minFields} account field(s) + Package name/key.`
-            });
-            continue;
-          }
-
-          const extraInfo: Record<string, string> = {};
-          if (requiredFields.length === 0) {
-            extraInfo['uid'] = rawArgs[0];
-          } else {
-            for (let f = 0; f < requiredFields.length; f++) {
-              const field = requiredFields[f];
-              extraInfo[field.name] = rawArgs[f];
-            }
-          }
-
-          const rawProductQuery = rawArgs.slice(minFields).join(' ').trim();
-          let skuKeys: Record<string, string> = {};
-          if (matchedGame.skuShortKeys) {
-            if (matchedGame.skuShortKeys instanceof Map || typeof (matchedGame.skuShortKeys as any).entries === 'function') {
-              skuKeys = Object.fromEntries((matchedGame.skuShortKeys as any).entries());
-            } else if (typeof matchedGame.skuShortKeys === 'object') {
-              skuKeys = { ...matchedGame.skuShortKeys };
-            }
-          }
-
-          const parsedResult = parseSkuWithQuantity(skus, rawProductQuery, skuKeys, false);
-          const matchedSku = parsedResult.sku;
-          const quantity = Math.max(1, Math.min(100, parsedResult.quantity || 1));
-
-          if (!matchedSku) {
-            errors.push({
-              lineIndex,
-              rawLine: rawLines[i],
-              error: `Package "${rawProductQuery}" not found for ${gameName}`
-            });
-            continue;
-          }
-
-          const unitPrice = parseFloat(matchedSku.reseller_price || matchedSku.price || '0');
-          const totalPrice = unitPrice * quantity;
-
-          validItems.push({
-            lineIndex,
-            rawLine: rawLines[i],
-            provider: 'lootbar',
-            gameId,
-            gameName,
-            skuId: String(matchedSku.sku_id),
-            skuName: matchedSku.sku_name || `${gameName} Package`,
-            unitPrice,
-            quantity,
-            totalPrice,
-            extraInfo
-          });
-          continue;
-        } catch (err: any) {
-          errors.push({
-            lineIndex,
-            rawLine: rawLines[i],
-            error: `Failed to resolve ${gameName}: ${err.message}`
-          });
-          continue;
-        }
-      }
 
       // Check TopupNation Products
       const matchedTpn = tpnProducts.find((p: any) => {
@@ -456,11 +322,11 @@ export class BulkOrderService {
         continue;
       }
 
-      // Neither LootBar, TopupNation nor G2Bulk matched
+      // Neither TopupNation nor G2Bulk matched
       errors.push({
         lineIndex,
         rawLine: rawLines[i],
-        error: `Unknown game shortKey: "${inputKey}". Send .games, .tpn or .g2bulk to see available shortcuts.`
+        error: `Unknown game shortKey: "${inputKey}". Send .tpn or .g2bulk to see available shortcuts.`
       });
     }
 
@@ -483,7 +349,6 @@ export class BulkOrderService {
   public static async executeBulkOrders(
     user: IUser,
     items: BulkOrderItem[],
-    lootbarClient: LootBarClient,
     topupNationService?: TopupNationService,
     g2bulkService?: G2BulkService,
     options?: { rawText?: string; source?: 'bot' | 'web' }
@@ -498,7 +363,7 @@ export class BulkOrderService {
 
     for (const item of items) {
       const orderCost = item.totalPrice;
-      const itemProvider = item.provider || 'lootbar';
+      const itemProvider = item.provider || 'topupnation';
       const isApiLinked = isProviderApiLinked(user, itemProvider);
 
       // 1. Balance check and atomic deduction for standard wallet users
@@ -528,8 +393,6 @@ export class BulkOrderService {
         currentBalance = deductedUser.balance;
       }
 
-      const referenceId = uuidv4();
-
       try {
         if (item.provider === 'topupnation' && topupNationService) {
           // Execute TopupNation order
@@ -545,54 +408,6 @@ export class BulkOrderService {
           });
 
           if (!tpnResult.success || !tpnResult.order) {
-            if (!isApiLinked) {
-              await User.updateOne({ _id: user._id }, { $inc: { balance: orderCost } });
-              currentBalance += orderCost;
-            }
-            failedCount++;
-            results.push({
-              lineIndex: item.lineIndex,
-              rawLine: item.rawLine,
-              provider: item.provider,
-              gameName: item.gameName,
-              skuName: item.skuName,
-              quantity: item.quantity,
-              price: orderCost,
-              success: false,
-              error: tpnResult.error || 'TopupNation rejected order'
-            });
-          } else {
-            successCount++;
-            totalSpent += orderCost;
-            results.push({
-              lineIndex: item.lineIndex,
-              rawLine: item.rawLine,
-              provider: item.provider,
-              gameName: item.gameName,
-              skuName: item.skuName,
-              quantity: item.quantity,
-              price: orderCost,
-              playerName: tpnResult.order.playerName,
-              success: true,
-              referenceId: tpnResult.order.referenceId,
-              orderId: tpnResult.order.providerOrderId || tpnResult.order.orderId,
-              statusText: 'PROCESSING'
-            });
-          }
-        } else if (item.provider === 'g2bulk' && g2bulkService) {
-          // Execute TopupNation order
-          const tpnResult = await topupNationService.placeOrder({
-            telegramChatId: user.telegramChatId,
-            telegramUsername: user.username,
-            telegramFirstName: user.firstName,
-            productId: item.gameId,
-            sku: item.skuId,
-            fields: item.extraInfo, skipBalanceDeduction: true,
-            quantity: item.quantity
-          });
-
-          if (!tpnResult.success || !tpnResult.order) {
-            // Refund if not API linked
             if (!isApiLinked) {
               await User.updateOne({ _id: user._id }, { $inc: { balance: orderCost } });
               currentBalance += orderCost;
@@ -675,89 +490,23 @@ export class BulkOrderService {
             });
           }
         } else {
-          // Execute LootBar order
-          const orderResponse = await lootbarClient.createOrder(
-            referenceId,
-            item.gameId,
-            item.skuId,
-            item.quantity,
-            item.extraInfo
-          );
-
-          if (orderResponse?.status === 'ok' && orderResponse?.data?.order_id) {
-            const orderId = orderResponse.data.order_id;
-            
-            // Extract player details
-            let playerName = '';
-            for (const [k, v] of Object.entries(item.extraInfo)) {
-              const lk = k.toLowerCase();
-              if (!playerName && (lk === 'player_name' || lk === 'role_name' || lk === 'nickname' || lk === 'playername' || lk === 'role')) {
-                playerName = String(v);
-              }
-            }
-
-            // Create Order record in DB
-            try {
-              await Order.create({
-                referenceId,
-                orderId,
-                telegramChatId: user.telegramChatId,
-                telegramUsername: user.username,
-                telegramFirstName: user.firstName,
-                gameId: item.gameId,
-                gameName: item.gameName,
-                skuId: item.skuId,
-                skuName: item.skuName,
-                playerName: playerName || undefined,
-                price: orderCost,
-                extraInfo: {
-                  ...item.extraInfo,
-                  quantity: item.quantity,
-                  paymentSource: isApiLinked ? 'api_balance' : 'wallet_balance',
-                  bulkBatchId: batchId
-                },
-                state: 1 // In transaction
-              });
-            } catch (dbErr) {
-              console.error('Failed to create order record:', dbErr);
-            }
-
-            successCount++;
-            totalSpent += orderCost;
-            results.push({
-              lineIndex: item.lineIndex,
-              rawLine: item.rawLine,
-              provider: 'lootbar',
-              gameName: item.gameName,
-              skuName: item.skuName,
-              quantity: item.quantity,
-              price: orderCost,
-              playerName: playerName || undefined,
-              success: true,
-              referenceId,
-              orderId,
-              statusText: 'PROCESSING'
-            });
-          } else {
-            // Failed: Refund balance
-            if (!isApiLinked) {
-              await User.updateOne({ _id: user._id }, { $inc: { balance: orderCost } });
-              currentBalance += orderCost;
-            }
-            failedCount++;
-            const errMsg = orderResponse?.message || orderResponse?.error || 'LootBar rejected order';
-            results.push({
-              lineIndex: item.lineIndex,
-              rawLine: item.rawLine,
-              provider: 'lootbar',
-              gameName: item.gameName,
-              skuName: item.skuName,
-              quantity: item.quantity,
-              price: orderCost,
-              success: false,
-              error: errMsg
-            });
+          // Unsupported provider or missing service
+          if (!isApiLinked) {
+            await User.updateOne({ _id: user._id }, { $inc: { balance: orderCost } });
+            currentBalance += orderCost;
           }
+          failedCount++;
+          results.push({
+            lineIndex: item.lineIndex,
+            rawLine: item.rawLine,
+            provider: item.provider,
+            gameName: item.gameName,
+            skuName: item.skuName,
+            quantity: item.quantity,
+            price: orderCost,
+            success: false,
+            error: `Provider ${item.provider} service unavailable`
+          });
         }
       } catch (err: any) {
         if (!isApiLinked) {
@@ -783,7 +532,7 @@ export class BulkOrderService {
     }
 
     const updatedUser = await User.findOne({ telegramChatId: user.telegramChatId });
-    const isApiLinked = items.length > 0 && items.every(item => isProviderApiLinked(user, item.provider || 'lootbar'));
+    const isApiLinked = items.length > 0 && items.every(item => isProviderApiLinked(user, item.provider));
 
     // Save batch history record to DB
     let savedBatch: IBulkOrderBatch | null = null;

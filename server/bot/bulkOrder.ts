@@ -3,7 +3,6 @@ import { MyContext } from './types';
 import { BulkOrderService, BulkOrderItem } from '../bulkOrderService';
 import { User } from '../models/User';
 import { AppConfig } from '../models/AppConfig';
-import { LootBarClient } from '../providers/lootbar/LootBarClient';
 import { TopupNationService } from '../providers/topupnation/TopupNationService';
 import { G2BulkService } from '../providers/g2bulk/G2BulkService';
 import { getNotificationSettings } from '../notificationSettings';
@@ -27,8 +26,7 @@ async function getAdminChatId(defaultId: string | undefined): Promise<string | u
 
 export async function handleBulkOrderFlow(
   ctx: MyContext,
-  text: string,
-  lootbar: LootBarClient
+  text: string
 ) {
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
 
@@ -42,10 +40,6 @@ export async function handleBulkOrderFlow(
       `📌 *Format:*\n` +
       `\`.<shortKey> <Account ID> [ZoneID] <Product> [xQty]\`\n\n` +
       `💡 *ဥပမာ နမူနာများ:*\n` +
-      `\`.ml 12345678 2001 wp\`\n` +
-      `\`.ml 87654321 2002 86 x3\`\n` +
-      `\`.pubg 5123456789 60\`\n` +
-      `\`.ff 11223344 100\`\n` +
       `\`.tp 123456789 100\`\n` +
       `\`.g2b 123456789 100\`\n` +
       `═════════════════════════\n` +
@@ -58,7 +52,7 @@ export async function handleBulkOrderFlow(
   }
 
   try {
-    const parseResult = await BulkOrderService.parseBulkText(text, lootbar);
+    const parseResult = await BulkOrderService.parseBulkText(text);
 
     if (parseResult.errors.length > 0) {
       let errMsg = `⚠️ *Bulk Order Format Errors!*\n═════════════════════════\n` +
@@ -298,7 +292,6 @@ export async function renderBulkBatchDetail(ctx: MyContext, batchId: string) {
 
 export function registerBulkOrderHandlers(
   bot: Telegraf<MyContext>,
-  lootbar: LootBarClient,
   topupNation: TopupNationService | undefined,
   g2bulk: G2BulkService | undefined,
   adminChatId: string | undefined,
@@ -309,11 +302,11 @@ export function registerBulkOrderHandlers(
   // Bulk Command Handler (/bulk or /bulkorder)
   bot.command(['bulk', 'bulkorder'], async (ctx) => {
     const text = ctx.message.text || '';
-    return await handleBulkOrderFlow(ctx, text, lootbar);
+    return await handleBulkOrderFlow(ctx, text);
   });
 
   bot.hears(['📦 Bulk Order', 'Bulk Order', 'bulk order', 'Bulk order'], async (ctx) => {
-    return await handleBulkOrderFlow(ctx, '/bulk', lootbar);
+    return await handleBulkOrderFlow(ctx, '/bulk');
   });
 
   bot.hears(['📦 Bulk History', 'Bulk History', 'bulk history', 'Bulk history', 'Bulk Order History', '📦 Bulk Order History'], async (ctx) => {
@@ -338,7 +331,7 @@ export function registerBulkOrderHandlers(
 
   bot.action('bulk_order_start', async (ctx) => {
     await ctx.answerCbQuery();
-    return await handleBulkOrderFlow(ctx, '/bulk', lootbar);
+    return await handleBulkOrderFlow(ctx, '/bulk');
   });
 
   // Action: Confirm Bulk Orders Execution
@@ -399,7 +392,6 @@ export function registerBulkOrderHandlers(
       const summary = await BulkOrderService.executeBulkOrders(
         userDoc,
         itemsToRun,
-        lootbar,
         topupNation,
         g2bulk,
         { rawText, source: 'bot' }

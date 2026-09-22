@@ -147,26 +147,22 @@ export function parseCommandArgs(rawText: string): string[] {
 
 /**
  * Checks whether the given user is configured to use Direct API Balance
- * for the specified provider (e.g. 'lootbar', 'topupnation', 'g2bulk').
+ * for the specified provider (e.g. 'topupnation', 'g2bulk').
  * 
  * Rules:
  * 1. If user is not in API balance mode (useDirectApiBalance is false and balanceMode !== 'api'), returns false.
- * 2. If apiProvider is 'all' or undefined, returns true for any provider.
- * 3. If apiProvider is 'both', returns true for 'lootbar' and 'topupnation'.
- * 4. Otherwise, returns true only if apiProvider matches the specific provider name.
+ * 2. If apiProvider is 'all' or 'both' or undefined, returns true for any active provider.
+ * 3. Otherwise, returns true only if apiProvider matches the specific provider name.
  */
 export function isProviderApiLinked(user: any, provider: string): boolean {
   if (!user) return false;
   const isApiMode = user.balanceMode === 'api' || !!user.useDirectApiBalance;
   if (!isApiMode) return false;
 
-  const targetProvider = (provider || 'lootbar').toLowerCase();
+  const targetProvider = (provider || 'topupnation').toLowerCase();
   const userProvider = (user.apiProvider || 'all').toLowerCase();
 
-  if (userProvider === 'all') return true;
-  if (userProvider === 'both') {
-    return targetProvider === 'lootbar' || targetProvider === 'topupnation';
-  }
+  if (userProvider === 'all' || userProvider === 'both') return true;
   return userProvider === targetProvider;
 }
 

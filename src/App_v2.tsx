@@ -978,7 +978,7 @@ export default function App() {
       .catch(err => console.error(err));
   };
 
-  const handleToggleApiBalance = (chatId: string, currentIsApi: boolean, apiProvider: 'all' | 'both' | 'lootbar' | 'topupnation' | 'fzrcards' = 'all') => {
+  const handleToggleApiBalance = (chatId: string, currentIsApi: boolean, apiProvider: 'all' | 'both' | 'topupnation' | 'g2bulk' = 'all') => {
     setTogglingApiUser(chatId);
     fetch('/api/telegram-users/toggle-api-balance', {
       method: 'POST',
@@ -1083,8 +1083,8 @@ export default function App() {
     const newKeys = { ...skuShortKeysInput };
     
     skuModalGame.modalSkus.forEach((sku: any) => {
-      const skuId = String(skuModalGame.isTpn || skuModalGame.isFzr || skuModalGame.isG2b ? (sku.sku || sku.sku_id || '') : (sku.sku_id || sku.sku || ''));
-      const name = String(skuModalGame.isTpn || skuModalGame.isFzr || skuModalGame.isG2b ? (sku.name || sku.sku_name || '') : (sku.sku_name || sku.name || '')).trim();
+      const skuId = String(skuModalGame.isTpn || skuModalGame.isG2b ? (sku.sku || sku.sku_id || '') : (sku.sku_id || sku.sku || ''));
+      const name = String(skuModalGame.isTpn || skuModalGame.isG2b ? (sku.name || sku.sku_name || '') : (sku.sku_name || sku.name || '')).trim();
       const lowerName = name.toLowerCase();
 
       // Only auto-generate if currently empty
@@ -2295,74 +2295,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Login Modal */}
-      {showLoginModal && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white p-8 rounded-2xl shadow-sm border border-neutral-200 w-full max-w-md relative">
-            <button 
-              onClick={() => setShowLoginModal(false)}
-              className="absolute top-4 right-4 text-neutral-400 hover:text-neutral-600 font-bold"
-            >
-              ✕
-            </button>
-            <div className="text-center mb-8">
-              <h1 className="text-2xl font-bold text-neutral-900 tracking-tight">LootBar Login</h1>
-              <p className="text-neutral-500 mt-2 text-sm">Please provide your LootBar account details to access the API</p>
-            </div>
-
-            <form onSubmit={handleLogin} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-1">Account UID (Nickname)</label>
-                <input 
-                  type="text" 
-                  required
-                  placeholder="e.g. U1071465635"
-                  value={nickname}
-                  onChange={e => setNickname(e.target.value)}
-                  className="w-full px-4 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-1">Email Address</label>
-                <input 
-                  type="email" 
-                  required
-                  placeholder="your@email.com"
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
-                  className="w-full px-4 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-1">Password</label>
-                <input 
-                  type="password" 
-                  required
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  className="w-full px-4 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                />
-              </div>
-
-              {loginError && (
-                <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm border border-red-100">
-                  {loginError}
-                </div>
-              )}
-
-              <button 
-                type="submit" 
-                disabled={isLoggingIn}
-                className="w-full py-2.5 bg-neutral-900 hover:bg-neutral-800 disabled:bg-neutral-400 text-white font-medium rounded-lg transition-colors mt-6"
-              >
-                {isLoggingIn ? 'Verifying...' : 'Login & Save Credentials'}
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
-
       {/* Product / SKU Short Keys Management Modal */}
       {skuModalGame && (
         <div className="fixed inset-0 bg-neutral-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
@@ -2375,7 +2307,7 @@ export default function App() {
                     ? 'bg-indigo-100 text-indigo-700' 
                     : skuModalGame.isG2b ? 'bg-orange-100 text-orange-700' : 'bg-emerald-100 text-emerald-700'
                 }`}>
-                  {skuModalGame.isTpn ? '🌐' : skuModalGame.isG2b ? '🔥' : '🎮'}
+                  {skuModalGame.isTpn ? '🌐' : skuModalGame.isG2b ? '🔥' : '⚡'}
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
@@ -2383,9 +2315,9 @@ export default function App() {
                     <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
                       skuModalGame.isTpn 
                         ? 'bg-indigo-100 text-indigo-800' 
-                        : skuModalGame.isG2b ? 'bg-orange-100 text-orange-800' : 'bg-emerald-100 text-emerald-800'
+                        : skuModalGame.isG2b ? 'bg-orange-100 text-orange-800' : 'bg-neutral-100 text-neutral-800'
                     }`}>
-                      {skuModalGame.isTpn ? 'TopupNation' : skuModalGame.isG2b ? 'G2Bulk' : 'LootBar'}
+                      {skuModalGame.isTpn ? 'TopupNation' : skuModalGame.isG2b ? 'G2Bulk' : 'Direct API'}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 mt-0.5">
@@ -2611,7 +2543,7 @@ export default function App() {
                 <span className="text-xs bg-neutral-100 text-neutral-700 font-semibold px-2 py-0.5 rounded-full">Multi-Provider</span>
               </div>
               <p className="text-neutral-500 text-sm mt-0.5">
-                Manage integrated providers: LootBar API, TopUpNation API & G2Bulk API
+                Manage integrated providers: TopUpNation API & G2Bulk API
               </p>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
@@ -2625,18 +2557,6 @@ export default function App() {
               >
                 <span className="text-amber-600 font-bold">⚡</span>
                 Bulk Order Engine
-              </button>
-
-              <button 
-                onClick={() => setShowLoginModal(true)}
-                className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors flex items-center gap-1.5 ${
-                  isConfigured 
-                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100' 
-                    : 'bg-neutral-100 text-neutral-700 border-neutral-200 hover:bg-neutral-200'
-                }`}
-              >
-                <span className={`w-2 h-2 rounded-full ${isConfigured ? 'bg-emerald-500' : 'bg-neutral-400'}`}></span>
-                LootBar API: {isConfigured ? 'Connected' : 'Setup'}
               </button>
 
               <button 
@@ -2670,6 +2590,78 @@ export default function App() {
                 <span>🔔</span>
                 <span>API Noti: {Object.values(notiSettings).filter(Boolean).length}/5 Active</span>
               </button>
+            </div>
+          </div>
+
+          {/* Real-Time API Balances Display Bar */}
+          <div className="mt-5 pt-5 border-t border-neutral-200/80">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 mb-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold text-neutral-900 flex items-center gap-1.5">
+                  💳 Real-Time API Balances
+                </span>
+                <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
+                  ● Live Sync
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  fetchTpnBalance();
+                  fetchG2BulkBalance();
+                }}
+                className="text-xs font-semibold text-neutral-700 hover:text-neutral-900 bg-neutral-100 hover:bg-neutral-200 px-3 py-1.5 rounded-lg border border-neutral-200 transition-colors flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
+              >
+                <span>🔄</span>
+                <span>Refresh Balances</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {/* TopUpNation Card */}
+              <div className="bg-indigo-50/70 p-3.5 rounded-xl border border-indigo-200/80 flex items-center justify-between">
+                <div>
+                  <div className="text-[11px] font-bold text-indigo-900 flex items-center gap-1">
+                    <span>🌐</span> TopUpNation Balance
+                  </div>
+                  <div className="text-lg font-black text-indigo-950 font-mono mt-0.5">
+                    ${Number(tpnBalance?.balance ?? tpnBalance?.availableBalance ?? 0).toFixed(3)} <span className="text-xs font-semibold text-indigo-700">{tpnBalance?.currency || 'USD'}</span>
+                  </div>
+                </div>
+                <span className={`text-[10px] font-bold px-2 py-1 rounded-md ${tpnConfigured ? 'bg-indigo-200/70 text-indigo-900' : 'bg-neutral-200 text-neutral-600'}`}>
+                  {tpnConfigured ? 'Connected' : 'Off'}
+                </span>
+              </div>
+
+              {/* G2Bulk Card */}
+              <div className="bg-orange-50/70 p-3.5 rounded-xl border border-orange-200/80 flex items-center justify-between">
+                <div>
+                  <div className="text-[11px] font-bold text-orange-900 flex items-center gap-1">
+                    <span>🔥</span> G2Bulk Balance
+                  </div>
+                  <div className="text-lg font-black text-orange-950 font-mono mt-0.5">
+                    ${Number(g2bulkBalance?.balance || 0).toFixed(3)} <span className="text-xs font-semibold text-orange-700">{g2bulkBalance?.currency || 'USD'}</span>
+                  </div>
+                </div>
+                <span className={`text-[10px] font-bold px-2 py-1 rounded-md ${g2bulkConfigured ? 'bg-orange-200/70 text-orange-900' : 'bg-neutral-200 text-neutral-600'}`}>
+                  {g2bulkConfigured ? 'Connected' : 'Off'}
+                </span>
+              </div>
+
+              {/* Total Card */}
+              <div className="bg-emerald-50/70 p-3.5 rounded-xl border border-emerald-200/80 flex items-center justify-between">
+                <div>
+                  <div className="text-[11px] font-bold text-emerald-900 flex items-center gap-1">
+                    <span>💰</span> Total Combined Funds
+                  </div>
+                  <div className="text-lg font-black text-emerald-950 font-mono mt-0.5">
+                    ${(Number(tpnBalance?.balance ?? tpnBalance?.availableBalance ?? 0) + Number(g2bulkBalance?.balance || 0)).toFixed(3)} <span className="text-xs font-semibold text-emerald-700">USD</span>
+                  </div>
+                </div>
+                <span className="text-[10px] font-bold bg-emerald-200/70 text-emerald-900 px-2 py-1 rounded-md font-mono">
+                  Total
+                </span>
+              </div>
             </div>
           </div>
         </div>
@@ -2759,47 +2751,6 @@ export default function App() {
                 )}
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
-                  {/* LootBar API Toggle */}
-                  <div className={`p-3.5 rounded-xl border transition-all ${
-                    notiSettings.lootbarEnabled 
-                      ? 'bg-emerald-50/50 border-emerald-200' 
-                      : 'bg-neutral-50 border-neutral-200 opacity-75'
-                  }`}>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2.5">
-                        <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center text-sm font-bold">
-                          🎮
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-xs font-bold text-neutral-900">LootBar API</span>
-                            <span className={`text-[10px] px-1.5 py-0.2 rounded font-medium ${
-                              notiSettings.lootbarEnabled ? 'bg-emerald-100 text-emerald-800' : 'bg-neutral-200 text-neutral-600'
-                            }`}>
-                              {notiSettings.lootbarEnabled ? 'ACTIVE' : 'MUTED'}
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-neutral-500 mt-0.5 leading-snug">
-                            Order completions, failed status refunds & webhook alerts
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => handleToggleNoti('lootbarEnabled')}
-                        disabled={togglingNotiKey === 'lootbarEnabled'}
-                        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                          notiSettings.lootbarEnabled ? 'bg-emerald-600' : 'bg-neutral-300'
-                        }`}
-                      >
-                        <span
-                          className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
-                            notiSettings.lootbarEnabled ? 'translate-x-4' : 'translate-x-0'
-                          }`}
-                        />
-                      </button>
-                    </div>
-                  </div>
-
                   {/* TopUpNation API Toggle */}
                   <div className={`p-3.5 rounded-xl border transition-all ${
                     notiSettings.topupnationEnabled 
@@ -2973,36 +2924,7 @@ export default function App() {
                           API တစ်ခုချင်းစီအလိုက် Noti ရွေးချယ် အဖွင့်/အပိတ်
                         </span>
                       </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                        {/* LootBar Price Alert */}
-                        <div className={`flex items-center justify-between p-2 rounded-lg border transition-all ${
-                          notiSettings.priceChangeLootbar && notiSettings.priceChangeAlerts
-                            ? 'bg-amber-50/80 border-amber-200 text-amber-950'
-                            : 'bg-white border-neutral-200 text-neutral-500'
-                        }`}>
-                          <div className="flex items-center gap-1.5">
-                            <span className="w-2 h-2 rounded-full bg-amber-500"></span>
-                            <span className="text-[11px] font-bold">LootBar</span>
-                            <span className={`text-[9px] px-1 py-0.2 rounded font-medium ${
-                              notiSettings.priceChangeLootbar ? 'bg-amber-100 text-amber-800' : 'bg-neutral-100 text-neutral-500'
-                            }`}>
-                              {notiSettings.priceChangeLootbar ? 'ON' : 'OFF'}
-                            </span>
-                          </div>
-                          <button
-                            onClick={() => handleToggleNoti('priceChangeLootbar')}
-                            disabled={togglingNotiKey === 'priceChangeLootbar' || !notiSettings.priceChangeAlerts}
-                            className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors duration-200 focus:outline-none ${
-                              notiSettings.priceChangeLootbar && notiSettings.priceChangeAlerts ? 'bg-amber-600' : 'bg-neutral-300'
-                            }`}
-                          >
-                            <span
-                              className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow ring-0 transition duration-200 ${
-                                notiSettings.priceChangeLootbar && notiSettings.priceChangeAlerts ? 'translate-x-3' : 'translate-x-0'
-                              }`}
-                            />
-                          </button>
-                        </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
 
                         {/* TopupNation Price Alert */}
                         <div className={`flex items-center justify-between p-2 rounded-lg border transition-all ${
@@ -3081,17 +3003,13 @@ export default function App() {
                 <span className="text-xl">⚡</span>
                 <h2 className="text-lg sm:text-xl font-black tracking-tight text-white">Master Bot Game & Catalog Controller</h2>
                 <span className="text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full font-bold">
-                  {savedGames.filter(g => g.isEnabled !== false).length + tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length + g2bulkProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length} Total Active in Bot
+                  {tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length + g2bulkProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length} Total Active in Bot
                 </span>
               </div>
               <p className="text-xs sm:text-sm text-neutral-300">
-                Instantly enable or disable games across all providers (LootBar, TopUpNation, G2Bulk) with one click or select individually.
+                Instantly enable or disable games across providers (TopUpNation, G2Bulk) with one click or select individually.
               </p>
               <div className="flex items-center gap-3 pt-2 flex-wrap text-xs font-medium text-neutral-400">
-                <span className="inline-flex items-center gap-1 bg-neutral-800/80 px-2.5 py-1 rounded-lg border border-neutral-700">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                  LootBar: <strong className="text-white font-mono">{savedGames.filter(g => g.isEnabled !== false).length}/{games.length || savedGames.length}</strong>
-                </span>
                 <span className="inline-flex items-center gap-1 bg-neutral-800/80 px-2.5 py-1 rounded-lg border border-neutral-700">
                   <span className="w-2 h-2 rounded-full bg-indigo-400"></span>
                   TopUpNation: <strong className="text-white font-mono">{tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length}/{tpnProducts.length}</strong>
@@ -3693,281 +3611,6 @@ export default function App() {
           )}
         </div>
 
-        {/* Telegram Bot Games Management (LootBar) */}
-        <div className="bg-white p-6 sm:p-8 rounded-xl shadow-sm border border-neutral-200">
-          <div className="flex justify-between items-center mb-2">
-            <h2 
-              className="text-xl font-bold text-neutral-900 flex items-center gap-2 cursor-pointer select-none hover:text-emerald-700 transition-colors"
-              onClick={() => setShowLootbarGames(!showLootbarGames)}
-            >
-              <span>🎮</span> LootBar Games Catalog ({games.length})
-              <svg className={`w-5 h-5 text-neutral-400 transition-transform ${showLootbarGames ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-              </svg>
-            </h2>
-            {isConfigured && (
-              <button 
-                onClick={() => setRefreshKey(k => k + 1)}
-                className="text-sm text-blue-600 hover:text-blue-700 font-medium flex items-center gap-1"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-                Refresh API
-              </button>
-            )}
-          </div>
-          <p className="text-sm text-neutral-500 mb-4">
-            Choose which games from LootBar API should appear in your Telegram Bot. Only enabled games will be displayed in the bot's <span className="font-semibold text-neutral-700">🎮 Game List</span>.
-          </p>
-          
-          {showLootbarGames && (
-            <div className="mt-4">
-              {/* Controls & Filter bar for LootBar */}
-              <div className="mb-4 flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
-                <div className="flex flex-col sm:flex-row gap-2.5 flex-1">
-                  <input
-                    type="text"
-                    placeholder="Search LootBar Games & ID..."
-                    className="px-3.5 py-2 border border-neutral-300 rounded-lg w-full max-w-sm text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-                    value={lbGameSearch}
-                    onChange={(e) => setLbGameSearch(e.target.value)}
-                  />
-                  <div className="inline-flex rounded-lg border border-neutral-200 bg-neutral-100 p-0.5 text-xs font-semibold">
-                    <button
-                      onClick={() => setLbStatusFilter('ALL')}
-                      className={`px-3 py-1.5 rounded-md transition-all ${lbStatusFilter === 'ALL' ? 'bg-white text-neutral-900 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
-                    >
-                      All ({games.length})
-                    </button>
-                    <button
-                      onClick={() => setLbStatusFilter('ENABLED')}
-                      className={`px-3 py-1.5 rounded-md transition-all ${lbStatusFilter === 'ENABLED' ? 'bg-white text-emerald-700 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
-                    >
-                      Enabled ({savedGames.filter(g => g.isEnabled !== false).length})
-                    </button>
-                    <button
-                      onClick={() => setLbStatusFilter('DISABLED')}
-                      className={`px-3 py-1.5 rounded-md transition-all ${lbStatusFilter === 'DISABLED' ? 'bg-white text-rose-700 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
-                    >
-                      Disabled ({games.length - savedGames.filter(g => g.isEnabled !== false).length})
-                    </button>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2 flex-wrap">
-                  <button 
-                    disabled={isBulkGameUpdating}
-                    onClick={() => handleBulkToggleLootbar(true, [])}
-                    className="px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 text-xs font-bold rounded-lg transition-colors flex items-center gap-1"
-                  >
-                    <span>⚡</span> Enable All LootBar
-                  </button>
-                  <button 
-                    disabled={isBulkGameUpdating}
-                    onClick={() => handleBulkToggleLootbar(false, [])}
-                    className="px-3 py-1.5 bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 text-xs font-bold rounded-lg transition-colors flex items-center gap-1"
-                  >
-                    <span>🔒</span> Disable All LootBar
-                  </button>
-                </div>
-              </div>
-
-              {/* Multi-selection bar for LootBar */}
-              {selectedLbGameIds.length > 0 && (
-                <div className="mb-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-emerald-900">{selectedLbGameIds.length} game(s) selected</span>
-                    <button 
-                      onClick={() => setSelectedLbGameIds([])}
-                      className="text-neutral-500 hover:text-neutral-800 underline ml-1"
-                    >
-                      Clear Selection
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      disabled={isBulkGameUpdating}
-                      onClick={() => handleBulkToggleLootbar(true)}
-                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg transition-colors shadow-xs flex items-center gap-1"
-                    >
-                      ✓ Enable Selected ({selectedLbGameIds.length})
-                    </button>
-                    <button
-                      disabled={isBulkGameUpdating}
-                      onClick={() => handleBulkToggleLootbar(false)}
-                      className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg transition-colors shadow-xs flex items-center gap-1"
-                    >
-                      ✕ Disable Selected ({selectedLbGameIds.length})
-                    </button>
-                  </div>
-                </div>
-              )}
-
-          {isConfigured === null ? (
-            <p className="text-neutral-500 py-4 text-center">Checking API connection...</p>
-          ) : isConfigured === false ? (
-            <div className="text-center py-12 bg-neutral-50 rounded-lg border border-neutral-200 border-dashed">
-              <p className="text-neutral-500 mb-4">LootBar API is not configured.</p>
-              <button 
-                onClick={() => setShowLoginModal(true)}
-                className="px-4 py-2 bg-neutral-900 hover:bg-neutral-800 text-white font-medium rounded-lg transition-colors"
-              >
-                Connect LootBar
-              </button>
-            </div>
-          ) : loading ? (
-            <p className="text-neutral-500 py-4 text-center">Loading games from API...</p>
-          ) : games.length === 0 ? (
-            <p className="text-red-500">Failed to load games. Credentials might be invalid.</p>
-          ) : (
-            <>
-              {/* Select all filtered helper */}
-              <div className="flex justify-between items-center text-xs text-neutral-500 mb-3 px-1">
-                <span>
-                  Showing {games.filter(g => {
-                    const gameId = String(g.id || g.game_id);
-                    const matchesSearch = (g.name || g.game_name || "").toLowerCase().includes(lbGameSearch.toLowerCase()) || gameId.toLowerCase().includes(lbGameSearch.toLowerCase());
-                    const savedMatch = savedGames.find(s => String(s.gameId) === gameId);
-                    const isEnabled = !!savedMatch && savedMatch.isEnabled !== false;
-                    if (lbStatusFilter === 'ENABLED') return matchesSearch && isEnabled;
-                    if (lbStatusFilter === 'DISABLED') return matchesSearch && !isEnabled;
-                    return matchesSearch;
-                  }).length} games
-                </span>
-                <button
-                  onClick={() => {
-                    const filtered = games.filter(g => {
-                      const gameId = String(g.id || g.game_id);
-                      const matchesSearch = (g.name || g.game_name || "").toLowerCase().includes(lbGameSearch.toLowerCase()) || gameId.toLowerCase().includes(lbGameSearch.toLowerCase());
-                      const savedMatch = savedGames.find(s => String(s.gameId) === gameId);
-                      const isEnabled = !!savedMatch && savedMatch.isEnabled !== false;
-                      if (lbStatusFilter === 'ENABLED') return matchesSearch && isEnabled;
-                      if (lbStatusFilter === 'DISABLED') return matchesSearch && !isEnabled;
-                      return matchesSearch;
-                    }).map(g => String(g.id || g.game_id));
-
-                    const allSelected = filtered.every(id => selectedLbGameIds.includes(id));
-                    if (allSelected) {
-                      setSelectedLbGameIds(prev => prev.filter(id => !filtered.includes(id)));
-                    } else {
-                      setSelectedLbGameIds(prev => Array.from(new Set([...prev, ...filtered])));
-                    }
-                  }}
-                  className="font-medium text-emerald-600 hover:text-emerald-800"
-                >
-                  Select / Deselect Filtered
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {games.filter(g => {
-                  const gameId = String(g.id || g.game_id);
-                  const matchesSearch = (g.name || g.game_name || "").toLowerCase().includes(lbGameSearch.toLowerCase()) || gameId.toLowerCase().includes(lbGameSearch.toLowerCase());
-                  const savedMatch = savedGames.find(s => String(s.gameId) === gameId);
-                  const isEnabled = !!savedMatch && savedMatch.isEnabled !== false;
-                  if (lbStatusFilter === 'ENABLED') return matchesSearch && isEnabled;
-                  if (lbStatusFilter === 'DISABLED') return matchesSearch && !isEnabled;
-                  return matchesSearch;
-                }).map((game, i) => {
-                  const gameId = String(game.id || game.game_id);
-                  const gameName = game.name || game.game_name || 'Unknown';
-                  const savedMatch = savedGames.find(s => String(s.gameId) === gameId);
-                  const isEnabled = !!savedMatch && savedMatch.isEnabled !== false;
-                  const activeKey = savedMatch?.shortKey || '';
-                  const isSelected = selectedLbGameIds.includes(gameId);
-
-                  return (
-                    <div 
-                      key={i} 
-                      className={`p-5 bg-white border-2 rounded-2xl transition-all flex flex-col justify-between ${
-                        isEnabled 
-                          ? 'border-emerald-500 shadow-sm ring-1 ring-emerald-500/20' 
-                          : 'border-neutral-200 hover:border-neutral-300 shadow-xs opacity-75'
-                      }`}
-                    >
-                      <div className="mb-4">
-                        <div className="flex justify-between items-start gap-2 mb-2">
-                          <div className="flex items-start gap-2.5">
-                            <input
-                              type="checkbox"
-                              checked={isSelected}
-                              onChange={(e) => {
-                                if (e.target.checked) {
-                                  setSelectedLbGameIds(prev => [...prev, gameId]);
-                                } else {
-                                  setSelectedLbGameIds(prev => prev.filter(id => id !== gameId));
-                                }
-                              }}
-                              className="w-4 h-4 mt-1 rounded text-emerald-600 border-neutral-300 focus:ring-emerald-500 cursor-pointer"
-                            />
-                            <div>
-                              <span className="font-extrabold text-base text-neutral-900 block leading-tight">{gameName}</span>
-                              <div className="flex items-center gap-2 mt-1 flex-wrap">
-                                <span className="inline-block px-2 py-0.5 bg-neutral-100 text-neutral-600 text-[11px] font-mono font-medium rounded">
-                                  ID: {gameId}
-                                </span>
-                                <span className="text-[10px] bg-emerald-50 text-emerald-700 font-semibold px-1.5 py-0.5 rounded border border-emerald-100">LootBar</span>
-                                {isEnabled && activeKey && (
-                                  <span className="inline-block px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 text-[11px] font-mono font-bold rounded">
-                                    Key: .{activeKey}
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                          {isEnabled ? (
-                            <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full whitespace-nowrap">
-                              ✓ Bot Active
-                            </span>
-                          ) : (
-                            <span className="text-[11px] font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full whitespace-nowrap">
-                              Disabled
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      {isEnabled ? (
-                        <div className="space-y-3">
-                          <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 text-xs text-neutral-700 space-y-1">
-                            <div className="flex justify-between items-center">
-                              <span className="font-medium text-neutral-500">Short Key:</span>
-                              <span className="font-mono font-bold text-neutral-900">.{activeKey}</span>
-                            </div>
-                            <div className="flex justify-between items-center">
-                              <span className="font-medium text-neutral-500">View Products:</span>
-                              <span className="font-mono text-neutral-700">.{activeKey}</span>
-                            </div>
-                            <div className="flex justify-between items-center">
-                              <span className="font-medium text-neutral-500">Order Format:</span>
-                              <span className="font-mono text-neutral-700">.{activeKey} &lt;UID&gt; &lt;Product&gt;</span>
-                            </div>
-                          </div>
-
-                          <button 
-                            onClick={() => handleToggleLootbarGame(gameId, gameName, true)}
-                            className="w-full py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold rounded-xl transition-colors border border-rose-200 flex justify-center items-center gap-1.5"
-                          >
-                            <span>🔒</span> Disable from Bot
-                          </button>
-                        </div>
-                      ) : (
-                        <button 
-                          onClick={() => handleToggleLootbarGame(gameId, gameName, false)}
-                          className="w-full py-2 bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-bold rounded-xl transition-colors shadow-sm flex justify-center items-center gap-1.5"
-                        >
-                          <span>⚡</span> Enable for Bot
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
-          </div>
-          )}
-        </div>
-
         {/* Unified Active & Managed Games in Telegram Bot */}
         <div className="bg-white p-6 sm:p-8 rounded-xl shadow-sm border border-neutral-200">
           <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 mb-4 pb-4 border-b border-neutral-100">
@@ -3975,7 +3618,7 @@ export default function App() {
               <div className="flex items-center gap-2.5 flex-wrap">
                 <h2 className="text-xl font-bold text-neutral-900">Current Active Games in Bot</h2>
                 <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                  {savedGames.filter(g => g.isEnabled !== false).length + tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length + g2bulkProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length} Active
+                  {tpnProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length + g2bulkProducts.filter(p => p.isEnabled !== false && p.status !== 'DISABLED').length} Active
                 </span>
               </div>
               <p className="text-xs sm:text-sm text-neutral-500 mt-0.5">
@@ -4001,13 +3644,7 @@ export default function App() {
                 onClick={() => setActiveProviderFilter('ALL')}
                 className={`px-3 py-1.5 rounded-md transition-all ${activeProviderFilter === 'ALL' ? 'bg-white text-neutral-900 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
               >
-                All Providers ({savedGames.length + tpnProducts.length + g2bulkProducts.length})
-              </button>
-              <button
-                onClick={() => setActiveProviderFilter('LOOTBAR')}
-                className={`px-3 py-1.5 rounded-md transition-all ${activeProviderFilter === 'LOOTBAR' ? 'bg-white text-emerald-700 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
-              >
-                LootBar ({savedGames.length})
+                All Providers ({tpnProducts.length + g2bulkProducts.length})
               </button>
               <button
                 onClick={() => setActiveProviderFilter('TOPUPNATION')}
@@ -4085,132 +3722,7 @@ export default function App() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* 1. LootBar Games */}
-              {(activeProviderFilter === 'ALL' || activeProviderFilter === 'LOOTBAR') && savedGames.filter(g => {
-                const matchesSearch = (g.name || "").toLowerCase().includes(activeGameSearch.toLowerCase()) || String(g.gameId || "").toLowerCase().includes(activeGameSearch.toLowerCase());
-                const isEnabled = g.isEnabled !== false;
-                if (activeStatusFilter === 'ENABLED') return matchesSearch && isEnabled;
-                if (activeStatusFilter === 'DISABLED') return matchesSearch && !isEnabled;
-                return matchesSearch;
-              }).map((saved, i) => {
-                const currentKey = shortKeyInputs[saved.gameId] !== undefined ? shortKeyInputs[saved.gameId] : (saved.shortKey || '');
-                const isDirty = currentKey !== (saved.shortKey || '');
-                const skuKeyCount = saved.skuShortKeys ? Object.values(saved.skuShortKeys).filter(Boolean).length : 0;
-                const isEnabled = saved.isEnabled !== false;
-                const isSelected = selectedActiveGameKeys.some(k => k.provider === 'lootbar' && k.id === String(saved.gameId));
-
-                return (
-                  <div 
-                    key={`lb-${i}`} 
-                    className={`p-5 rounded-2xl border transition-all flex flex-col justify-between ${
-                      isEnabled 
-                        ? 'bg-emerald-50/30 border-emerald-300 shadow-sm' 
-                        : 'bg-neutral-50/50 border-neutral-200 opacity-75'
-                    }`}
-                  >
-                    <div>
-                      <div className="flex justify-between items-start mb-3">
-                        <div className="flex items-start gap-2.5">
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setSelectedActiveGameKeys(prev => [...prev, { provider: 'lootbar', id: String(saved.gameId) }]);
-                              } else {
-                                setSelectedActiveGameKeys(prev => prev.filter(k => !(k.provider === 'lootbar' && k.id === String(saved.gameId))));
-                              }
-                            }}
-                            className="w-4 h-4 mt-1 rounded text-emerald-600 border-neutral-300 focus:ring-emerald-500 cursor-pointer"
-                          />
-                          <div>
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className={`w-2.5 h-2.5 rounded-full ${isEnabled ? 'bg-emerald-500' : 'bg-neutral-400'}`}></span>
-                              <span className="font-bold text-neutral-900 text-base">{saved.name}</span>
-                              <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded font-semibold">LootBar</span>
-                            </div>
-                            <span className="text-[11px] font-mono font-medium text-neutral-500 mt-1 inline-block">
-                              ID: {saved.gameId}
-                            </span>
-                          </div>
-                        </div>
-                        {isEnabled ? (
-                          <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
-                            Active in Bot
-                          </span>
-                        ) : (
-                          <span className="text-[11px] font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full">
-                            Disabled
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Package Short Keys Button */}
-                      <button 
-                        onClick={() => openSkuModal(saved, false)} 
-                        className="w-full mb-3 px-3.5 py-2 bg-emerald-100/70 hover:bg-emerald-200/70 text-emerald-900 border border-emerald-300 rounded-xl text-xs font-bold flex items-center justify-between transition-colors shadow-xs"
-                      >
-                        <div className="flex items-center gap-1.5">
-                          <span>🏷️</span>
-                          <span>Package Short Keys</span>
-                        </div>
-                        <span className="bg-emerald-200/80 text-emerald-900 px-2 py-0.5 rounded-full text-[11px] font-mono font-bold">
-                          {skuKeyCount} set
-                        </span>
-                      </button>
-
-                      {/* Custom Short Key Input */}
-                      <div className="mt-3 p-3 bg-white rounded-xl border border-neutral-200 space-y-2">
-                        <label className="block text-xs font-semibold text-neutral-700">
-                          Game Short Key (Command Prefix):
-                        </label>
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-sm font-bold text-neutral-400">.</span>
-                          <input 
-                            type="text"
-                            value={currentKey}
-                            onChange={(e) => setShortKeyInputs(prev => ({ ...prev, [saved.gameId]: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '') }))}
-                            placeholder="e.g. p, ml, ff"
-                            className="flex-1 px-3 py-1.5 border border-neutral-300 rounded-lg text-sm font-mono font-bold text-neutral-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                          />
-                          <button
-                            disabled={!isDirty || savingKeyId === saved.gameId}
-                            onClick={() => updateGameShortKey(saved.gameId, currentKey)}
-                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
-                              isDirty 
-                                ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm' 
-                                : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'
-                            }`}
-                          >
-                            {savingKeyId === saved.gameId ? 'Saving...' : 'Save'}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mt-4 pt-3 border-t border-neutral-200 flex items-center justify-between gap-2">
-                      <button 
-                        onClick={() => deleteSavedGame(saved.gameId)}
-                        className="text-neutral-500 hover:text-neutral-800 text-xs font-semibold px-2 py-1"
-                      >
-                        Remove
-                      </button>
-                      <button 
-                        onClick={() => handleToggleLootbarGame(saved.gameId, saved.name, isEnabled)}
-                        className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-colors border ${
-                          isEnabled 
-                            ? 'bg-rose-50 text-rose-700 hover:bg-rose-100 border-rose-200' 
-                            : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200'
-                        }`}
-                      >
-                        {isEnabled ? '🔒 Disable from Bot' : '⚡ Enable for Bot'}
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-
-              {/* 2. TopupNation Games */}
+              {/* 1. TopupNation Games */}
               {(activeProviderFilter === 'ALL' || activeProviderFilter === 'TOPUPNATION') && tpnProducts.filter(p => {
                 const matchesSearch = (p.name || '').toLowerCase().includes(activeGameSearch.toLowerCase()) || (p.productId || '').toLowerCase().includes(activeGameSearch.toLowerCase());
                 const isEnabled = p.isEnabled !== false && p.status !== 'DISABLED';
@@ -4685,12 +4197,9 @@ export default function App() {
                                   className="text-xs font-semibold px-2 py-1.5 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 outline-none cursor-pointer"
                                   title="Change linked API provider"
                                 >
-                                  <option value="all">🌐 All APIs (LootBar, TopupNation, FZR)</option>
-                                  <option value="both">⚡ Dual (LootBar & TopupNation)</option>
-                                  <option value="fzrcards">💎 FZR Cards Only</option>
-                                  <option value="g2bulk">🔥 G2Bulk Only</option>
-                                  <option value="lootbar">🎮 LootBar Only</option>
+                                  <option value="all">🌐 All APIs (TopupNation & G2Bulk)</option>
                                   <option value="topupnation">🌐 TopupNation Only</option>
+                                  <option value="g2bulk">🔥 G2Bulk Only</option>
                                 </select>
                                 <button
                                   onClick={() => handleToggleApiBalance(user.telegramChatId, true)}
@@ -4804,7 +4313,7 @@ export default function App() {
                 </div>
               </div>
               <p className="text-sm text-neutral-500 mt-1">
-                Real-time tracking of top-ups syncing automatically with LootBar & Game APIs
+                Real-time tracking of top-ups syncing automatically with Game APIs
               </p>
             </div>
 
@@ -4841,21 +4350,14 @@ export default function App() {
             const active = orders.filter(o => o.state === 0 || o.state === 1 || o.state === 4).length;
             const completed = orders.filter(o => o.state === 2).length;
             const totalVol = orders.reduce((sum, o) => sum + (o.price || 0), 0);
-            const lbCount = orders.filter(o => o.provider !== 'topupnation' && o.provider !== 'g2bulk' && o.extraInfo?.provider !== 'topupnation' && o.extraInfo?.provider !== 'g2bulk').length;
             const tpnCount = orders.filter(o => o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation').length;
             const g2bCount = orders.filter(o => o.provider === 'g2bulk' || o.extraInfo?.provider === 'g2bulk').length;
 
             return (
-              <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 my-5">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 my-5">
                 <div className="bg-neutral-50 p-3 rounded-xl border border-neutral-200">
                   <div className="text-[11px] text-neutral-500 font-medium">Total Orders</div>
                   <div className="text-lg font-bold text-neutral-900 mt-0.5">{total}</div>
-                </div>
-                <div className="bg-emerald-50/70 p-3 rounded-xl border border-emerald-200">
-                  <div className="text-[11px] text-emerald-800 font-medium flex items-center gap-1">
-                    <span>🎮</span> LootBar
-                  </div>
-                  <div className="text-lg font-bold text-emerald-900 mt-0.5">{lbCount}</div>
                 </div>
                 <div className="bg-indigo-50/70 p-3 rounded-xl border border-indigo-200">
                   <div className="text-[11px] text-indigo-800 font-medium flex items-center gap-1">
@@ -4901,16 +4403,6 @@ export default function App() {
                     }`}
                   >
                     🌐 All ({orders.length})
-                  </button>
-                  <button
-                    onClick={() => setOrderProviderFilter('LOOTBAR')}
-                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1 ${
-                      orderProviderFilter === 'LOOTBAR'
-                        ? 'bg-emerald-700 text-white shadow-xs font-semibold'
-                        : 'text-emerald-700 hover:bg-emerald-50'
-                    }`}
-                  >
-                    🎮 LootBar ({orders.filter(o => o.provider !== 'topupnation' && o.provider !== 'g2bulk' && o.extraInfo?.provider !== 'topupnation' && o.extraInfo?.provider !== 'g2bulk').length})
                   </button>
                   <button
                     onClick={() => setOrderProviderFilter('TOPUPNATION')}
@@ -5119,8 +4611,8 @@ export default function App() {
                                     🔥 G2Bulk
                                   </span>
                                 ) : (
-                                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
-                                    🟢 LootBar
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-neutral-700 bg-neutral-100 border border-neutral-200 px-2 py-0.5 rounded-md">
+                                    ⚡ Direct API
                                   </span>
                                 )}
 
@@ -5431,42 +4923,7 @@ export default function App() {
               </div>
 
               <div className="space-y-3">
-                {/* 1. LootBar */}
-                <div className="flex items-center justify-between p-3.5 rounded-xl border border-neutral-200 bg-white hover:border-neutral-300 transition-colors">
-                  <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm shrink-0 mt-0.5">
-                      🎮
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h4 className="text-xs font-bold text-neutral-900">LootBar API Notifications</h4>
-                        <span className={`text-[10px] px-1.5 py-0.2 rounded font-medium ${
-                          notiSettings.lootbarEnabled ? 'bg-emerald-100 text-emerald-800' : 'bg-neutral-100 text-neutral-600'
-                        }`}>
-                          {notiSettings.lootbarEnabled ? 'ON' : 'OFF'}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-neutral-500 mt-0.5">
-                        Lootbar မှ အော်ဒါအောင်မြင်ခြင်း၊ မအောင်မြင်ခြင်း နှင့် Refund ရရှိမှု Notification များ
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => handleToggleNoti('lootbarEnabled')}
-                    disabled={togglingNotiKey === 'lootbarEnabled'}
-                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                      notiSettings.lootbarEnabled ? 'bg-emerald-600' : 'bg-neutral-300'
-                    }`}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
-                        notiSettings.lootbarEnabled ? 'translate-x-5' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
-                </div>
-
-                {/* 2. TopupNation */}
+                {/* 1. TopupNation */}
                 <div className="flex items-center justify-between p-3.5 rounded-xl border border-neutral-200 bg-white hover:border-neutral-300 transition-colors">
                   <div className="flex items-start gap-3">
                     <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-sm shrink-0 mt-0.5">
@@ -5612,31 +5069,7 @@ export default function App() {
                     <div className="text-[11px] font-semibold text-neutral-700 mb-2 flex items-center justify-between">
                       <span>API အလိုက် စျေးနှုန်း Noti ရွေးချယ်အဖွင့်/အပိတ် :</span>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      {/* LootBar */}
-                      <div className={`flex items-center justify-between p-2.5 rounded-lg border transition-all ${
-                        notiSettings.priceChangeLootbar && notiSettings.priceChangeAlerts
-                          ? 'bg-amber-50/70 border-amber-200'
-                          : 'bg-neutral-50 border-neutral-200'
-                      }`}>
-                        <div>
-                          <div className="text-[11px] font-bold text-neutral-900">LootBar</div>
-                          <div className="text-[10px] text-neutral-500">Price Alerts</div>
-                        </div>
-                        <button
-                          onClick={() => handleToggleNoti('priceChangeLootbar')}
-                          disabled={togglingNotiKey === 'priceChangeLootbar' || !notiSettings.priceChangeAlerts}
-                          className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors duration-200 focus:outline-none ${
-                            notiSettings.priceChangeLootbar && notiSettings.priceChangeAlerts ? 'bg-amber-600' : 'bg-neutral-300'
-                          }`}
-                        >
-                          <span
-                            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ${
-                              notiSettings.priceChangeLootbar && notiSettings.priceChangeAlerts ? 'translate-x-4' : 'translate-x-0'
-                            }`}
-                          />
-                        </button>
-                      </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
 
                       {/* TopupNation */}
                       <div className={`flex items-center justify-between p-2.5 rounded-lg border transition-all ${
@@ -5828,7 +5261,7 @@ export default function App() {
                   </div>
                   {selectedTrackingOrder.orderId && (
                     <div className="flex justify-between py-1 border-b border-neutral-200/60">
-                      <span className="text-neutral-500">LootBar Order ID:</span>
+                      <span className="text-neutral-500">Provider Order ID:</span>
                       <span className="font-mono font-medium text-neutral-800">{selectedTrackingOrder.orderId}</span>
                     </div>
                   )}

@@ -3,7 +3,7 @@ import mongoose, { Document, Model } from 'mongoose';
 export interface IBulkOrderItemResult {
   lineIndex: number;
   rawLine: string;
-  provider: 'lootbar' | 'topupnation' | 'g2bulk';
+  provider: 'topupnation' | 'g2bulk';
   gameName: string;
   skuName: string;
   quantity: number;
@@ -39,7 +39,7 @@ export interface IBulkOrderBatch extends Document {
 const bulkOrderItemResultSchema = new mongoose.Schema({
   lineIndex: { type: Number, required: true },
   rawLine: { type: String, required: true },
-  provider: { type: String, enum: ['lootbar', 'topupnation', 'g2bulk'], default: 'lootbar' },
+  provider: { type: String, enum: ['topupnation', 'g2bulk'], default: 'topupnation' },
   gameName: { type: String, required: true },
   skuName: { type: String, required: true },
   quantity: { type: Number, default: 1 },

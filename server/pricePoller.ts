@@ -1,7 +1,5 @@
-import { LootBarClient } from './providers/lootbar/LootBarClient';
 import { TopupNationService } from './providers/topupnation/TopupNationService';
 import { G2BulkService } from './providers/g2bulk/G2BulkService';
-import { SavedGame } from './models/SavedGame';
 import { TopupNationProduct } from './models/TopupNationProduct';
 import { G2BulkProduct } from './models/G2BulkProduct';
 import { User } from './models/User';
@@ -10,17 +8,14 @@ import mongoose from 'mongoose';
 
 export class PricePoller {
   private telegramNotifier?: (chatId: number, message: string) => Promise<void>;
-  private lootbarClient: LootBarClient;
   private topupNationService: TopupNationService;
   private g2bulkService?: G2BulkService;
   private isPolling = false;
 
   constructor(
-    lootbarClient: LootBarClient,
     topupNationService: TopupNationService,
     g2bulkService?: G2BulkService
   ) {
-    this.lootbarClient = lootbarClient;
     this.topupNationService = topupNationService;
     this.g2bulkService = g2bulkService;
   }
@@ -36,7 +31,6 @@ export class PricePoller {
     try {
       if (mongoose.connection.readyState !== 1) return; // Need DB
 
-      await this.checkLootbarPrices();
       await this.checkTopupNationPrices();
       await this.checkG2BulkPrices();
 
@@ -44,63 +38,6 @@ export class PricePoller {
       console.error('Error polling prices:', err);
     } finally {
       this.isPolling = false;
-    }
-  }
-  private async checkLootbarPrices() {
-    if (!this.lootbarClient.isConfigured()) return;
-
-    const enabledGames = await SavedGame.find({ isEnabled: { $ne: false } });
-    
-    for (const game of enabledGames) {
-      try {
-        const response = await this.lootbarClient.getSkus(game.gameId);
-        const latestSkus = response?.data?.items || [];
-        
-        if (latestSkus.length > 0) {
-          if (game.lastKnownSkus && game.lastKnownSkus.length > 0) {
-            const changes: string[] = [];
-            
-            for (const newSku of latestSkus) {
-              const oldSku = game.lastKnownSkus.find((s: any) => s.sku_id === newSku.sku_id);
-              if (oldSku) {
-                const oldPrice = parseFloat(oldSku.reseller_price || oldSku.price || '0');
-                const newPrice = parseFloat(newSku.reseller_price || newSku.price || '0');
-                
-                if (oldPrice !== newPrice) {
-                  const name = (newSku.sku_name || newSku.name || 'Package').replace(/[*_`\[\]]/g, '');
-                  const indicator = newPrice > oldPrice ? '🔴 🔺' : '🟢 🔻';
-                  changes.push(`• ${name}: \`$${oldPrice.toFixed(3)}\` ➔ \`$${newPrice.toFixed(3)}\` ${indicator}`);
-                }
-              } else {
-                // New SKU logic
-                const newPrice = parseFloat(newSku.reseller_price || newSku.price || '0');
-                const name = (newSku.sku_name || newSku.name || 'Package').replace(/[*_`\[\]]/g, '');
-                changes.push(`• 🆕 ${name} (New): \`$${newPrice.toFixed(3)}\``);
-              }
-            }
-
-            // Detect removed SKUs
-            for (const oldSku of game.lastKnownSkus) {
-              const stillExists = latestSkus.find((s: any) => s.sku_id === oldSku.sku_id);
-              if (!stillExists) {
-                const name = (oldSku.sku_name || oldSku.name || 'Package').replace(/[*_`\[\]]/g, '');
-                changes.push(`• 🗑️ ${name} (Removed)`);
-              }
-            }
-
-            if (changes.length > 0) {
-              await this.notifyUsers('LootBar', game.name, game.shortKey || '', changes);
-            }
-          }
-          
-          await SavedGame.updateOne(
-            { _id: game._id },
-            { $set: { lastKnownSkus: latestSkus } }
-          );
-        }
-      } catch (err) {
-        // Skip silently on error so it doesn't crash the loop
-      }
     }
   }
 
@@ -303,7 +240,11 @@ export class PricePoller {
         }
       }
     } catch (err: any) {
-      console.error('Error in checkG2BulkPrices:', err.message || err);
+      if (err.response?.status === 404) {
+        console.warn(`[G2Bulk Price Poller] 404 Not Found at ${client.getStatus().baseUrl}. Check G2BULK_BASE_URL (default: https://api.g2bulk.com/v2).`);
+      } else {
+        console.error('Error in checkG2BulkPrices:', err.message || err);
+      }
     }
   }
 
@@ -311,7 +252,6 @@ export class PricePoller {
     if (!this.telegramNotifier) return;
     const settings = await getNotificationSettings();
     if (!settings.priceChangeAlerts) return;
-    if (providerName === 'LootBar' && (!settings.priceChangeLootbar || !settings.lootbarEnabled)) return;
     if (providerName === 'TopupNation' && (!settings.priceChangeTopupnation || !settings.topupnationEnabled)) return;
     if (providerName === 'G2Bulk' && (!settings.priceChangeG2bulk || !settings.g2bulkEnabled)) return;
 
@@ -327,11 +267,10 @@ export class PricePoller {
     }
   }
 
-  private async notify(chatId: number, msg: string, provider?: 'LootBar' | 'TopupNation' | 'G2Bulk') {
+  private async notify(chatId: number, msg: string, provider?: 'TopupNation' | 'G2Bulk') {
     if (!this.telegramNotifier) return;
     const settings = await getNotificationSettings();
     if (!settings.priceChangeAlerts) return;
-    if (provider === 'LootBar' && (!settings.priceChangeLootbar || !settings.lootbarEnabled)) return;
     if (provider === 'TopupNation' && (!settings.priceChangeTopupnation || !settings.topupnationEnabled)) return;
     if (provider === 'G2Bulk' && (!settings.priceChangeG2bulk || !settings.g2bulkEnabled)) return;
     await this.telegramNotifier(chatId, msg).catch(() => {});

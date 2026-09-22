@@ -6,7 +6,6 @@ import { Order } from '../models/Order';
 import { Session } from '../models/Session';
 import { OrderLock } from '../models/OrderLock';
 import { AppConfig } from '../models/AppConfig';
-import { LootBarClient } from '../providers/lootbar/LootBarClient';
 import { TopupNationService } from '../providers/topupnation/TopupNationService';
 import { G2BulkService } from '../providers/g2bulk/G2BulkService';
 import { getNotificationSettings } from '../notificationSettings';
@@ -39,7 +38,7 @@ function isValidValue(val: any): boolean {
 export function formatOrderTreeNode(o: any, orderNumber: number, showUserInfo: boolean = false): string {
   const isTopupNation = o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation';
   const isG2Bulk = o.provider === 'g2bulk' || o.extraInfo?.provider === 'g2bulk';
-  const providerBadge = isG2Bulk ? '🔥 G2Bulk API' : isTopupNation ? '⚡ TopupNation API' : '🎮 LootBar API';
+  const providerBadge = isG2Bulk ? '🔥 G2Bulk API' : '⚡ TopupNation API';
   const safeGame = escapeMd(o.gameName || 'Game');
   const safeSku = escapeMd(o.skuName || `Product #${o.skuId}`);
   const priceVal = `$${Number(o.price || 0).toFixed(3)}`;
@@ -274,13 +273,12 @@ export async function renderOrderHistory(
 
 export async function showOrderConfirmation(
   ctx: MyContext, 
-  lootbar: LootBarClient, 
   topupNation?: TopupNationService,
   editMessage: boolean = false
 ) {
   ctx.session.step = 'CONFIRM_ORDER';
   const userDoc = await User.findOne({ telegramChatId: ctx.chat!.id });
-  const currentProvider = ctx.session.provider || 'lootbar';
+  const currentProvider = ctx.session.provider || 'topupnation';
   const isApiLinked = isProviderApiLinked(userDoc, currentProvider);
   const userBalance = userDoc?.balance || 0;
   
@@ -300,8 +298,6 @@ export async function showOrderConfirmation(
       let checkResult;
       if (ctx.session.provider === 'topupnation' && topupNation) {
         checkResult = await topupNation.checkRole(gameId, extraInfo);
-      } else if (ctx.session.provider === 'lootbar') {
-        checkResult = await lootbar.checkRole(gameId, extraInfo);
       }
       
       if (checkResult?.playerName) {
@@ -427,7 +423,6 @@ export async function showOrderConfirmation(
 export async function finalizeOrder(
   bot: Telegraf<MyContext>,
   ctx: MyContext,
-  lootbar: LootBarClient,
   topupNation: TopupNationService | undefined,
   g2bulk: G2BulkService | undefined,
   adminChatId: string | undefined,
@@ -435,7 +430,7 @@ export async function finalizeOrder(
 ) {
   const isTopupNation = ctx.session.provider === 'topupnation';
   const isG2Bulk = ctx.session.provider === 'g2bulk';
-  const providerName = isG2Bulk ? 'G2Bulk' : isTopupNation ? 'TopupNation' : 'LootBar';
+  const providerName = isG2Bulk ? 'G2Bulk' : 'TopupNation';
   
   const referenceId = uuidv4().replace(/-/g, '').substring(0, 32);
   const idempotencyKey = ctx.session.orderIdempotencyKey || `BOT-${(ctx.session.provider || 'ORD').toUpperCase()}-${referenceId}`;
@@ -491,7 +486,7 @@ export async function finalizeOrder(
   const currentTelegramFirstName = ctx.from?.first_name || (ctx.chat as any)?.first_name || userDoc.firstName || undefined;
   const currentTelegramLastName = ctx.from?.last_name || (ctx.chat as any)?.last_name || undefined;
   
-  const currentProvider = isG2Bulk ? 'g2bulk' : isTopupNation ? 'topupnation' : 'lootbar';
+  const currentProvider = isG2Bulk ? 'g2bulk' : 'topupnation';
   const isApiLinked = isProviderApiLinked(userDoc, currentProvider);
 
   if (isG2Bulk && g2bulk) {
@@ -592,205 +587,12 @@ export async function finalizeOrder(
     return;
   }
 
-  if (!isApiLinked) {
-    const deductedUser = await User.findOneAndUpdate(
-      { telegramChatId: ctx.chat!.id, balance: { $gte: orderCost } },
-      { $inc: { balance: -orderCost } },
-      { returnDocument: 'after' }
-    );
-    if (!deductedUser) {
-      return ctx.reply(`❌ Insufficient balance or order already in progress. Cost is $${orderCost.toFixed(3)}, but your balance is insufficient.`, mainMenu);
-    }
-    userDoc.balance = deductedUser.balance;
-  }
-
-  try {
-    const orderResponse = await lootbar.createOrder(referenceId, gameId, skuId, quantity, extraInfo);
-    
-    if (orderResponse?.status === 'ok' && orderResponse?.data?.order_id) {
-      const orderId = orderResponse.data.order_id;
-      
-      try {
-        await Order.create({
-          referenceId,
-          orderId,
-          telegramChatId: ctx.chat!.id,
-          telegramUsername: currentTelegramUsername,
-          telegramFirstName: currentTelegramFirstName,
-          telegramLastName: currentTelegramLastName,
-          gameId,
-          gameName,
-          skuId,
-          skuName,
-          playerName,
-          price: orderCost,
-          extraInfo: {
-            ...extraInfo,
-            quantity,
-            paymentSource: isApiLinked ? 'api_balance' : 'wallet_balance'
-          },
-          state: 1,
-        });
-      } catch (dbErr) {
-        console.error('Failed to save order to MongoDB:', dbErr);
-      }
-
-      const statusKeyboard = Markup.inlineKeyboard([
-        [
-          Markup.button.callback('🔄 Check Live Status', `track_order_${referenceId}`),
-          Markup.button.callback('📜 Order History', 'view_orders_action')
-        ]
-      ]);
-
-      let playerId = '';
-      let serverId = '';
-      const otherDetails: { key: string; val: string }[] = [];
-
-      if (extraInfo && typeof extraInfo === 'object') {
-        for (const [k, v] of Object.entries(extraInfo)) {
-          if (k === 'paymentSource') continue;
-          const lk = k.toLowerCase();
-          if (!playerId && (lk === 'uid' || lk === 'userid' || lk === 'user_id' || lk === 'player_id' || lk === 'account_id')) {
-            playerId = String(v);
-          } else if (!serverId && (lk === 'zoneid' || lk === 'zone_id' || lk === 'server' || lk === 'server_id' || lk === 'serverid')) {
-            serverId = String(v);
-          } else if (!playerName && (lk === 'player_name' || lk === 'role_name' || lk === 'nickname' || lk === 'playername')) {
-            playerName = String(v);
-          } else {
-            otherDetails.push({ key: k.toUpperCase(), val: String(v) });
-          }
-        }
-      }
-
-      const safeGame = escapeMd(gameName);
-      const safeSku = escapeMd(skuName);
-
-      const lines: string[] = [];
-      lines.push(`✅ *Top-Up Order Submitted!*`);
-      lines.push(`═════════════════════════`);
-      lines.push(`├── 🆔 Order ID: \`${orderId}\``);
-      lines.push(`├── 🎮 Game: *${safeGame}*`);
-      lines.push(`├── 📦 Package: *${safeSku}*`);
-      if (playerName) {
-        lines.push(`├── 👤 Player: \`${escapeCode(playerName)}\``);
-      }
-      if (playerId) {
-        lines.push(`├── 🎯 Player ID: \`${escapeCode(playerId)}\``);
-      }
-      if (serverId) {
-        lines.push(`├── 🌐 Server ID: \`${escapeCode(serverId)}\``);
-      }
-      for (const item of otherDetails) {
-        lines.push(`├── ▫️ ${escapeMd(item.key)}: \`${escapeCode(item.val)}\``);
-      }
-      lines.push(`├── 🔄 Status: *PROCESSING*`);
-      lines.push(`├── 💬 Message: _Order accepted by LootBar API_`);
-      lines.push(`├── 💰 Price: \`$${orderCost.toFixed(3)}\``);
-      lines.push(`├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\``);
-      if (!isApiLinked) {
-        lines.push(`└── 💳 Remaining Balance: \`$${userDoc.balance.toFixed(3)}\``);
-      } else {
-        lines.push(`└── 💳 Payment: \`⚡ Direct API Balance Linked\``);
-      }
-      lines.push(`═════════════════════════`);
-
-      await safeReply(ctx, lines.join('\n'), statusKeyboard);
-      
-      const currentAdminIdForNotify = await getAdminChatId(adminChatId);
-      const fromUser = ctx.from?.username 
-        ? `@${ctx.from.username}` 
-        : (ctx.chat as any)?.username 
-          ? `@${(ctx.chat as any).username}` 
-          : ctx.from?.first_name || 'User';
-
-      const safeFromUser = escapeMd(fromUser);
-
-      const adminOrderNotificationMsg = `🔔 *New Top-Up Order Received!*\n` +
-        `═════════════════════════\n` +
-        `├── 👤 User: \`${ctx.chat!.id}\` (${safeFromUser})\n` +
-        `├── 🎮 Game: *${safeGame}*\n` +
-        `├── 📦 Package: *${safeSku}*\n` +
-        `├── 💰 Price: \`$${orderCost.toFixed(3)} USD\`\n` +
-        (playerName ? `├── 🎯 Player: \`${escapeCode(playerName)}\`\n` : '') +
-        `├── 💳 Payment: \`${isApiLinked ? 'Direct API Linked' : 'Wallet Balance'}\`\n` +
-        `├── 🕒 Time: \`${formatMyanmarDateTime(new Date())}\`\n` +
-        `└── 🆔 Order ID: \`${orderId}\`\n` +
-        `═════════════════════════`;
-      
-      const notiSettings = await getNotificationSettings();
-      if (currentAdminIdForNotify && notiSettings.adminOrderAlerts) {
-        await safeSendMessage(bot.telegram, currentAdminIdForNotify, adminOrderNotificationMsg);
-      }
-
-      // Background poller
-      setTimeout(async () => {
-        try {
-          const queryRes = await lootbar.queryOrder(referenceId);
-          const pollerNotiSettings = await getNotificationSettings();
-          if (queryRes?.data?.state === 2) {
-            await Order.findOneAndUpdate({ referenceId }, { state: 2 });
-            if (pollerNotiSettings.lootbarEnabled) {
-              await safeSendMessage(
-                bot.telegram, 
-                ctx.chat!.id, 
-                `🎉 *Top-Up Completed!*\n═════════════════════════\n` +
-                `├── 🆔 Order ID: \`${orderId}\`\n` +
-                `├── 🎮 Game: *${safeGame}*\n` +
-                `├── 📦 Package: *${safeSku}*\n` +
-                (playerName ? `├── 👤 Player: \`${escapeCode(playerName)}\`\n` : '') +
-                `├── ✅ Status: *COMPLETED*\n` +
-                `└── 💬 Message: _Fulfilled successfully on game server_\n` +
-                `═════════════════════════`
-              );
-            }
-          } else if (queryRes?.data?.state === 3) {
-            await Order.findOneAndUpdate({ referenceId }, { state: 3 });
-            if (!isApiLinked) {
-              const userToRefund = await User.findOne({ telegramChatId: ctx.chat!.id });
-              if (userToRefund) {
-                userToRefund.balance += orderCost;
-                await userToRefund.save();
-              }
-            }
-            if (pollerNotiSettings.lootbarEnabled) {
-              await safeSendMessage(
-                bot.telegram, 
-                ctx.chat!.id, 
-                `❌ *Order Failed*\n═════════════════════════\n` +
-                `├── 🆔 Order ID: \`${orderId || referenceId}\`\n` +
-                `├── 🎮 Game: *${safeGame}*\n` +
-                `├── ❌ Status: *FAILED*\n` +
-                `└── 💬 Message: _Could not be fulfilled on game server_${!isApiLinked ? ` (Refunded $${orderCost.toFixed(3)} USD)` : ''}\n` +
-                `═════════════════════════`
-              );
-            }
-          }
-        } catch (pollErr) {
-          console.error('Polling order status error:', pollErr);
-        }
-      }, 12000);
-    
-    } else {
-      if (!isApiLinked) {
-        await User.updateOne({ telegramChatId: ctx.chat!.id }, { $inc: { balance: orderCost } });
-      }
-      const msg = orderResponse?.msg || orderResponse?.message || 'LootBar rejected the transaction';
-      await safeReply(ctx, `❌ *Failed to Place Order*\n\nReason: \`${escapeCode(msg)}\`${!isApiLinked ? `\n\nYour balance of $${orderCost.toFixed(3)} has been refunded to your wallet.` : ''}`, mainMenu);
-    }
-  
-  } catch (error: any) {
-    if (!isApiLinked) {
-      await User.updateOne({ telegramChatId: ctx.chat!.id }, { $inc: { balance: orderCost } });
-    }
-    console.error('Order placement failed:', error);
-    await safeReply(ctx, `❌ *Order Error*\n\nReason: \`${escapeCode(error.message || 'Server error')}\`${!isApiLinked ? `\n\nYour balance of $${orderCost.toFixed(3)} has been refunded to your wallet.` : ''}`, mainMenu);
-  }
+  return ctx.reply('❌ Order failed: Provider not supported.', mainMenu);
 }
 
 export async function handleTrackOrderQuery(
   ctx: any, 
   queryId: string, 
-  lootbar: LootBarClient,
   topupNation?: TopupNationService,
   isCallback: boolean = false
 ) {
@@ -875,70 +677,11 @@ export async function handleTrackOrderQuery(
         console.error('[Track Order] TopupNation query error:', tpnErr?.message || tpnErr);
         syncNote = order ? `Processing (${order.statusText || 'In Progress'})` : 'Processing via TopupNation API';
       }
-    } else {
-      if (isCallback) {
-        try { await ctx.answerCbQuery('📡 Querying live LootBar API status...'); } catch {}
-      }
-      try {
-        const refToQuery = order?.referenceId || cleanId;
-        const queryRes = await lootbar.queryOrder(refToQuery);
-        if (queryRes && queryRes.status === 'ok' && queryRes.data) {
-          state = queryRes.data.state !== undefined ? queryRes.data.state : state;
-          orderId = queryRes.data.order_id || orderId;
-
-          if (state === 3) {
-            const isApiLinked = order?.extraInfo?.paymentSource === 'api_balance';
-            if (!isApiLinked && order && order.price > 0 && order.state !== 3) {
-              const userDoc = await User.findOne({ telegramChatId: order.telegramChatId });
-              if (userDoc) {
-                userDoc.balance += order.price;
-                await userDoc.save();
-              }
-            }
-          }
-
-          if (order) {
-            order.state = state;
-            if (orderId) order.orderId = orderId;
-            await order.save();
-          }
-        }
-      } catch (lbErr: any) {
-        console.error('[Track Order] LootBar query error:', lbErr?.message || lbErr);
-        if (topupNation && !isTopupNationOrder) {
-          try {
-            const tpnOrderId = order?.providerOrderId || order?.orderId || cleanId;
-            const queryRes = await topupNation.getClient().queryOrder(tpnOrderId);
-            if (queryRes && queryRes.status) {
-              isTopupNationOrder = true;
-              const statusUpper = String(queryRes.status).toUpperCase();
-              if (statusUpper === 'SUCCESS' || statusUpper === 'COMPLETED') {
-                state = 2;
-                syncNote = 'Fulfilled successfully via TopupNation';
-              } else if (statusUpper === 'FAILED' || statusUpper === 'REFUNDED') {
-                state = 3;
-                syncNote = queryRes.errorMessage || 'Failed on game server (Refunded)';
-              } else if (statusUpper === 'PROCESSING') {
-                state = 1;
-                syncNote = 'TopupNation is currently processing the order';
-              }
-              if (order) {
-                order.state = state;
-                order.statusText = statusUpper;
-                await order.save();
-              }
-            }
-          } catch (fallbackErr) {}
-        }
-        if (!syncNote) {
-          syncNote = order ? `Processing (${order.statusText || 'In Progress'})` : 'Live processing in progress';
-        }
-      }
     }
 
     const stateMap: Record<number, { statusText: string; icon: string; message: string }> = {
       0: { statusText: 'PENDING', icon: '⏳', message: 'Order created, awaiting transaction' },
-      1: { statusText: 'PROCESSING', icon: '🔄', message: isTopupNationOrder ? 'TopupNation API delivering top-up' : 'LootBar API delivering top-up' },
+      1: { statusText: 'PROCESSING', icon: '🔄', message: 'TopupNation API delivering top-up' },
       2: { statusText: 'COMPLETED', icon: '✅', message: 'Order completed successfully' },
       3: { statusText: 'FAILED', icon: '❌', message: 'Order failed on game server (Refunded)' },
       4: { statusText: 'SETTLING', icon: '⚡', message: 'Transaction in settlement stage' },
@@ -979,7 +722,7 @@ export async function handleTrackOrderQuery(
     lines.push(`📡 *Live Order Status*`);
     lines.push(`═════════════════════════`);
     lines.push(`├── 🆔 Order ID: \`${orderId || targetRefId}\``);
-    lines.push(`├── 🌐 Provider: \`${isTopupNationOrder ? 'TopupNation API' : 'LootBar API'}\``);
+    lines.push(`├── 🌐 Provider: \`${isTopupNationOrder ? 'TopupNation API' : 'Direct API'}\``);
     lines.push(`├── 🎮 Game: *${safeGameName}*`);
     lines.push(`├── 📦 Package: *${safeSkuName}*`);
     if (isValidValue(playerName)) {
@@ -1032,7 +775,6 @@ export async function handleTrackOrderQuery(
 
 export function registerOrderHandlers(
   bot: Telegraf<MyContext>,
-  lootbar: LootBarClient,
   topupNation: TopupNationService | undefined,
   g2bulk: G2BulkService | undefined,
   adminChatId: string | undefined,
@@ -1043,20 +785,20 @@ export function registerOrderHandlers(
   bot.action('qty_inc', async (ctx) => {
     await ctx.answerCbQuery();
     ctx.session.quantity = Math.min(100, (ctx.session.quantity || 1) + 1);
-    await showOrderConfirmation(ctx, lootbar, topupNation, true);
+    await showOrderConfirmation(ctx, topupNation, true);
   });
 
   bot.action('qty_dec', async (ctx) => {
     await ctx.answerCbQuery();
     ctx.session.quantity = Math.max(1, (ctx.session.quantity || 1) - 1);
-    await showOrderConfirmation(ctx, lootbar, topupNation, true);
+    await showOrderConfirmation(ctx, topupNation, true);
   });
 
   bot.action(/^qty_set_(\d+)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const qty = parseInt(ctx.match[1], 10) || 1;
     ctx.session.quantity = Math.max(1, Math.min(100, qty));
-    await showOrderConfirmation(ctx, lootbar, topupNation, true);
+    await showOrderConfirmation(ctx, topupNation, true);
   });
 
   bot.action('qty_prompt', async (ctx) => {
@@ -1079,7 +821,7 @@ export function registerOrderHandlers(
   bot.action('qty_back', async (ctx) => {
     await ctx.answerCbQuery();
     ctx.session.step = 'CONFIRM_ORDER';
-    await showOrderConfirmation(ctx, lootbar, topupNation);
+    await showOrderConfirmation(ctx, topupNation);
   });
 
   bot.action('confirm_place_order', async (ctx) => {
@@ -1158,7 +900,7 @@ export function registerOrderHandlers(
     await ctx.answerCbQuery('⏳ Processing order...');
 
     try {
-      await finalizeOrder(bot, ctx, lootbar, topupNation, g2bulk, adminChatId, mainMenu);
+      await finalizeOrder(bot, ctx, topupNation, g2bulk, adminChatId, mainMenu);
     } finally {
       activeUserOrderLocks.delete(chatId);
       if (ctx.session) {
@@ -1167,16 +909,16 @@ export function registerOrderHandlers(
     }
   });
 
-  bot.action(/^order_filter_(all|lootbar|topupnation)_(all|mine)_page_(\d+)$/, async (ctx) => {
-    const provider = ctx.match[1] as 'all' | 'lootbar' | 'topupnation';
+  bot.action(/^order_filter_(all|topupnation)_(all|mine)_page_(\d+)$/, async (ctx) => {
+    const provider = ctx.match[1] as 'all' | 'topupnation';
     const scope = ctx.match[2] as 'all' | 'mine';
     const page = parseInt(ctx.match[3], 10) || 1;
     await ctx.answerCbQuery();
     return await renderOrderHistory(ctx, adminChatId, true, page, provider, scope);
   });
 
-  bot.action(/^order_filter_(all|lootbar|topupnation)_page_(\d+)$/, async (ctx) => {
-    const provider = ctx.match[1] as 'all' | 'lootbar' | 'topupnation';
+  bot.action(/^order_filter_(all|topupnation)_page_(\d+)$/, async (ctx) => {
+    const provider = ctx.match[1] as 'all' | 'topupnation';
     const page = parseInt(ctx.match[2], 10) || 1;
     await ctx.answerCbQuery();
     return await renderOrderHistory(ctx, adminChatId, true, page, provider);
@@ -1221,7 +963,7 @@ export function registerOrderHandlers(
         `🔍 *Check Live Order Status*\n\n` +
         `အော်ဒါ၏ လက်ရှိ Live Status ကို API မှ တိုက်ရိုက် စစ်ဆေးရန်အတွက် အောက်ပါအတိုင်း ရိုက်ပို့နိုင်ပါသည်:\n\n` +
         `📌 *Format:* \`/status <Order_ID သို့မဟုတ် Ref_ID>\`\n` +
-        `💡 *ဥပမာ:* \`/status LB-12345678\`\n\n` +
+        `💡 *ဥပမာ:* \`/status TPN-12345678\`\n\n` +
         `သို့မဟုတ် အောက်ပါခလုတ်ကိုနှိပ်၍ *Order History* မှတစ်ဆင့် အော်ဒါများကို တိုက်ရိုက်စစ်ဆေးနိုင်ပါသည်:`,
         {
           parse_mode: 'Markdown',
@@ -1230,12 +972,12 @@ export function registerOrderHandlers(
       );
     }
     const orderQuery = parts[1].trim();
-    return await handleTrackOrderQuery(ctx, orderQuery, lootbar, topupNation, false);
+    return await handleTrackOrderQuery(ctx, orderQuery, topupNation, false);
   });
 
   bot.action(/^track_order_(.+)$/, async (ctx) => {
     const queryId = ctx.match[1];
-    return await handleTrackOrderQuery(ctx, queryId, lootbar, topupNation, true);
+    return await handleTrackOrderQuery(ctx, queryId, topupNation, true);
   });
 
   bot.action('refresh_order_history', async (ctx) => {

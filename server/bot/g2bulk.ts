@@ -6,23 +6,36 @@ import { parseSkuWithQuantity } from './matching';
 
 export async function renderG2BulkGameList(ctx: MyContext, g2bulk?: G2BulkService) {
   try {
-    const products = await G2BulkProduct.find({
+    let products = await G2BulkProduct.find({
       isEnabled: { $ne: false },
       status: { $ne: 'DISABLED' }
-    }).sort({ name: 1 });
+    }).sort({ name: 1 }).lean();
 
-    if (!products || products.length === 0) {
-      return ctx.reply('⚠️ No G2Bulk games are currently enabled by the Owner. Please contact the administrator.');
+    if ((!products || products.length === 0) && g2bulk) {
+      try {
+        await g2bulk.getProducts();
+        products = await G2BulkProduct.find({
+          isEnabled: { $ne: false },
+          status: { $ne: 'DISABLED' }
+        }).sort({ name: 1 }).lean();
+      } catch (err) {
+        console.warn('Auto sync G2Bulk products failed:', err);
+      }
     }
 
-    let msg = `🔥 *G2Bulk API — ရရှိနိုင်သော Games စာရင်း*\n\n` +
-      `အောက်ပါ Game များအား G2Bulk မှတစ်ဆင့် Top-Up ဝယ်ယူနိုင်ပါသည်။ Product စာရင်း ကြည့်ရှုရန် သို့မဟုတ် အော်ဒါတင်ရန် သက်ဆိုင်ရာ *Short Key* ဖြင့် အသုံးပြုနိုင်ပါသည်:\n\n`;
+    if (!products || products.length === 0) {
+      return ctx.reply('⚠️ No G2Bulk products are currently available or enabled. Please sync products in Admin Dashboard.');
+    }
+
+    let msg = `🔥 *G2Bulk API — ရရှိနိုင်သော Games & Gift Cards စာရင်း*\n\n` +
+      `အောက်ပါ Product များအား G2Bulk မှတစ်ဆင့် Top-Up / Gift Card ဝယ်ယူနိုင်ပါသည်:\n\n`;
 
     const numEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
 
     products.forEach((p: any, index: number) => {
       const shortKey = (p.shortKey || `g${p.productId.slice(0, 4)}`).toLowerCase();
       const numEmoji = numEmojis[index] || `🔹`;
+      const catBadge = p.category ? ` [${p.category}]` : '';
 
       const requiredFields = (p.fields || []).filter((f: any) => f.required);
       let format = `.${shortKey} <PlayerID> <Product>`;
@@ -39,7 +52,7 @@ export async function renderG2BulkGameList(ctx: MyContext, g2bulk?: G2BulkServic
         example = `.${shortKey} 12345678 2001 100`;
       }
 
-      msg += `${numEmoji} *${p.name}*\n` +
+      msg += `${numEmoji} *${p.name}*${catBadge}\n` +
         `   ▫️ *Short Key:* \`.${shortKey}\`\n` +
         `   ▫️ *Packages ကြည့်ရန်:* \`.${shortKey}\`\n` +
         `   ▫️ *Order တင်ရန်:* \`${format}\`\n` +

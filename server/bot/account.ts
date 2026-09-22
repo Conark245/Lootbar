@@ -4,6 +4,10 @@ import { MyContext } from './types';
 import { User } from '../models/User';
 import { TopupRequest } from '../models/TopupRequest';
 import { AppConfig } from '../models/AppConfig';
+import { TopupNationService } from '../providers/topupnation/TopupNationService';
+import { G2BulkService } from '../providers/g2bulk/G2BulkService';
+import { getTopupNationLiveBalance } from './topupnation';
+import { getG2BulkLiveBalance } from './g2bulk';
 import { 
   escapeMd, 
   escapeCode, 
@@ -46,20 +50,48 @@ export async function renderAccountProfile(ctx: MyContext, isEdit: boolean = fal
   }
 }
 
-export async function renderBalance(ctx: MyContext, isEdit: boolean = false) {
+let balanceCache: { tpn?: any; g2b?: any; lastFetched: number } = { lastFetched: 0 };
+
+export async function renderBalance(
+  ctx: MyContext, 
+  isEdit: boolean = false,
+  topupNation?: TopupNationService,
+  g2bulk?: G2BulkService,
+  forceRefresh: boolean = false
+) {
   const user = await User.findOne({ telegramChatId: ctx.chat!.id });
+  const now = Date.now();
   
-  let msg = `💳 *Your Wallet Balance*\n` +
+  if (forceRefresh || now - balanceCache.lastFetched > 10000 || !balanceCache.tpn) {
+    const [tpnRes, g2bRes] = await Promise.all([
+      getTopupNationLiveBalance(topupNation).catch(() => ({ success: false, balance: '0.00', currency: 'USD' })),
+      getG2BulkLiveBalance(g2bulk).catch(() => ({ success: false, balance: '0.00', currency: 'USD' }))
+    ]);
+    balanceCache = { tpn: tpnRes, g2b: g2bRes, lastFetched: now };
+  }
+
+  const tpnBalStr = balanceCache.tpn?.success ? `$${balanceCache.tpn.balance} USD` : 'Offline / Unconfigured';
+  const g2bBalStr = balanceCache.g2b?.success ? `$${balanceCache.g2b.balance} USD` : 'Offline / Unconfigured';
+  const isApiLinked = !!(user?.useDirectApiBalance || user?.balanceMode === 'api');
+
+  let msg = `💳 *Your Wallet & Live API Balances*\n` +
     `═════════════════════════\n` +
-    `💰 *Current Balance:* \`$${Number(user?.balance || 0).toFixed(3)} USD\`\n` +
-    `📦 *Ordering Mode:* \`Pre-funded Wallet Balance\`\n` +
+    `💰 *Wallet Balance:* \`$${Number(user?.balance || 0).toFixed(3)} USD\`\n` +
+    `⚡ *Account Tier:* \`${isApiLinked ? 'Direct API Linked (VIP)' : 'Pre-funded Wallet Balance'}\`\n\n` +
+    `⚡ *Provider Live API Balances:*\n` +
+    `├── 🌐 *TopupNation:* \`${tpnBalStr}\`\n` +
+    `└── 🔥 *G2Bulk:* \`${g2bBalStr}\`\n` +
     `═════════════════════════\n` +
     `_💡 သင့် Wallet ထဲသို့ ငွေဖြည့်သွင်းလိုပါက အောက်ပါ Request Balance Top-Up ခလုတ်ကို နှိပ်ပါ:_`;
 
   const keyboard = Markup.inlineKeyboard([
     [
       Markup.button.callback('💰 Request Balance Top-Up', 'topup_flow_start'),
-      Markup.button.callback('👤 My Account Profile', 'view_my_profile')
+      Markup.button.callback('🔄 Refresh Balances', 'refresh_my_balance')
+    ],
+    [
+      Markup.button.callback('👤 My Profile', 'view_my_profile'),
+      Markup.button.callback('📜 Order History', 'view_my_orders')
     ]
   ]);
 
@@ -196,7 +228,9 @@ export function registerAccountHandlers(
   bot: Telegraf<MyContext>,
   adminChatId: string | undefined,
   mainMenu: any,
-  renderOrderHistory?: (ctx: MyContext) => Promise<any>
+  renderOrderHistory?: (ctx: MyContext) => Promise<any>,
+  topupNation?: TopupNationService,
+  g2bulk?: G2BulkService
 ) {
   // Admin Commands
   bot.command('auth', async (ctx) => {
@@ -377,7 +411,12 @@ export function registerAccountHandlers(
 
   bot.action('view_my_balance', async (ctx) => {
     await ctx.answerCbQuery();
-    return await renderBalance(ctx, true);
+    return await renderBalance(ctx, true, topupNation, g2bulk);
+  });
+
+  bot.action('refresh_my_balance', async (ctx) => {
+    await ctx.answerCbQuery('🔄 Refreshing live API balances...');
+    return await renderBalance(ctx, true, topupNation, g2bulk, true);
   });
 
   bot.action('view_my_profile', async (ctx) => {
@@ -407,15 +446,15 @@ export function registerAccountHandlers(
     'Wallet', 'wallet', '💳 Wallet', '💰 Balance', 'API Balance', 'api balance', 
     'API Balance စစ်မည်', 'လက်ကျန်ငွေ', 'လက်ကျန်ငွေ စစ်မည်'
   ], async (ctx) => {
-    return await renderBalance(ctx);
+    return await renderBalance(ctx, false, topupNation, g2bulk);
   });
 
   bot.command([
     'balance', 'wallet', 'mybalance', 'mywallet', 'checkbalance',
     'apibalance', 'apibal', 'apis', 'api', 'adminbalance',
-    'lootbarbalance', 'lbbalance', 'tpnbalance', 'topupnationbalance', 'g2bbalance', 'g2bulkbalance'
+    'tpnbalance', 'topupnationbalance', 'g2bbalance', 'g2bulkbalance'
   ], async (ctx) => {
-    return await renderBalance(ctx);
+    return await renderBalance(ctx, false, topupNation, g2bulk);
   });
 
   bot.hears([

@@ -1,90 +1,4 @@
-export function findLootBarSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: Record<string, string>): any {
-  if (!rawQuery || !skus || skus.length === 0) return null;
-  const query = rawQuery.trim().toLowerCase();
-  
-  if (skuShortKeys) {
-    for (const [skuId, shortKey] of Object.entries(skuShortKeys)) {
-      if (shortKey && String(shortKey).trim().toLowerCase() === query) {
-        const match = skus.find(s => String(s.sku_id || s.sku) === String(skuId));
-        if (match) return match;
-      }
-    }
-  }
-
-  const cleanQuery = query.replace(/uc|diamond|diamonds|dm|gem|gems|credits|cp/g, '').trim();
-
-  // 1. Exact SKU ID match
-  const exactId = skus.find((s: any) => String(s.sku_id).toLowerCase() === query);
-  if (exactId) return exactId;
-
-  // 2. Exact name match
-  const exactName = skus.find((s: any) => (s.sku_name || '').toLowerCase().trim() === query);
-  if (exactName) return exactName;
-
-  // 3. Exact alias mappings
-  if (query === 'wp' || query === 'wdp' || query === 'weekly' || query === 'pass' || query === 'weekly pass' || query === 'weeklypass') {
-    const wdp = skus.find((s: any) => /weekly/i.test(s.sku_name || '') || /wdp/i.test(s.sku_name || '') || /pass/i.test(s.sku_name || ''));
-    if (wdp) return wdp;
-  }
-  if (query === 'tp' || query === 'twilight' || query === 'twilight pass' || query === 'twilightpass') {
-    const tp = skus.find((s: any) => /twilight/i.test(s.sku_name || ''));
-    if (tp) return tp;
-  }
-  if (query === 'monthly' || query === 'monthly pass' || query === 'monthlypass') {
-    const monthly = skus.find((s: any) => /monthly/i.test(s.sku_name || ''));
-    if (monthly) return monthly;
-  }
-
-  // 4. Number match (e.g. user typed "60" or "86" or "100" or "14")
-  const queryNumbers = cleanQuery.match(/\d+/g) || query.match(/\d+/g);
-  if (queryNumbers && queryNumbers.length > 0) {
-    const targetNum = queryNumbers[0];
-    
-    // 4.1 Prioritize item starting with target number (e.g. "14 Diamonds" or "14 Diamonds (13+1)")
-    const leadingNumMatch = skus.find((s: any) => {
-      const name = (s.sku_name || '').toLowerCase().trim();
-      return name.startsWith(targetNum + ' ') || name.startsWith(targetNum + 'd') || name.startsWith(targetNum + '(');
-    });
-    if (leadingNumMatch) return leadingNumMatch;
-
-    // 4.2 Exact word boundary
-    const exactWordNum = skus.find((s: any) => {
-      const name = (s.sku_name || '').toLowerCase();
-      const numRegex = new RegExp(`\\b${targetNum}\\b`);
-      return numRegex.test(name);
-    });
-    if (exactWordNum) return exactWordNum;
-
-    // 4.3 Any numeric match
-    const anyNumMatch = skus.find((s: any) => {
-      const name = (s.sku_name || '').toLowerCase();
-      const nameNumbers = name.match(/\d+/g);
-      return nameNumbers && nameNumbers.includes(targetNum);
-    });
-    if (anyNumMatch) return anyNumMatch;
-  }
-
-  // 5. Multi-word tokens match (all words in user query appear in sku_name)
-  const tokens = query.split(/\s+/).filter(t => t.length > 0);
-  if (tokens.length > 1) {
-    const tokenMatch = skus.find((s: any) => {
-      const name = (s.sku_name || '').toLowerCase();
-      return tokens.every(t => name.includes(t));
-    });
-    if (tokenMatch) return tokenMatch;
-  }
-
-  // 6. Substring match
-  const subMatch = skus.find((s: any) => 
-    (s.sku_name || '').toLowerCase().includes(query) || 
-    (cleanQuery && (s.sku_name || '').toLowerCase().includes(cleanQuery))
-  );
-  if (subMatch) return subMatch;
-
-  return null;
-}
-
-export function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: Record<string, string>): any {
+export function findSkuMatch(skus: any[], rawQuery: string, skuShortKeys?: Record<string, string>): any {
   if (!rawQuery || !skus || skus.length === 0) return null;
   const query = rawQuery.trim().toLowerCase();
   
@@ -100,24 +14,24 @@ export function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortK
   const cleanQuery = query.replace(/uc|diamond|diamonds|dm|gem|gems|credits|cp/g, '').trim();
 
   // 1. Exact SKU ID match
-  const exactId = skus.find((s: any) => String(s.sku).toLowerCase() === query);
+  const exactId = skus.find((s: any) => String(s.sku || s.sku_id).toLowerCase() === query);
   if (exactId) return exactId;
 
   // 2. Exact name match
-  const exactName = skus.find((s: any) => (s.name || '').toLowerCase().trim() === query);
+  const exactName = skus.find((s: any) => (s.name || s.sku_name || '').toLowerCase().trim() === query);
   if (exactName) return exactName;
 
   // 3. Exact alias mappings (Weekly Pass, Twilight Pass, Monthly)
   if (query === 'wp' || query === 'wdp' || query === 'weekly' || query === 'pass' || query === 'weekly pass' || query === 'weeklypass') {
-    const weekly = skus.find((s: any) => /weekly/i.test(s.name || ''));
+    const weekly = skus.find((s: any) => /weekly/i.test(s.name || s.sku_name || ''));
     if (weekly) return weekly;
   }
   if (query === 'tp' || query === 'twilight' || query === 'twilight pass' || query === 'twilightpass') {
-    const twilight = skus.find((s: any) => /twilight/i.test(s.name || ''));
+    const twilight = skus.find((s: any) => /twilight/i.test(s.name || s.sku_name || ''));
     if (twilight) return twilight;
   }
   if (query === 'monthly' || query === 'monthly pass' || query === 'monthlypass') {
-    const monthly = skus.find((s: any) => /monthly/i.test(s.name || ''));
+    const monthly = skus.find((s: any) => /monthly/i.test(s.name || s.sku_name || ''));
     if (monthly) return monthly;
   }
 
@@ -128,14 +42,14 @@ export function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortK
 
     // 4.1 Prioritize item starting with target number (e.g. "14 Diamonds" or "14 Diamonds (13+1)")
     const leadingNumMatch = skus.find((s: any) => {
-      const name = (s.name || '').toLowerCase().trim();
+      const name = (s.name || s.sku_name || '').toLowerCase().trim();
       return name.startsWith(targetNum + ' ') || name.startsWith(targetNum + 'd') || name.startsWith(targetNum + '(');
     });
     if (leadingNumMatch) return leadingNumMatch;
 
     // 4.2 Exact word boundary
     const exactWordNum = skus.find((s: any) => {
-      const name = (s.name || '').toLowerCase();
+      const name = (s.name || s.sku_name || '').toLowerCase();
       const numRegex = new RegExp(`\\b${targetNum}\\b`);
       return numRegex.test(name);
     });
@@ -143,7 +57,7 @@ export function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortK
 
     // 4.3 Any numeric match
     const anyNumMatch = skus.find((s: any) => {
-      const name = (s.name || '').toLowerCase();
+      const name = (s.name || s.sku_name || '').toLowerCase();
       const nameNumbers = name.match(/\d+/g);
       return nameNumbers && nameNumbers.includes(targetNum);
     });
@@ -154,7 +68,7 @@ export function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortK
   const tokens = query.split(/\s+/).filter(t => t.length > 0);
   if (tokens.length > 1) {
     const tokenMatch = skus.find((s: any) => {
-      const name = (s.name || '').toLowerCase();
+      const name = (s.name || s.sku_name || '').toLowerCase();
       return tokens.every(t => name.includes(t));
     });
     if (tokenMatch) return tokenMatch;
@@ -162,15 +76,16 @@ export function findTopupNationSkuMatch(skus: any[], rawQuery: string, skuShortK
 
   // 6. Substring match
   const subMatch = skus.find((s: any) => 
-    (s.name || '').toLowerCase().includes(query) || 
-    (cleanQuery && (s.name || '').toLowerCase().includes(cleanQuery))
+    (s.name || s.sku_name || '').toLowerCase().includes(query) || 
+    (cleanQuery && (s.name || s.sku_name || '').toLowerCase().includes(cleanQuery))
   );
   if (subMatch) return subMatch;
 
   return null;
 }
 
-export const findG2BulkSkuMatch = findTopupNationSkuMatch;
+export const findTopupNationSkuMatch = findSkuMatch;
+export const findG2BulkSkuMatch = findSkuMatch;
 
 export interface ParsedSkuResult {
   sku: any | null;
@@ -182,7 +97,7 @@ export function parseSkuWithQuantity(
   skus: any[],
   rawQuery: string,
   skuShortKeys?: Record<string, string>,
-  isTopupNation: boolean = false
+  _isTopupNation: boolean = false
 ): ParsedSkuResult {
   if (!rawQuery || !skus || skus.length === 0) {
     return { sku: null, quantity: 1, productQuery: '' };
@@ -202,9 +117,6 @@ export function parseSkuWithQuantity(
     cleanedQuery = cleanedQuery.replace(explicitQtyRegex, '').trim();
   } else {
     // 2. Check for trailing standalone number when query has multiple tokens
-    // e.g. user typed ".ml 12345 2001 86 5" -> query is "86 5"
-    // e.g. ".mc 1169626707 13731 one time 3" -> query is "one time 3"
-    // e.g. ".ml 12345 2001 wp 2" -> query is "wp 2"
     const tokens = cleanedQuery.split(/\s+/);
     if (tokens.length >= 2) {
       const lastToken = tokens[tokens.length - 1];
@@ -212,9 +124,7 @@ export function parseSkuWithQuantity(
         const potentialQty = parseInt(lastToken, 10);
         if (potentialQty >= 1 && potentialQty <= 100) {
           const prefixQuery = tokens.slice(0, -1).join(' ').trim();
-          const matchWithPrefix = isTopupNation 
-            ? findTopupNationSkuMatch(skus, prefixQuery, skuShortKeys)
-            : findLootBarSkuMatch(skus, prefixQuery, skuShortKeys);
+          const matchWithPrefix = findSkuMatch(skus, prefixQuery, skuShortKeys);
           
           if (matchWithPrefix) {
             return {
@@ -229,10 +139,7 @@ export function parseSkuWithQuantity(
   }
 
   quantity = Math.max(1, Math.min(100, quantity));
-
-  const matchedSku = isTopupNation
-    ? findTopupNationSkuMatch(skus, cleanedQuery, skuShortKeys)
-    : findLootBarSkuMatch(skus, cleanedQuery, skuShortKeys);
+  const matchedSku = findSkuMatch(skus, cleanedQuery, skuShortKeys);
 
   return {
     sku: matchedSku,
