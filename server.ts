@@ -728,14 +728,38 @@ async function backfillOrderUsernames() {
 // Trigger initial backfill
 setTimeout(backfillOrderUsernames, 2000);
 
+function escapeRegex(text: string): string {
+  return text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+}
+
+let lastTpnOrdersPollTime = 0;
+
 app.get("/api/orders", async (req, res) => {
   try {
-    const limit = Math.min(Math.max(Number(req.query.limit) || 500, 1), 1000);
+    const rawLimit = req.query.limit;
+    const limit = (rawLimit === 'all' || rawLimit === '0' || req.query.all === 'true')
+      ? 50000
+      : Math.min(Math.max(Number(rawLimit) || 10000, 1), 50000);
+
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const skip = req.query.page ? (page - 1) * limit : 0;
     const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
     const query: any = {};
+
+    if (req.query.provider) {
+      const p = String(req.query.provider).toLowerCase();
+      if (p === 'topupnation') {
+        query.$or = [{ provider: 'topupnation' }, { 'extraInfo.provider': 'topupnation' }];
+      } else if (p === 'g2bulk') {
+        query.$or = [{ provider: 'g2bulk' }, { 'extraInfo.provider': 'g2bulk' }];
+      } else if (p === 'lootbar') {
+        query.$or = [{ provider: 'lootbar' }, { 'extraInfo.provider': 'lootbar' }];
+      }
+    }
+
     if (search) {
       const cleanSearch = search.replace(/^@/, '');
-      const searchRegex = new RegExp(cleanSearch, 'i');
+      const searchRegex = new RegExp(escapeRegex(cleanSearch), 'i');
       const conditions: any[] = [
         { orderId: searchRegex },
         { referenceId: searchRegex },
@@ -749,13 +773,56 @@ app.get("/api/orders", async (req, res) => {
       if (!isNaN(Number(search))) {
         conditions.push({ telegramChatId: Number(search) });
       }
-      query.$or = conditions;
+      if (query.$or) {
+        query.$and = [{ $or: query.$or }, { $or: conditions }];
+        delete query.$or;
+      } else {
+        query.$or = conditions;
+      }
     }
-    const orders = await Order.find(query).sort({ createdAt: -1 }).limit(limit);
+
+    const [orders, total, activeCount, completedCount, failedCount, tpnCount, g2bCount, lootbarCount, volumeResult] = await Promise.all([
+      Order.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Order.countDocuments(query),
+      Order.countDocuments({ ...query, state: { $in: [0, 1, 4] } }),
+      Order.countDocuments({ ...query, state: 2 }),
+      Order.countDocuments({ ...query, state: { $in: [3, 6] } }),
+      Order.countDocuments({ ...query, $or: [{ provider: 'topupnation' }, { 'extraInfo.provider': 'topupnation' }] }),
+      Order.countDocuments({ ...query, $or: [{ provider: 'g2bulk' }, { 'extraInfo.provider': 'g2bulk' }] }),
+      Order.countDocuments({ ...query, $or: [{ provider: 'lootbar' }, { 'extraInfo.provider': 'lootbar' }] }),
+      Order.aggregate([
+        { $match: query },
+        { $group: { _id: null, totalVolume: { $sum: '$price' } } }
+      ])
+    ]);
+
     res.setHeader('Content-Type', 'application/json');
-    res.json({ success: true, data: orders });
-    topupNationService.pollActiveOrders().catch(() => {});
+    res.json({
+      success: true,
+      data: orders,
+      total,
+      stats: {
+        total,
+        activeCount,
+        completedCount,
+        failedCount,
+        tpnCount,
+        g2bCount,
+        lootbarCount,
+        totalVolume: volumeResult[0]?.totalVolume || 0
+      },
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit))
+    });
+
+    const now = Date.now();
+    if (now - lastTpnOrdersPollTime > 20000) {
+      lastTpnOrdersPollTime = now;
+      topupNationService.pollActiveOrders().catch(() => {});
+    }
   } catch (err: any) {
+    console.error('Error fetching orders:', err);
     res.status(500).json({ success: false, data: [], error: err.message });
   }
 });

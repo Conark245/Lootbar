@@ -35,6 +35,10 @@ function isValidValue(val: any): boolean {
   return true;
 }
 
+function escapeRegex(text: string): string {
+  return text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+}
+
 export function formatOrderTreeNode(o: any, orderNumber: number, showUserInfo: boolean = false): string {
   const isTopupNation = o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation';
   const isG2Bulk = o.provider === 'g2bulk' || o.extraInfo?.provider === 'g2bulk';
@@ -60,9 +64,9 @@ export function formatOrderTreeNode(o: any, orderNumber: number, showUserInfo: b
 
   if (o.telegramUsername || (showUserInfo && o.telegramChatId)) {
     const userDisplay = o.telegramUsername 
-      ? `@${escapeMd(o.telegramUsername)}` 
-      : (o.telegramFirstName ? escapeMd(o.telegramFirstName) : `User \`${o.telegramChatId}\``);
-    lines.push(`├── 👤 User: *${userDisplay}* \`(${o.telegramChatId})\``);
+      ? `@${escapeCode(o.telegramUsername)}` 
+      : (o.telegramFirstName ? escapeCode(o.telegramFirstName) : `User ${o.telegramChatId}`);
+    lines.push(`├── 👤 User: \`${userDisplay}\` \`(${o.telegramChatId})\``);
   }
 
   const displayOrderId = o.providerOrderId || o.orderId || o.referenceId || 'Pending';
@@ -121,154 +125,214 @@ export async function renderOrderHistory(
   adminChatId: string | undefined,
   isEdit: boolean = false, 
   page: number = 1, 
-  providerFilter: 'all' | 'lootbar' | 'topupnation' = 'all',
+  providerFilter: 'all' | 'topupnation' | 'g2bulk' | 'lootbar' = 'all',
   scope?: 'all' | 'mine'
 ) {
-  const pageSize = 3;
-  const chatId = ctx.chat!.id;
-  const currentAdminId = await getAdminChatId(adminChatId);
-  const isOwner = String(chatId) === currentAdminId;
+  try {
+    const pageSize = 4;
+    const chatId = ctx.chat!.id;
+    const currentAdminId = await getAdminChatId(adminChatId);
+    const isOwner = String(chatId) === currentAdminId;
 
-  const actualScope: 'all' | 'mine' = isOwner ? (scope || 'all') : 'mine';
-  const isAllUsersView = isOwner && actualScope === 'all';
+    const actualScope: 'all' | 'mine' = isOwner ? (scope || 'all') : 'mine';
+    const isAllUsersView = isOwner && actualScope === 'all';
 
-  const userQuery: any = isAllUsersView ? {} : { telegramChatId: chatId };
+    const userQuery: any = isAllUsersView ? {} : { telegramChatId: chatId };
 
-  const query: any = { ...userQuery };
-  if (providerFilter === 'topupnation') {
-    query.$or = [
-      { provider: 'topupnation' },
-      { 'extraInfo.provider': 'topupnation' }
-    ];
-  } else if (providerFilter === 'lootbar') {
-    query.$and = [
-      { provider: { $ne: 'topupnation' } },
-      { 'extraInfo.provider': { $ne: 'topupnation' } }
-    ];
-  }
-
-  const [totalAll, totalLootBar, totalTopupNation] = await Promise.all([
-    Order.countDocuments(userQuery),
-    Order.countDocuments({
-      ...userQuery,
-      provider: { $ne: 'topupnation' },
-      'extraInfo.provider': { $ne: 'topupnation' }
-    }),
-    Order.countDocuments({
-      ...userQuery,
-      $or: [
+    const query: any = { ...userQuery };
+    if (providerFilter === 'topupnation') {
+      query.$or = [
         { provider: 'topupnation' },
         { 'extraInfo.provider': 'topupnation' }
-      ]
-    })
-  ]);
+      ];
+    } else if (providerFilter === 'g2bulk') {
+      query.$or = [
+        { provider: 'g2bulk' },
+        { 'extraInfo.provider': 'g2bulk' }
+      ];
+    } else if (providerFilter === 'lootbar') {
+      query.$or = [
+        { provider: 'lootbar' },
+        { 'extraInfo.provider': 'lootbar' }
+      ];
+    }
 
-  const totalOrders = providerFilter === 'topupnation' 
-    ? totalTopupNation 
-    : providerFilter === 'lootbar' 
-      ? totalLootBar 
-      : totalAll;
+    const [totalAll, totalTopupNation, totalG2Bulk, totalLootBar] = await Promise.all([
+      Order.countDocuments(userQuery),
+      Order.countDocuments({
+        ...userQuery,
+        $or: [
+          { provider: 'topupnation' },
+          { 'extraInfo.provider': 'topupnation' }
+        ]
+      }),
+      Order.countDocuments({
+        ...userQuery,
+        $or: [
+          { provider: 'g2bulk' },
+          { 'extraInfo.provider': 'g2bulk' }
+        ]
+      }),
+      Order.countDocuments({
+        ...userQuery,
+        $or: [
+          { provider: 'lootbar' },
+          { 'extraInfo.provider': 'lootbar' }
+        ]
+      })
+    ]);
 
-  const providerTitle = providerFilter === 'topupnation' 
-    ? '⚡ TopupNation' 
-    : providerFilter === 'lootbar' 
-      ? '🎮 LootBar' 
-      : '🌐 All Providers';
+    const totalOrders = providerFilter === 'topupnation' 
+      ? totalTopupNation 
+      : providerFilter === 'g2bulk'
+        ? totalG2Bulk
+        : providerFilter === 'lootbar' 
+          ? totalLootBar 
+          : totalAll;
 
-  const headerTitle = isAllUsersView 
-    ? `👑 *All Users' Orders (Admin View)* — ${providerTitle}`
-    : `⏳ *My Order History* — ${providerTitle}`;
+    const providerTitle = providerFilter === 'topupnation' 
+      ? '⚡ TopupNation' 
+      : providerFilter === 'g2bulk'
+        ? '🔥 G2Bulk'
+        : providerFilter === 'lootbar' 
+          ? '🎮 LootBar' 
+          : '🌐 All Providers';
 
-  if (totalOrders === 0) {
-    const emptyMsg = `${headerTitle}\n═════════════════════════\n\n📜 _အော်ဒါမှတ်တမ်း မရှိသေးပါ။_\n\nအခြား Category ကို ရွေးချယ်ကြည့်ရှုနိုင်ပါသည်:`;
-    const buttons: any[] = [
-      [
-        Markup.button.callback(`🌐 All (${totalAll})`, `order_filter_all_${actualScope}_page_1`),
-        Markup.button.callback(`🎮 LootBar (${totalLootBar})`, `order_filter_lootbar_${actualScope}_page_1`),
-        Markup.button.callback(`⚡ TopupNation (${totalTopupNation})`, `order_filter_topupnation_${actualScope}_page_1`)
-      ]
+    const headerTitle = isAllUsersView 
+      ? `👑 *All Users' Orders (Admin View)* — ${providerTitle}`
+      : `⏳ *My Order History* — ${providerTitle}`;
+
+    if (totalOrders === 0) {
+      const emptyMsg = `${headerTitle}\n═════════════════════════\n\n📜 _အော်ဒါမှတ်တမ်း မရှိသေးပါ။_\n\nအခြား Category ကို ရွေးချယ်ကြည့်ရှုနိုင်ပါသည်:`;
+      const buttons: any[] = [
+        [
+          Markup.button.callback(`🌐 All (${totalAll})`, `order_filter_all_${actualScope}_page_1`),
+          Markup.button.callback(`⚡ TopupNation (${totalTopupNation})`, `order_filter_topupnation_${actualScope}_page_1`),
+          Markup.button.callback(`🔥 G2Bulk (${totalG2Bulk})`, `order_filter_g2bulk_${actualScope}_page_1`)
+        ]
+      ];
+      if (totalLootBar > 0) {
+        buttons[0].push(Markup.button.callback(`🎮 LootBar (${totalLootBar})`, `order_filter_lootbar_${actualScope}_page_1`));
+      }
+
+      if (isOwner) {
+        buttons.push([
+          isAllUsersView 
+            ? Markup.button.callback('👤 Switch to My Orders Only', `order_filter_${providerFilter}_mine_page_1`)
+            : Markup.button.callback('👑 Switch to All Users\' Orders', `order_filter_${providerFilter}_all_page_1`)
+        ]);
+      }
+
+      const emptyKeyboard = Markup.inlineKeyboard(buttons);
+      if (isEdit) {
+        return await safeEditMessageText(ctx, emptyMsg, emptyKeyboard);
+      }
+      return await safeReply(ctx, emptyMsg, emptyKeyboard);
+    }
+
+    const totalPages = Math.max(1, Math.ceil(totalOrders / pageSize));
+    const currentPage = Math.min(Math.max(1, page), totalPages);
+
+    const orders = await Order.find(query)
+      .sort({ createdAt: -1 })
+      .skip((currentPage - 1) * pageSize)
+      .limit(pageSize)
+      .lean();
+
+    let msg = `${headerTitle}\n` +
+      `📄 Page ${currentPage} of ${totalPages} (Total: ${totalOrders})\n` +
+      `═════════════════════════\n\n`;
+
+    const startIndex = (currentPage - 1) * pageSize;
+    orders.forEach((o, i) => {
+      const orderNumber = startIndex + i + 1;
+      msg += formatOrderTreeNode(o, orderNumber, isAllUsersView) + '\n';
+      if (i < orders.length - 1) {
+        msg += `─────────────────────────\n\n`;
+      }
+    });
+
+    const showingEnd = Math.min(startIndex + pageSize, totalOrders);
+    msg += `═════════════════════════\n` +
+      `📊 Showing ${startIndex + 1}-${showingEnd} of ${totalOrders} orders`;
+
+    const buttonRows: any[] = [];
+
+    const filterRow: any[] = [
+      Markup.button.callback(`${providerFilter === 'all' ? '🔘' : '🌐'} All (${totalAll})`, `order_filter_all_${actualScope}_page_1`),
+      Markup.button.callback(`${providerFilter === 'topupnation' ? '🔘' : '⚡'} TPN (${totalTopupNation})`, `order_filter_topupnation_${actualScope}_page_1`),
+      Markup.button.callback(`${providerFilter === 'g2bulk' ? '🔘' : '🔥'} G2B (${totalG2Bulk})`, `order_filter_g2bulk_${actualScope}_page_1`)
     ];
+    if (totalLootBar > 0) {
+      filterRow.push(Markup.button.callback(`${providerFilter === 'lootbar' ? '🔘' : '🎮'} LB (${totalLootBar})`, `order_filter_lootbar_${actualScope}_page_1`));
+    }
+    buttonRows.push(filterRow);
 
     if (isOwner) {
-      buttons.push([
+      buttonRows.push([
         isAllUsersView 
-          ? Markup.button.callback('👤 Switch to My Orders Only', `order_filter_${providerFilter}_mine_page_1`)
-          : Markup.button.callback('👑 Switch to All Users\' Orders', `order_filter_${providerFilter}_all_page_1`)
+          ? Markup.button.callback('👤 Switch: My Orders Only', `order_filter_${providerFilter}_mine_page_1`)
+          : Markup.button.callback('👑 Switch: All Users\' Orders', `order_filter_${providerFilter}_all_page_1`)
       ]);
     }
 
-    const emptyKeyboard = Markup.inlineKeyboard(buttons);
+    // Smart Navigation with Prev/Next, First/Last, and +/- 5 jumps
+    const navRow: any[] = [];
+
+    if (currentPage > 1) {
+      if (currentPage > 2) {
+        navRow.push(Markup.button.callback('« 1', `order_filter_${providerFilter}_${actualScope}_page_1`));
+      }
+      navRow.push(Markup.button.callback('◀️ Prev', `order_filter_${providerFilter}_${actualScope}_page_${currentPage - 1}`));
+    }
+
+    navRow.push(Markup.button.callback(`📄 ${currentPage}/${totalPages}`, 'noop_page_indicator'));
+
+    if (currentPage < totalPages) {
+      navRow.push(Markup.button.callback('Next ▶️', `order_filter_${providerFilter}_${actualScope}_page_${currentPage + 1}`));
+      if (currentPage < totalPages - 1) {
+        navRow.push(Markup.button.callback(`${totalPages} »`, `order_filter_${providerFilter}_${actualScope}_page_${totalPages}`));
+      }
+    }
+
+    if (navRow.length > 0) {
+      buttonRows.push(navRow);
+    }
+
+    // Quick jump row for large order collections
+    if (totalPages > 5) {
+      const jumpRow: any[] = [];
+      if (currentPage > 5) {
+        jumpRow.push(Markup.button.callback('⏪ -5', `order_filter_${providerFilter}_${actualScope}_page_${Math.max(1, currentPage - 5)}`));
+      }
+      jumpRow.push(Markup.button.callback('🔄 Refresh', `order_filter_${providerFilter}_${actualScope}_page_${currentPage}`));
+      if (currentPage + 5 <= totalPages) {
+        jumpRow.push(Markup.button.callback('+5 ⏩', `order_filter_${providerFilter}_${actualScope}_page_${Math.min(totalPages, currentPage + 5)}`));
+      }
+      buttonRows.push(jumpRow);
+    } else {
+      buttonRows.push([
+        Markup.button.callback('🔄 Refresh List', `order_filter_${providerFilter}_${actualScope}_page_${currentPage}`)
+      ]);
+    }
+
+    const keyboard = Markup.inlineKeyboard(buttonRows);
+
     if (isEdit) {
-      return await safeEditMessageText(ctx, emptyMsg, emptyKeyboard);
+      return await safeEditMessageText(ctx, msg, keyboard);
     }
-    return await safeReply(ctx, emptyMsg, emptyKeyboard);
-  }
-
-  const totalPages = Math.max(1, Math.ceil(totalOrders / pageSize));
-  const currentPage = Math.min(Math.max(1, page), totalPages);
-
-  const orders = await Order.find(query)
-    .sort({ createdAt: -1 })
-    .skip((currentPage - 1) * pageSize)
-    .limit(pageSize);
-
-  let msg = `${headerTitle}\n` +
-    `📄 Page ${currentPage} of ${totalPages}\n` +
-    `═════════════════════════\n\n`;
-
-  const startIndex = (currentPage - 1) * pageSize;
-  orders.forEach((o, i) => {
-    const orderNumber = startIndex + i + 1;
-    msg += formatOrderTreeNode(o, orderNumber, isAllUsersView) + '\n';
-    if (i < orders.length - 1) {
-      msg += `─────────────────────────\n\n`;
-    }
-  });
-
-  const showingEnd = Math.min(startIndex + pageSize, totalOrders);
-  msg += `═════════════════════════\n` +
-    `📊 Showing ${startIndex + 1}-${showingEnd} of ${totalOrders} orders`;
-
-  const buttonRows: any[] = [];
-
-  buttonRows.push([
-    Markup.button.callback(`${providerFilter === 'all' ? '🔘' : '🌐'} All (${totalAll})`, `order_filter_all_${actualScope}_page_1`),
-    Markup.button.callback(`${providerFilter === 'lootbar' ? '🔘' : '🎮'} LootBar (${totalLootBar})`, `order_filter_lootbar_${actualScope}_page_1`),
-    Markup.button.callback(`${providerFilter === 'topupnation' ? '🔘' : '⚡'} TopupNation (${totalTopupNation})`, `order_filter_topupnation_${actualScope}_page_1`)
-  ]);
-
-  if (isOwner) {
-    buttonRows.push([
-      isAllUsersView 
-        ? Markup.button.callback('👤 Switch: My Orders Only', `order_filter_${providerFilter}_mine_page_1`)
-        : Markup.button.callback('👑 Switch: All Users\' Orders', `order_filter_${providerFilter}_all_page_1`)
+    return await safeReply(ctx, msg, keyboard);
+  } catch (err: any) {
+    console.error('[renderOrderHistory] Error rendering order history:', err);
+    const errMsg = `⚠️ *အော်ဒါမှတ်တမ်း ရယူရာတွင် အခက်အခဲရှိနေပါသည်*\n\nကျေးဇူးပြု၍ ခေတ္တစောင့်ဆိုင်းပြီး ပြန်လည်ကြိုးစားပေးပါ။\nError: \`${escapeMd(err?.message || 'Database error')}\``;
+    const retryKeyboard = Markup.inlineKeyboard([
+      [Markup.button.callback('🔄 ပြန်လည်ကြိုးစားရန် (Retry)', 'view_orders_action')]
     ]);
+    if (isEdit) {
+      return await safeEditMessageText(ctx, errMsg, retryKeyboard);
+    }
+    return await safeReply(ctx, errMsg, retryKeyboard);
   }
-
-  const navRow: any[] = [];
-
-  if (currentPage > 1) {
-    navRow.push(Markup.button.callback('◀️ Prev', `order_filter_${providerFilter}_${actualScope}_page_${currentPage - 1}`));
-  }
-  navRow.push(Markup.button.callback(`📄 ${currentPage}/${totalPages}`, 'noop_page_indicator'));
-  if (currentPage < totalPages) {
-    navRow.push(Markup.button.callback('Next ▶️', `order_filter_${providerFilter}_${actualScope}_page_${currentPage + 1}`));
-  }
-
-  if (navRow.length > 0) {
-    buttonRows.push(navRow);
-  }
-
-  buttonRows.push([
-    Markup.button.callback('🔄 Refresh List', `order_filter_${providerFilter}_${actualScope}_page_${currentPage}`)
-  ]);
-
-  const keyboard = Markup.inlineKeyboard(buttonRows);
-
-  if (isEdit) {
-    return await safeEditMessageText(ctx, msg, keyboard);
-  }
-  return await safeReply(ctx, msg, keyboard);
 }
 
 export async function showOrderConfirmation(
@@ -615,11 +679,12 @@ export async function handleTrackOrderQuery(
     });
 
     if (!order) {
+      const escapedId = escapeRegex(cleanId);
       order = await Order.findOne({
         $or: [
-          { referenceId: { $regex: new RegExp(`^${cleanId}$`, 'i') } },
-          { orderId: { $regex: new RegExp(`^${cleanId}$`, 'i') } },
-          { providerOrderId: { $regex: new RegExp(`^${cleanId}$`, 'i') } }
+          { referenceId: { $regex: new RegExp(`^${escapedId}$`, 'i') } },
+          { orderId: { $regex: new RegExp(`^${escapedId}$`, 'i') } },
+          { providerOrderId: { $regex: new RegExp(`^${escapedId}$`, 'i') } }
         ]
       });
     }
@@ -909,30 +974,30 @@ export function registerOrderHandlers(
     }
   });
 
-  bot.action(/^order_filter_(all|topupnation)_(all|mine)_page_(\d+)$/, async (ctx) => {
-    const provider = ctx.match[1] as 'all' | 'topupnation';
+  bot.action(/^order_filter_([a-z0-9]+)_(all|mine)_page_(\d+)$/, async (ctx) => {
+    const provider = ctx.match[1] as any;
     const scope = ctx.match[2] as 'all' | 'mine';
     const page = parseInt(ctx.match[3], 10) || 1;
-    await ctx.answerCbQuery();
+    await ctx.answerCbQuery().catch(() => {});
     return await renderOrderHistory(ctx, adminChatId, true, page, provider, scope);
   });
 
-  bot.action(/^order_filter_(all|topupnation)_page_(\d+)$/, async (ctx) => {
-    const provider = ctx.match[1] as 'all' | 'topupnation';
+  bot.action(/^order_filter_([a-z0-9]+)_page_(\d+)$/, async (ctx) => {
+    const provider = ctx.match[1] as any;
     const page = parseInt(ctx.match[2], 10) || 1;
-    await ctx.answerCbQuery();
+    await ctx.answerCbQuery().catch(() => {});
     return await renderOrderHistory(ctx, adminChatId, true, page, provider);
   });
 
   bot.action(/^order_page_(\d+)$/, async (ctx) => {
     const page = parseInt(ctx.match[1], 10) || 1;
-    await ctx.answerCbQuery();
+    await ctx.answerCbQuery().catch(() => {});
     return await renderOrderHistory(ctx, adminChatId, true, page, 'all');
   });
 
   bot.action('view_orders_action', async (ctx) => {
-    await ctx.answerCbQuery();
-    return await renderOrderHistory(ctx, adminChatId);
+    await ctx.answerCbQuery().catch(() => {});
+    return await renderOrderHistory(ctx, adminChatId, true, 1, 'all');
   });
 
   bot.command(['allorders', 'adminorders', 'all_orders', 'admin_orders', 'ownerorders'], async (ctx) => {

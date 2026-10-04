@@ -131,6 +131,7 @@ export default function App() {
   
   // Orders State & Real-Time Tracking
   const [orders, setOrders] = useState<any[]>([]);
+  const [orderStats, setOrderStats] = useState<any>(null);
   const [loadingOrders, setLoadingOrders] = useState(true);
   const [syncingRefId, setSyncingRefId] = useState<string | null>(null);
   const [orderFilter, setOrderFilter] = useState<'ALL' | 'ACTIVE' | 'COMPLETED' | 'FAILED'>('ALL');
@@ -706,9 +707,12 @@ export default function App() {
   const fetchOrders = async (silent = false) => {
     if (!silent) setLoadingOrders(true);
     try {
-      const data = await safeFetchJson('/api/orders');
+      const data = await safeFetchJson('/api/orders?limit=10000');
       if (data?.success) {
         setOrders(data.data || []);
+        if (data.stats) {
+          setOrderStats(data.stats);
+        }
         setLastSyncTime(new Date());
         if (selectedTrackingOrder) {
           const updated = (data.data || []).find((o: any) => o.referenceId === selectedTrackingOrder.referenceId);
@@ -4346,12 +4350,12 @@ export default function App() {
 
           {/* Quick Metrics Bar with API Provider Breakdown */}
           {(() => {
-            const total = orders.length;
-            const active = orders.filter(o => o.state === 0 || o.state === 1 || o.state === 4).length;
-            const completed = orders.filter(o => o.state === 2).length;
-            const totalVol = orders.reduce((sum, o) => sum + (o.price || 0), 0);
-            const tpnCount = orders.filter(o => o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation').length;
-            const g2bCount = orders.filter(o => o.provider === 'g2bulk' || o.extraInfo?.provider === 'g2bulk').length;
+            const total = orderStats?.total ?? orders.length;
+            const active = orderStats?.activeCount ?? orders.filter(o => o.state === 0 || o.state === 1 || o.state === 4).length;
+            const completed = orderStats?.completedCount ?? orders.filter(o => o.state === 2).length;
+            const totalVol = orderStats?.totalVolume ?? orders.reduce((sum, o) => sum + (o.price || 0), 0);
+            const tpnCount = orderStats?.tpnCount ?? orders.filter(o => o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation').length;
+            const g2bCount = orderStats?.g2bCount ?? orders.filter(o => o.provider === 'g2bulk' || o.extraInfo?.provider === 'g2bulk').length;
 
             return (
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 my-5">
@@ -4402,7 +4406,7 @@ export default function App() {
                         : 'text-neutral-600 hover:text-neutral-900'
                     }`}
                   >
-                    🌐 All ({orders.length})
+                    🌐 All ({orderStats?.total ?? orders.length})
                   </button>
                   <button
                     onClick={() => setOrderProviderFilter('TOPUPNATION')}
@@ -4412,7 +4416,7 @@ export default function App() {
                         : 'text-indigo-700 hover:bg-indigo-50'
                     }`}
                   >
-                    ⚡ TopupNation ({orders.filter(o => o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation').length})
+                    ⚡ TopupNation ({orderStats?.tpnCount ?? orders.filter(o => o.provider === 'topupnation' || o.extraInfo?.provider === 'topupnation').length})
                   </button>
                   <button
                     onClick={() => setOrderProviderFilter('G2BULK' as any)}
@@ -4422,7 +4426,7 @@ export default function App() {
                         : 'text-orange-700 hover:bg-orange-50'
                     }`}
                   >
-                    🔥 G2Bulk ({orders.filter(o => o.provider === 'g2bulk' || o.extraInfo?.provider === 'g2bulk').length})
+                    🔥 G2Bulk ({orderStats?.g2bCount ?? orders.filter(o => o.provider === 'g2bulk' || o.extraInfo?.provider === 'g2bulk').length})
                   </button>
                 </div>
 

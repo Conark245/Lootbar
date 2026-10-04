@@ -219,6 +219,9 @@ export class G2BulkService {
         skuName: skuObj.name,
         playerName: userAccount,
         telegramChatId: telegramChatId || user.telegramChatId,
+        telegramUsername: user?.telegramUsername || undefined,
+        telegramFirstName: user?.telegramFirstName || undefined,
+        telegramLastName: user?.telegramLastName || undefined,
         price: totalCost,
         extraInfo: { 
           ...fields, 
